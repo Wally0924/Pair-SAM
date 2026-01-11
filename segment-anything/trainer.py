@@ -7,7 +7,7 @@ import os
 
 # 假設 loss.py 已經放在 utils 資料夾下
 from utils.loss import SAMLoss 
-from modeling.sam import Sam
+from segment_anything.modeling.sam import Sam
 
 class SAMTrainer:
     def __init__(self, model: Sam, train_loader: DataLoader, val_loader: DataLoader, device: str):

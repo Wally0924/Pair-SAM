@@ -1,9 +1,8 @@
 import torch
 from torch.utils.data import DataLoader
-# 修改 import 路徑以匹配你的檔案
 from utils.dataloader import WeatherSegmentationDataset 
 from trainer import SAMTrainer
-from segment_anything.build_sam import build_sam_vit_h
+from segment_anything.build_sam import build_sam_vit_h # 確保使用正確的版本 (ViT-B)
 import os
 
 def main():
@@ -14,6 +13,10 @@ def main():
     BATCH_SIZE = 2
     EPOCHS = 20
     
+    # 定義輸出的資料夾
+    OUTPUT_DIR = "outputs"
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     # 確保 Checkpoint 存在
     if not os.path.exists(CHECKPOINT_PATH):
         print(f"Error: Checkpoint not found at {CHECKPOINT_PATH}")
@@ -29,7 +32,7 @@ def main():
     train_dataset = WeatherSegmentationDataset(root_dir=DATA_ROOT, mode='train')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     
-    # 3. 初始化訓練器 (Trainer 內部會處理凍結邏輯)
+    # 3. 初始化訓練器
     trainer = SAMTrainer(
         model=sam_model,
         train_loader=train_loader,
@@ -37,16 +40,28 @@ def main():
         device=DEVICE
     )
 
+    # ### 修改重點 1: 初始化一個無限大的 Loss，用來記錄目前看過最低的 Loss
+    best_loss = float('inf')
+
     # 4. 開始訓練
     for epoch in range(EPOCHS):
         print(f"\n--- Epoch {epoch+1}/{EPOCHS} ---")
+        
+        # 訓練一個 epoch 並取得平均 loss
         avg_loss = trainer.train_epoch(epoch)
         print(f"Average Loss: {avg_loss:.4f}")
         
-        if (epoch + 1) % 5 == 0:
-            save_path = f"sam_weather_finetuned_epoch_{epoch+1}.pth"
+        # 如果現在這個 epoch 的 loss 比我們記錄過的 best_loss 還要低
+        if avg_loss < best_loss:
+            best_loss = avg_loss # 更新最佳紀錄
+            
+            # 定義存檔路徑 (固定檔名，這樣就會直接覆蓋舊檔案，只留一份)
+            save_path = os.path.join(OUTPUT_DIR, "sam_weather_best.pth")
+            
             trainer.save_checkpoint(save_path)
-            print(f"Model saved to {save_path}")
+            print(f"✅ New best model saved! (Loss: {best_loss:.4f})")
+        else:
+            print(f"Loss did not improve (Best: {best_loss:.4f})")
 
 if __name__ == "__main__":
     main()
