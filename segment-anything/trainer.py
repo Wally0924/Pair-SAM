@@ -2,8 +2,9 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import torch.nn.functional as F  # 補上 F
+import torch.nn.functional as F
 import os
+from torch.cuda.amp import autocast, GradScaler 
 
 # 假設 loss.py 已經放在 utils 資料夾下
 from utils.loss import SAMLoss 
@@ -16,6 +17,9 @@ class SAMTrainer:
         self.val_loader = val_loader
         self.device = device
         self.criterion = SAMLoss()
+        
+        # --- 初始化 GradScaler (用於混合精度訓練) ---
+        self.scaler = GradScaler()
         
         # --- Encord 建議修改重點：優化器設定 ---
         # 1. Image Encoder 絕對凍結 (Forward 時用 no_grad 節省記憶體)
@@ -54,45 +58,54 @@ class SAMTrainer:
 
             self.optimizer.zero_grad()
 
-            # --- Forward Pass ---
-            
-            # 1. Image Encoder: 嚴格使用 no_grad 節省顯存
-            with torch.no_grad():
-                image_embeddings = self.model.image_encoder(images)
+            # --- Forward Pass (使用 AMP 混合精度) ---
+            # autocast 會自動將適合的運算轉為 float16，不適合的維持 float32
+            with autocast():
+                
+                # 1. Image Encoder: 嚴格使用 no_grad 節省顯存
+                with torch.no_grad():
+                    image_embeddings = self.model.image_encoder(images)
 
-            # 2. Prompt Encoder: 凍結狀態，使用 no_grad
-            with torch.no_grad():
-                sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
-                    points=None,
-                    boxes=boxes.unsqueeze(1), 
-                    masks=None
+                # 2. Prompt Encoder: 凍結狀態，使用 no_grad
+                with torch.no_grad():
+                    sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
+                        points=None,
+                        boxes=boxes.unsqueeze(1), 
+                        masks=None
+                    )
+
+                # 3. Mask Decoder: 這是唯一需要計算梯度的地方
+                image_pe = self.model.prompt_encoder.get_dense_pe().to(self.device)
+                image_pe = image_pe.repeat(images.shape[0], 1, 1, 1)
+
+                low_res_masks, iou_predictions = self.model.mask_decoder(
+                    image_embeddings=image_embeddings,
+                    image_pe=image_pe,
+                    sparse_prompt_embeddings=sparse_embeddings,
+                    dense_prompt_embeddings=dense_embeddings,
+                    multimask_output=False, 
                 )
 
-            # 3. Mask Decoder: 這是唯一需要計算梯度的地方
-            image_pe = self.model.prompt_encoder.get_dense_pe().to(self.device)
-            image_pe = image_pe.repeat(images.shape[0], 1, 1, 1)
+                # 4. Post-process
+                upscaled_masks = F.interpolate(
+                    low_res_masks,
+                    size=(self.model.image_encoder.img_size, self.model.image_encoder.img_size),
+                    mode="bilinear",
+                    align_corners=False,
+                )
 
-            low_res_masks, iou_predictions = self.model.mask_decoder(
-                image_embeddings=image_embeddings,
-                image_pe=image_pe,
-                sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
-                multimask_output=False, 
-            )
-
-            # 4. Post-process
-            upscaled_masks = F.interpolate(
-                low_res_masks,
-                size=(self.model.image_encoder.img_size, self.model.image_encoder.img_size),
-                mode="bilinear",
-                align_corners=False,
-            )
-
-            # Loss
-            loss, loss_dict = self.criterion(upscaled_masks, gt_masks, iou_predictions)
+                # Loss 計算 (也是在 autocast 範圍內)
+                loss, loss_dict = self.criterion(upscaled_masks, gt_masks, iou_predictions)
             
-            loss.backward()
-            self.optimizer.step()
+            # --- Backward Pass (使用 Scaler) ---
+            # scaler.scale(loss) 會將 loss 放大，避免 float16 下溢
+            self.scaler.scale(loss).backward()
+            
+            # scaler.step() 會先將梯度縮小回原比例，再更新權重
+            self.scaler.step(self.optimizer)
+            
+            # 更新 scaler 的縮放因子
+            self.scaler.update()
 
             epoch_loss += loss.item()
             pbar.set_postfix(loss=loss.item(), bce=loss_dict['bce'], dice=loss_dict['dice'])

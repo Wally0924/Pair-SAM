@@ -29,7 +29,7 @@ def main():
     sam_model.to(DEVICE)
     
     # 2. 準備資料
-    train_dataset = WeatherSegmentationDataset(root_dir=DATA_ROOT, mode='train')
+    train_dataset = WeatherSegmentationDataset(root_dir=DATA_ROOT, mode='train', max_images=1200) # 訓練模式只用 1200 張
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     
     # 3. 初始化訓練器
