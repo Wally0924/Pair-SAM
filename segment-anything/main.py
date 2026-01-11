@@ -9,7 +9,7 @@ def main():
     # 設定
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     CHECKPOINT_PATH = "checkpoints/sam_vit_h_4b8939.pth" 
-    DATA_ROOT = "data/weather_dataset/val" 
+    DATA_ROOT = "data/weather_dataset/val"   # 資料集根目錄(注意這裡用到val)
     BATCH_SIZE = 4
     EPOCHS = 20
     

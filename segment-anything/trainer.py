@@ -49,7 +49,7 @@ class SAMTrainer:
         self.model.image_encoder.eval()  # 保持 eval 模式
         
         epoch_loss = 0
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index} Training")
+        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} Training")
         
         for batch in pbar:
             images = batch['image'].to(self.device)
