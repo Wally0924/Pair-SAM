@@ -21,6 +21,8 @@ def build_sam_vit_h(checkpoint=None):
     )
 
 
+build_sam = build_sam_vit_h
+
 
 def build_sam_vit_l(checkpoint=None):
     return _build_sam(
