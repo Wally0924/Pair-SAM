@@ -19,22 +19,18 @@ class SAMTrainer:
         self.criterion = SAMLoss()
         
         # --- 初始化 GradScaler (用於混合精度訓練) ---
-        self.scaler = GradScaler()
+        self.scaler = torch.amp.GradScaler('cuda')
         
-        # --- Encord 建議修改重點：優化器設定 ---
-        # 1. Image Encoder 絕對凍結 (Forward 時用 no_grad 節省記憶體)
+        # --- 凍結 Encoder ---
         for param in self.model.image_encoder.parameters():
             param.requires_grad = False
-            
-        # 2. Prompt Encoder 通常也建議凍結，因為幾何位置編碼不需要重訓
         for param in self.model.prompt_encoder.parameters():
             param.requires_grad = False
             
-        # 3. 只訓練 Mask Decoder
+        # 只訓練 Mask Decoder
         for param in self.model.mask_decoder.parameters():
             param.requires_grad = True
 
-        # 優化器只包含 mask_decoder
         trainable_params = [
             {"params": self.model.mask_decoder.parameters()}
         ]
@@ -43,10 +39,9 @@ class SAMTrainer:
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=5)
 
     def train_epoch(self, epoch_index):
-        # 設定為 train 模式，但因為 requires_grad=False，Encoder 參數不會變
         self.model.mask_decoder.train() 
-        self.model.prompt_encoder.eval() # 保持 eval 模式
-        self.model.image_encoder.eval()  # 保持 eval 模式
+        self.model.prompt_encoder.eval()
+        self.model.image_encoder.eval()
         
         epoch_loss = 0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} Training")
@@ -54,27 +49,30 @@ class SAMTrainer:
         for batch in pbar:
             images = batch['image'].to(self.device)
             gt_masks = batch['mask'].to(self.device)
-            boxes = batch['box'].to(self.device)
+            
+            # === 修改重點：改用 Point Prompt ===
+            # 取得點座標與標籤
+            point_coords = batch['point_coords'].to(self.device) # (B, N, 2)
+            point_labels = batch['point_labels'].to(self.device) # (B, N)
+            
+            # SAM 要求的 points 格式是一個 tuple: (coords, labels)
+            points = (point_coords, point_labels)
 
             self.optimizer.zero_grad()
 
-            # --- Forward Pass (使用 AMP 混合精度) ---
-            # autocast 會自動將適合的運算轉為 float16，不適合的維持 float32
-            with autocast():
-                
-                # 1. Image Encoder: 嚴格使用 no_grad 節省顯存
+            # --- Forward Pass (使用 AMP) ---
+            with torch.amp.autocast('cuda'):
                 with torch.no_grad():
                     image_embeddings = self.model.image_encoder(images)
 
-                # 2. Prompt Encoder: 凍結狀態，使用 no_grad
                 with torch.no_grad():
+                    # 這裡傳入 points，將 boxes 設為 None
                     sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
-                        points=None,
-                        boxes=boxes.unsqueeze(1), 
+                        points=points, # 傳入點提示
+                        boxes=None,    # 不使用框
                         masks=None
                     )
 
-                # 3. Mask Decoder: 這是唯一需要計算梯度的地方
                 image_pe = self.model.prompt_encoder.get_dense_pe().to(self.device)
                 image_pe = image_pe.repeat(images.shape[0], 1, 1, 1)
 
@@ -86,7 +84,6 @@ class SAMTrainer:
                     multimask_output=False, 
                 )
 
-                # 4. Post-process
                 upscaled_masks = F.interpolate(
                     low_res_masks,
                     size=(self.model.image_encoder.img_size, self.model.image_encoder.img_size),
@@ -94,17 +91,10 @@ class SAMTrainer:
                     align_corners=False,
                 )
 
-                # Loss 計算 (也是在 autocast 範圍內)
                 loss, loss_dict = self.criterion(upscaled_masks, gt_masks, iou_predictions)
             
-            # --- Backward Pass (使用 Scaler) ---
-            # scaler.scale(loss) 會將 loss 放大，避免 float16 下溢
             self.scaler.scale(loss).backward()
-            
-            # scaler.step() 會先將梯度縮小回原比例，再更新權重
             self.scaler.step(self.optimizer)
-            
-            # 更新 scaler 的縮放因子
             self.scaler.update()
 
             epoch_loss += loss.item()
@@ -113,6 +103,4 @@ class SAMTrainer:
         return epoch_loss / len(self.train_loader)
 
     def save_checkpoint(self, path):
-        # 建議只存 Mask Decoder 以節省空間，或者存整個 dict 方便載入
-        # 這裡存整個 state_dict 比較通用
         torch.save(self.model.state_dict(), path)

@@ -9,7 +9,7 @@ def main():
     # 設定
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     CHECKPOINT_PATH = "checkpoints/sam_vit_h_4b8939.pth" 
-    DATA_ROOT = "data/weather_dataset/val"   # 資料集根目錄(注意這裡用到val)
+    DATA_ROOT = "data/weather_dataset/train"   # 資料集根目錄
     BATCH_SIZE = 4
     EPOCHS = 20
     
@@ -56,7 +56,7 @@ def main():
             best_loss = avg_loss # 更新最佳紀錄
             
             # 定義存檔路徑 (固定檔名，這樣就會直接覆蓋舊檔案，只留一份)
-            save_path = os.path.join(OUTPUT_DIR, "sam_weather_best.pth")
+            save_path = os.path.join(OUTPUT_DIR, "sam_weather_best_v2.pth")
             
             trainer.save_checkpoint(save_path)
             print(f"✅ New best model saved! (Loss: {best_loss:.4f})")
