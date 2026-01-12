@@ -15,14 +15,14 @@ CONFIG = {
     "NUM_SAMPLES": 5,  # 想要產生幾張比較圖
     
     # 資料路徑 (請確認路徑正確)
-    "TEST_IMG_DIR": "data/weather_dataset/train/images",
-    "TEST_MASK_DIR": "data/weather_dataset/train/masks",
+    "TEST_IMG_DIR": "data/weather_dataset/val/images",
+    "TEST_MASK_DIR": "data/weather_dataset/val/masks",
     
     # 模型權重路徑
     "ORIGINAL_CHECKPOINT": "checkpoints/sam_vit_h_4b8939.pth", 
     "FINETUNED_CHECKPOINT": "outputs/sam_weather_best.pth",
     
-    "OUTPUT_DIR": "final_visual_comparison",
+    "OUTPUT_DIR": "final_visual_comparison_point",
     
     # AMG 參數
     "AMG_KWARGS": {

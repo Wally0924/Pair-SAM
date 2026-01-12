@@ -2,6 +2,8 @@ import torch
 from torch.utils.data import DataLoader
 import os
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg') # 強制使用 Agg 後端，不啟動 GUI 視窗
 import matplotlib.pyplot as plt
 
 # 導入你的自定義模組
