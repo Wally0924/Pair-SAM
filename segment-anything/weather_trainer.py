@@ -7,7 +7,7 @@ import os
 import numpy as np
 
 # 引入自定義模組
-from utils.loss import SAMLoss
+from utils.new_loss import SAMLoss
 from segment_anything.modeling import WeatherSAM 
 
 class WeatherSAMTrainer:
@@ -65,7 +65,7 @@ class WeatherSAMTrainer:
         
         # 學習率排程: Loss 不降時自動減少 LR
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=3, verbose=True
+            self.optimizer, mode='min', factor=0.5, patience=3
         )
 
     def train_epoch(self, epoch_index):

@@ -1,124 +1,249 @@
 import torch
-import torch.nn.functional as F
-import gc
-from segment_anything.build_weather_sam import build_weather_sam_vit_b
-# 若要測試 ViT-H，請解開下面這行
-from segment_anything.build_weather_sam import build_weather_sam_vit_h 
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+import os
+import sys
+import numpy as np
+import random
+
+# --- 導入你的模組 ---
+# 為了避免 import 錯誤，請確保目錄結構正確
+from segment_anything.build_weather_sam import build_weather_sam_vit_h
+from weather_trainer import WeatherSAMTrainer
 from utils.new_loss import SAMLoss
+# 嘗試導入 collate_fn，如果失敗則使用本地定義的 fallback
+try:
+    from utils.weather_dataloader import WeatherSegmentationDataset
+    collate_fn = WeatherSegmentationDataset.collate_fn
+    print("✅ Successfully imported real collate_fn from utils.dataloader")
+except ImportError:
+    print("⚠️ Could not import utils.dataloader. Using local fallback for collate_fn.")
+    def collate_fn(batch):
+        images = torch.stack([item['image'] for item in batch])
+        ref_masks = torch.stack([item['reference_mask'] for item in batch])
+        gt_masks = torch.stack([item['gt_mask'] for item in batch])
+        text_prompts = [item['text_prompts'] for item in batch]
+        original_sizes = [item['original_size'] for item in batch]
+        return {
+            "image": images,
+            "reference_mask": ref_masks,
+            "gt_mask": gt_masks,
+            "text_prompts": text_prompts,
+            "original_size": original_sizes
+        }
 
-def verify_pipeline():
-    # 0. 清理 GPU 記憶體 (防止之前的殘留)
-    torch.cuda.empty_cache()
-    gc.collect()
+# ==========================================
+# 1. 定義 Mock Data (模擬數據生成器)
+# ==========================================
+class MockWeatherDataset(Dataset):
+    """
+    生成隨機數據以模擬 WeatherSegmentationDataset 的輸出。
+    用於驗證 Pipeline 是否能跑通，而不需讀取真實硬碟檔案。
+    """
+    def __init__(self, length=4, image_size=1024):
+        self.length = length
+        self.image_size = image_size
+        self.dummy_prompts = [
+            ["car", "road"], 
+            ["building", "sky", "tree"], 
+            ["person", "sidewalk"],
+            ["traffic light"]
+        ]
+        print(f"🛠️  MockDataset initialized with {length} samples. Image Size: {image_size}x{image_size}")
 
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        # 模擬正規化後的影像 (3, 1024, 1024)
+        image = torch.randn(3, self.image_size, self.image_size)
+        
+        # 模擬參考遮罩 (3, 1024, 1024) - 假設是二值化或 RGB Mask
+        ref_mask = torch.rand(3, self.image_size, self.image_size)
+        
+        # 模擬 Ground Truth ID Map (1024, 1024) - 類別 0~18
+        gt_mask = torch.randint(low=0, high=19, size=(self.image_size, self.image_size)).long()
+        
+        # 隨機選取 Prompt
+        prompts = self.dummy_prompts[idx % len(self.dummy_prompts)]
+        
+        return {
+            "image": image,
+            "reference_mask": ref_mask,
+            "gt_mask": gt_mask,
+            "text_prompts": prompts,
+            "original_size": (self.image_size, self.image_size)
+        }
+
+# ==========================================
+# 2. 輔助列印函數
+# ==========================================
+def print_separator(title):
+    print(f"\n{'='*20} {title} {'='*20}")
+
+def inspect_model_freeze(model):
+    """檢查模型哪些層被凍結，哪些層是可訓練的"""
+    print_separator("Model Parameter Status")
+    trainable_params = 0
+    frozen_params = 0
+    
+    print(f"{'Module Name':<40} | {'Status':<10}")
+    print("-" * 55)
+    
+    # 檢查主要組件
+    components = [
+        ("image_encoder (ViT)", model.image_encoder),
+        ("prompt_encoder", model.prompt_encoder),
+        ("mask_decoder", model.mask_decoder),
+        ("fusion_module", model.fusion_module),
+        ("gate_module", model.gate_module),
+        ("text_encoder (CLIP)", model.text_encoder),
+        ("pe_layer (Positional)", model.pe_layer)
+    ]
+
+    for name, submodule in components:
+        # 對於 Tensor (如 pe_layer)
+        if isinstance(submodule, torch.nn.Parameter):
+            requires_grad = submodule.requires_grad
+        # 對於 Module
+        else:
+            # 抽樣檢查第一個參數
+            try:
+                requires_grad = next(submodule.parameters()).requires_grad
+            except StopIteration:
+                requires_grad = False # 無參數層
+
+        status = "🟢 Train" if requires_grad else "❄️ Freeze"
+        print(f"{name:<40} | {status}")
+
+    # 統計總參數量
+    for p in model.parameters():
+        if p.requires_grad:
+            trainable_params += p.numel()
+        else:
+            frozen_params += p.numel()
+            
+    print("-" * 55)
+    print(f"Total Trainable Params: {trainable_params / 1e6:.2f} M")
+    print(f"Total Frozen Params:    {frozen_params / 1e6:.2f} M")
+
+# ==========================================
+# 3. 主測試邏輯
+# ==========================================
+def run_sanity_check():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🔧 Device: {device}")
-
-    # 1. 建立模型 (建議先用 ViT-B 跑通流程)
-    print("🏗️ Building Model (ViT-H)...")
+    print(f"🖥️  Running on device: {device}")
+    
+    # --- Step 1: 建立模型 ---
+    print_separator("Building Model")
     try:
-        model = build_weather_sam_vit_h(checkpoint=None) 
+        model = build_weather_sam_vit_h(checkpoint=None)
         model.to(device)
+        print("✅ Model built successfully.")
     except Exception as e:
-        print(f"❌ Model Build Failed: {e}")
+        print(f"❌ Model build failed: {e}")
         return
 
-    # ★★★ 關鍵修改：手動凍結骨幹網路 ★★★
-    # 這步能節省約 70%-80% 的顯存，因為不需要儲存巨大的反向傳播圖
-    print("❄️ Freezing Image & Text Encoders...")
-    for param in model.image_encoder.parameters():
-        param.requires_grad = False
-    for param in model.text_encoder.parameters():
-        param.requires_grad = False
-        
-    # 確保其他模組是可訓練的 (Mask Decoder, Fusion, etc.)
-    # 這樣我們才能測試 backward() 是否正常運作
-    model.train() 
-
-    # 2. 模擬輸入資料 (改為 Batch Size = 1 以求穩)
-    print("🎲 Generating Dummy Data (Batch Size = 1)...")
-    B = 2 
-    C, H, W = 3, 1024, 1024
+    # --- Step 2: 初始化訓練器 ---
+    print_separator("Initializing Trainer")
     
-    dummy_images = torch.randn(B, C, H, W).to(device)
-    dummy_ref_masks = torch.randn(B, C, H, W).to(device) # RGB Mask
-    dummy_gt_masks = torch.randint(0, 19, (B, H, W)).long().to(device)
+    mock_ds = MockWeatherDataset(length=4, image_size=1024)
+    mock_loader = DataLoader(mock_ds, batch_size=16, collate_fn=collate_fn)
     
-    # 模擬 Prompts
-    dummy_prompts = [["car", "road"],["tree", "building"]] 
-    dummy_original_sizes = [(1080, 1920), (1080, 1920)]
-
-    batched_input = []
-    for i in range(B):
-        batched_input.append({
-            'image': dummy_images[i],
-            'reference_mask': dummy_ref_masks[i],
-            'text_prompts': dummy_prompts[i],
-            'original_size': dummy_original_sizes[i]
-        })
-
-    # 3. 初始化 Loss
-    criterion = SAMLoss(focal_weight=20.0, dice_weight=1.0, iou_weight=1.0)
-    
-    # 只優化可訓練的參數
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    print(f"   Trainable Parameters: {len(trainable_params)} tensors")
-    optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
-
-    # 4. 前向傳播測試
-    print("🚀 Running Forward Pass...")
     try:
-        # 使用混合精度 (AMP) 進一步省記憶體
-        with torch.amp.autocast('cuda'):
-            # 這裡我們用 torch.no_grad() 包住 Image Encoder 的 forward 嗎？
-            # 不需要，因為上面已經設了 requires_grad=False，PyTorch 知道不需要建圖
-            
-            outputs = model(batched_input, multimask_output=True)
-            
-            print(f"   Output Count: {len(outputs)}")
-            print(f"   Mask Shape: {outputs[0]['masks'].shape}")
-
-            # 5. Loss 計算
-            print("📉 Calculating Loss...")
-            total_loss = 0
-            for i in range(B):
-                full_res_logits = F.interpolate(
-                    outputs[i]['low_res_logits'],
-                    size=(1024, 1024),
-                    mode="bilinear",
-                    align_corners=False
-                )
-                
-                loss, loss_dict = criterion(
-                    pred_masks=full_res_logits,
-                    gt_mask=dummy_gt_masks[i],
-                    iou_predictions=outputs[i]['iou_predictions'],
-                    text_prompts=batched_input[i]['text_prompts']
-                )
-                total_loss += loss
-                print(f"   Loss Value: {loss.item():.4f}")
-
-        # 6. 反向傳播測試
-        print("🔙 Running Backward Pass...")
-        optimizer.zero_grad()
-        
-        # 使用 Scaler 模擬真實訓練情境
-        scaler = torch.amp.GradScaler('cuda')
-        scaler.scale(total_loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        
-        print("✅ Verify Pipeline Passed Successfully!")
-        print(f"   Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-    except RuntimeError as e:
-        print(f"❌ Runtime Error: {e}")
-        if "out of memory" in str(e):
-            print("💡 Critical: Still OOM. Try setting 'input_image_size' smaller in build_weather_sam.py temporarily.")
+        trainer = WeatherSAMTrainer(
+            model=model,
+            train_loader=mock_loader,
+            val_loader=mock_loader,
+            device=device,
+            lr=1e-4
+        )
+        print("✅ Trainer initialized.")
     except Exception as e:
+        print(f"❌ Trainer initialization failed: {e}")
+        return
+
+    inspect_model_freeze(model)
+
+    # --- Step 3 & 4: Forward + Loss + Backward (全部在 Autocast 保護下) ---
+    print_separator("Testing Pipeline (Forward -> Loss -> Backward)")
+    
+    batch = next(iter(mock_loader))
+    
+    # 準備輸入
+    batched_input = []
+    batch_size = len(batch['text_prompts'])
+    for i in range(batch_size):
+        batched_input.append({
+            'image': batch['image'][i].to(device),
+            'reference_mask': batch['reference_mask'][i].to(device),
+            'text_prompts': batch['text_prompts'][i],
+            'original_size': batch['original_size'][i]
+        })
+    gt_masks = batch['gt_mask'].to(device)
+
+    # 監控記憶體
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+        mem_before = torch.cuda.memory_allocated() / 1024**2
+        print(f"🧠 GPU Memory (Pre-Forward): {mem_before:.2f} MB")
+
+    try:
+        # ★★★ 關鍵修改：將 Loss 計算也包進 autocast ★★★
+        with torch.amp.autocast('cuda' if device=='cuda' else 'cpu'):
+            print("▶️  Executing Forward Pass...")
+            outputs = model(batched_input, multimask_output=True)
+            print("✅ Forward pass successful.")
+
+            print("▶️  Calculating Loss...")
+            loss_fn = SAMLoss()
+            
+            # 針對 Batch 中第一張圖計算
+            i = 0
+            low_res = outputs[i]['low_res_logits'] 
+            # 模擬上採樣
+            full_res = torch.nn.functional.interpolate(
+                low_res, size=(1024, 1024), mode="bilinear", align_corners=False
+            )
+            
+            loss_val, loss_dict = loss_fn(
+                pred_masks=full_res,
+                gt_mask=gt_masks[i],
+                iou_predictions=outputs[i]['iou_predictions'],
+                text_prompts=batched_input[i]['text_prompts']
+            )
+            print(f"📉 Calculated Loss: {loss_val.item():.4f}")
+
+        # Backward Pass (雖然 backward 通常可以放在外面，但為了保險起見，scale 必須接續上面的 loss)
+        print("▶️  Executing Backward Pass...")
+        trainer.optimizer.zero_grad()
+        trainer.scaler.scale(loss_val).backward()
+        print("✅ Backward pass successful (Gradients computed).")
+        
+        # 檢查梯度
+        print("🔍 Checking Gradients on Mask Decoder:")
+        has_grad = False
+        for name, param in model.mask_decoder.named_parameters():
+            if param.grad is not None:
+                print(f"   Layer: {name} | Grad Mean: {param.grad.mean().item():.2e} | ✅ Has Grad")
+                has_grad = True
+                break
+        
+        if not has_grad:
+            print("⚠️ Warning: No gradients found in Mask Decoder! Check freeze settings.")
+
+    except Exception as e:
+        print(f"❌ Pipeline failed: {e}")
         import traceback
         traceback.print_exc()
-        print(f"❌ General Error: {e}")
+        return
+
+    if device == "cuda":
+        mem_after = torch.cuda.max_memory_allocated() / 1024**2
+        print(f"🧠 Peak GPU Memory: {mem_after:.2f} MB")
+
+    print_separator("Sanity Check Complete")
+    print("🎉 System looks healthy! You are ready for real training.")
 
 if __name__ == "__main__":
-    verify_pipeline()
+    run_sanity_check()
