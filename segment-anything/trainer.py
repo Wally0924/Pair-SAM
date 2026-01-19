@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import os
 
 # 確保路徑正確，指向你修改過的 SAMLoss
-from utils.loss import SAMLoss 
+from utils.new_loss import SAMLoss 
 from segment_anything.modeling.sam import Sam
 
 class SAMTrainer:
