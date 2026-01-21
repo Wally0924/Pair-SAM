@@ -147,8 +147,8 @@ def run_sanity_check():
     # --- Step 2: 初始化訓練器 ---
     print_separator("Initializing Trainer")
     
-    mock_ds = MockWeatherDataset(length=4, image_size=1024)
-    mock_loader = DataLoader(mock_ds, batch_size=16, collate_fn=collate_fn)
+    mock_ds = MockWeatherDataset(length=128, image_size=1024)
+    mock_loader = DataLoader(mock_ds, batch_size=4, collate_fn=collate_fn)
     
     try:
         trainer = WeatherSAMTrainer(

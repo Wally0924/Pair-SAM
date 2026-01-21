@@ -4,132 +4,142 @@ import numpy as np
 import cv2
 import os
 import random
-from PIL import Image
+import pandas as pd  # 新增: 用於讀取 CSV
 
 class WeatherSegmentationDataset(Dataset):
-    def __init__(self, root_dir: str, image_size: int = 1024, mode: str = 'train'):
+    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train'):
         """
         Args:
-            root_dir (str): 資料集根目錄，應包含 bad_weather_images/, reference_masks/, labels/
+            csv_file (str): 對應表 CSV 的路徑 (例如 'data/weather_dataset/train.csv')
             image_size (int): 統一縮放尺寸 (SAM 預設 1024)
+            mode (str): 'train', 'val', 或 'test'
         """
-        self.root_dir = root_dir
         self.image_size = image_size
         self.mode = mode
         
-        # 定義資料夾路徑
-        self.images_path = os.path.join(root_dir, "bad_weather_images")
-        self.ref_masks_path = os.path.join(root_dir, "reference_masks")
-        self.labels_path = os.path.join(root_dir, "labels")
+        # 1. 檢查並讀取 CSV
+        if not os.path.exists(csv_file):
+            raise FileNotFoundError(f"❌ 找不到 CSV 檔案: {csv_file}")
+            
+        self.data = pd.read_csv(csv_file)
         
-        # 讀取檔案列表 (假設檔名是對應的)
-        self.image_files = sorted([
-            f for f in os.listdir(self.images_path) 
-            if f.endswith(('.jpg', '.png', '.jpeg'))
-        ])
+        # 2. 資料清理 (針對 train/val 模式)
+        # 確保訓練時 GT 和 Ref Mask 的路徑都存在，避免訓練中斷
+        if mode in ['train', 'val']:
+            # 濾掉任何路徑為空的資料 (雖然驗證腳本已經檢查過，但多一層保護比較好)
+            initial_len = len(self.data)
+            self.data = self.data.dropna(subset=['gt_path', 'ref_mask_path'])
+            if len(self.data) < initial_len:
+                print(f"⚠️ Warning: Removed {initial_len - len(self.data)} invalid samples from {mode} set.")
         
-        # 定義類別 ID 對應 (依據您的資料集 Cityscapes 或其他)
-        # 格式: "類別名稱": ID
+        print(f"[{mode.upper()}] Dataset loaded from {csv_file}. Total samples: {len(self.data)}")
+
+        # 定義類別 ID 對應 (保持不變)
         self.CLASS_MAP = {
-            "road": 0,
-            "sidewalk": 1,
-            "building": 2,
-            "wall": 3,
-            "fence": 4,
-            "pole": 5,
-            "traffic light": 6,
-            "traffic sign": 7,
-            "vegetation": 8,
-            "terrain": 9,
-            "sky": 10,
-            "person": 11,
-            "rider": 12,
-            "car": 13,
-            "truck": 14,
-            "bus": 15,
-            "train": 16,
-            "motorcycle": 17,
-            "bicycle": 18
+            "road": 0, "sidewalk": 1, "building": 2, "wall": 3, "fence": 4,
+            "pole": 5, "traffic light": 6, "traffic sign": 7, "vegetation": 8,
+            "terrain": 9, "sky": 10, "person": 11, "rider": 12, "car": 13,
+            "truck": 14, "bus": 15, "train": 16, "motorcycle": 17, "bicycle": 18
         }
-        # 反向映射 ID -> Name
         self.ID_TO_NAME = {v: k for k, v in self.CLASS_MAP.items()}
 
     def __len__(self):
-        return len(self.image_files)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        img_name = self.image_files[idx]
+        # 取得 CSV 中的該行資料
+        row = self.data.iloc[idx]
         
+        # -----------------------------------------------------------
         # 1. 讀取惡劣天氣影像 (Bad Image)
-        img_path = os.path.join(self.images_path, img_name)
-        image = cv2.imread(img_path)
+        # -----------------------------------------------------------
+        image = cv2.imread(row['image_path'])
+        if image is None:
+            # 防呆：如果路徑對但讀不到圖 (極少見)
+            raise ValueError(f"Could not load image: {row['image_path']}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
+        # -----------------------------------------------------------
         # 2. 讀取參考遮罩 (Reference Mask)
-        # 假設檔名與影像相同，或者是 png 格式
-        mask_name = os.path.splitext(img_name)[0] + ".png"
-        ref_mask_path = os.path.join(self.ref_masks_path, mask_name)
+        # -----------------------------------------------------------
+        ref_mask_path = row.get('ref_mask_path', None)
         
-        # 如果找不到參考遮罩，給一個全黑的 (避免程式崩潰)
-        if os.path.exists(ref_mask_path):
+        if pd.notna(ref_mask_path) and os.path.exists(str(ref_mask_path)):
             ref_mask = cv2.imread(ref_mask_path)
             ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
         else:
+            # 如果是 Test set 或者缺檔，給全黑圖
             ref_mask = np.zeros_like(image)
 
+        # -----------------------------------------------------------
         # 3. 讀取 Ground Truth Label (類別索引圖)
-        label_path = os.path.join(self.labels_path, mask_name)
-        gt_mask = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE) # 讀取為灰階 ID
+        # -----------------------------------------------------------
+        gt_path = row.get('gt_path', None)
+        has_gt = False
+        
+        if pd.notna(gt_path) and os.path.exists(str(gt_path)):
+            gt_mask = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+            has_gt = True
+        else:
+            # 如果是 Test set，給一個空的 mask (全 0)
+            # 注意: 這裡給 np.uint8 格式，尺寸先跟原圖一樣
+            gt_mask = np.zeros(image.shape[:2], dtype=np.uint8)
 
-        # --- Resize ---
+        # -----------------------------------------------------------
+        # Resize & Preprocess
+        # -----------------------------------------------------------
         original_size = image.shape[:2]
+        
         image = cv2.resize(image, (self.image_size, self.image_size))
+        # 使用 INTER_NEAREST 避免 mask 邊緣產生不存在的顏色/類別
         ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
         gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
-        # --- Transform to Tensor ---
-        # 轉為 (3, H, W) 且範圍 0~1，但不做 Mean/Std Normalize
-        # 因為 WeatherSAM.preprocess 會做 Normalize
+        # Transform to Tensor
         image_tensor = torch.as_tensor(image).permute(2, 0, 1).float() 
         ref_mask_tensor = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
-        gt_tensor = torch.as_tensor(gt_mask).long() # (H, W)
+        gt_tensor = torch.as_tensor(gt_mask).long()
 
-        # --- 生成 Text Prompts ---
-        # 策略：找出這張圖 GT 中有哪些類別，就送這些文字進去訓練
-        unique_classes = np.unique(gt_mask)
+        # -----------------------------------------------------------
+        # 生成 Text Prompts
+        # -----------------------------------------------------------
         active_prompts = []
         
-        for cls_id in unique_classes:
-            if cls_id in self.ID_TO_NAME:
-                active_prompts.append(self.ID_TO_NAME[cls_id])
-        
-        # 如果圖中沒有已知類別 (例如全是 ignore index)，隨機給一個避免空 list
-        if not active_prompts:
-            active_prompts = ["road"] 
+        if has_gt:
+            # 訓練/驗證模式：從 GT 裡找出存在的類別
+            unique_classes = np.unique(gt_mask)
+            for cls_id in unique_classes:
+                if cls_id in self.ID_TO_NAME:
+                    active_prompts.append(self.ID_TO_NAME[cls_id])
+        else:
+            # 測試模式 (無 GT)：給一個預設 Prompt 列表
+            # 這裡可以給 "road" 或者是全部類別，視推論策略而定
+            active_prompts = ["road", "car", "building"] 
 
-        # 為了訓練穩定，每次可以隨機採樣 K 個 prompt (例如最多 3 個)，避免 OOM
+        # 防呆：如果是空的
+        if not active_prompts:
+            active_prompts = ["road"]
+
+        # 訓練時隨機採樣，避免 Prompt 太多導致記憶體爆炸
         if self.mode == 'train' and len(active_prompts) > 3:
             active_prompts = random.sample(active_prompts, 3)
 
         return {
-            "image": image_tensor,          # (3, 1024, 1024)
-            "reference_mask": ref_mask_tensor, # (3, 1024, 1024)
-            "gt_mask": gt_tensor,           # (1024, 1024)
-            "text_prompts": active_prompts, # List[str] e.g. ["car", "road"]
+            "image": image_tensor,
+            "reference_mask": ref_mask_tensor,
+            "gt_mask": gt_tensor,
+            "text_prompts": active_prompts,
             "original_size": original_size
         }
     
     @staticmethod
     def collate_fn(batch):
         """
-        自定義 Collate Function，因為 text_prompts 是 list of list，
-        預設的 collate 可能會報錯或行為不如預期。
+        保持不變
         """
         images = torch.stack([item['image'] for item in batch])
         ref_masks = torch.stack([item['reference_mask'] for item in batch])
         gt_masks = torch.stack([item['gt_mask'] for item in batch])
-        
-        # Text prompts 和 original_size 保持列表形式
         text_prompts = [item['text_prompts'] for item in batch]
         original_sizes = [item['original_size'] for item in batch]
         

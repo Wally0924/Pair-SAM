@@ -7,9 +7,12 @@ matplotlib.use('Agg') # 強制使用 Agg 後端，不啟動 GUI 視窗
 import matplotlib.pyplot as plt
 import argparse
 
-# 導入自定義模組
-# 確保這些檔案都在正確的目錄下
-from utils.dataloader import WeatherSegmentationDataset 
+# --- 導入你的模組 ---
+# 注意：請確認你的 dataloader 檔名是 weather_dataloader.py 還是 dataloader.py
+# 如果檔名是 weather_dataloader.py，請用下面這行：
+from utils.weather_dataloader import WeatherSegmentationDataset
+# from utils.dataloader import WeatherSegmentationDataset # (舊的引用方式)
+
 from weather_trainer import WeatherSAMTrainer
 from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
 
@@ -46,11 +49,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
-    # 請確保這裡的路徑指向標準 SAM 的權重檔
+    # SAM 權重路徑
     parser.add_argument("--checkpoint", type=str, default="checkpoints/sam_vit_h_4b8939.pth", help="Path to SAM checkpoint")
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"], help="Model type")
     
-    parser.add_argument("--data_root", type=str, default="data/weather_dataset", help="Dataset root (containing train/val folders)")
+    # ★★★ 修改 1: 改為接收 CSV 路徑，而不是資料夾路徑 ★★★
+    parser.add_argument("--train_csv", type=str, default="data/weather_dataset/train.csv", help="Path to train CSV mapping")
+    parser.add_argument("--val_csv", type=str, default="data/weather_dataset/val.csv", help="Path to val CSV mapping")
+    # parser.add_argument("--data_root", ...) # 這一行刪除
+    
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size (reduce if OOM)")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -64,51 +71,48 @@ def main():
 
     print(f"🚀 Start Training WeatherSAM ({args.model_type})...")
     print(f"   Device: {args.device}")
-    print(f"   Data Root: {args.data_root}")
+    print(f"   Train CSV: {args.train_csv}")
+    print(f"   Val CSV:   {args.val_csv}")
 
     # 1. 建立 WeatherSAM 模型
     print("🏗️  Building model...")
     if args.model_type == "vit_h":
-        # 載入 checkpoint 時會自動過濾掉不匹配的 key，只保留 ViT 和 Decoder
         model = build_weather_sam_vit_h(checkpoint=args.checkpoint)
     else:
         model = build_weather_sam_vit_b(checkpoint=args.checkpoint)
     
     # 2. 準備 Dataset 與 DataLoader
-    print("📂 Preparing data...")
+    print("📂 Preparing data from CSVs...")
     
-    # 假設您的資料集結構為:
-    # data/weather_dataset/
-    #   ├── train/ (bad_weather_images, reference_masks, labels)
-    #   └── val/   (bad_weather_images, reference_masks, labels)
+    # ★★★ 修改 2: 使用 csv_file 參數初始化 Dataset ★★★
+    # 注意：這裡不再需要 os.path.join 組合路徑，因為 CSV 裡面已經是完整路徑
     
-    train_root = os.path.join(args.data_root, "train")
-    val_root = os.path.join(args.data_root, "val")
+    train_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='train')
     
-    # 如果沒有分 train/val 資料夾，暫時都指向同一個 (僅供測試)
-    if not os.path.exists(val_root):
-        print("⚠️ Warning: 'val' folder not found. Using 'train' for validation (Not recommended).")
-        val_root = train_root
+    # 檢查是否提供了 Val CSV，如果沒有，雖然不建議但可暫時用 train 代替或報錯
+    if os.path.exists(args.val_csv):
+        val_ds = WeatherSegmentationDataset(csv_file=args.val_csv, mode='val')
+    else:
+        print(f"⚠️ Warning: Validation CSV not found at {args.val_csv}. Using Train set for validation.")
+        val_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='val')
 
-    train_ds = WeatherSegmentationDataset(root_dir=train_root, mode='train')
-    val_ds = WeatherSegmentationDataset(root_dir=val_root, mode='val')
-
-    # ★★★ 關鍵：必須使用自定義的 collate_fn ★★★
-    # 因為 batch 裡面的 'text_prompts' 是 List[List[str]]，預設 collate 會報錯
+    # DataLoader 保持不變，記得用自定義的 collate_fn
     train_loader = DataLoader(
         train_ds, 
         batch_size=args.batch_size, 
         shuffle=True, 
         num_workers=4,
-        collate_fn=WeatherSegmentationDataset.collate_fn 
+        collate_fn=WeatherSegmentationDataset.collate_fn,
+        pin_memory=True # 建議開啟，加速資料傳輸到 GPU
     )
     
     val_loader = DataLoader(
         val_ds, 
-        batch_size=args.batch_size, # 驗證時 Batch 可以大一點，如果不算梯度的話
+        batch_size=args.batch_size, 
         shuffle=False, 
         num_workers=4,
-        collate_fn=WeatherSegmentationDataset.collate_fn
+        collate_fn=WeatherSegmentationDataset.collate_fn,
+        pin_memory=True
     )
     
     # 3. 初始化訓練器
@@ -121,7 +125,7 @@ def main():
         lr=args.lr
     )
 
-    # 4. 訓練迴圈
+    # 4. 訓練迴圈 (保持不變)
     best_val_loss = float('inf')
     history = []
 
