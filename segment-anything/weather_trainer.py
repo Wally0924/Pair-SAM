@@ -1,3 +1,4 @@
+# weather_trainer.py
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -27,34 +28,34 @@ class WeatherSAMTrainer:
         self.val_loader = val_loader
         self.device = device
         
-        # 初始化 Loss (確保參數與 loss.py 一致)
+        # 初始化 Loss
         self.criterion = SAMLoss(focal_weight=20.0, dice_weight=1.0, iou_weight=1.0)
         
         # 使用混合精度訓練 (AMP)
         self.scaler = torch.amp.GradScaler('cuda')
         
         # --- 1. 權重凍結策略 ---
-        # 凍結 Image Encoder (ViT) 與 Text Encoder (CLIP)
+        # 確保 Image/Text Encoder 凍結
         for param in self.model.image_encoder.parameters():
             param.requires_grad = False
-        
         for param in self.model.text_encoder.parameters():
             param.requires_grad = False
             
         # --- 2. 解鎖需要訓練的模組 ---
+        # 包含 Mask Encoder, Fusion, Gate, Decoder, Prompt Encoder (Adapter)
         trainable_modules = [
-            self.model.mask_encoder,   # Reference Mask 編碼器
-            self.model.fusion_module,  # Cross-Attention
-            self.model.gate_module,    # Gated Fusion
-            self.model.mask_decoder,   # Mask Decoder
-            self.model.prompt_encoder, # 如果有 Mask downscaling 層
+            self.model.mask_encoder,
+            self.model.fusion_module,
+            self.model.gate_module,
+            self.model.mask_decoder,
+            self.model.prompt_encoder, 
         ]
         
         for module in trainable_modules:
             for param in module.parameters():
                 param.requires_grad = True
                 
-        # 特別確保位置編碼也是可訓練的
+        # 位置編碼
         self.model.pe_layer.requires_grad = True
 
         # 收集優化參數
@@ -63,18 +64,41 @@ class WeatherSAMTrainer:
         
         self.optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=1e-2)
         
-        # 學習率排程: Loss 不降時自動減少 LR
+        # 學習率排程
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=3
         )
 
+    def _prepare_batch_input(self, batch, batch_size):
+        """
+        輔助函式：將 DataLoader 的 Batch 轉換為模型需要的 List[Dict] 格式
+        自動判斷是 Raw Image 還是 Cached Embedding
+        """
+        batched_input = []
+        
+        # 檢查是否使用快取特徵
+        use_cached_features = 'image_embedding' in batch
+        
+        for i in range(batch_size):
+            input_dict = {
+                'reference_mask': batch['reference_mask'][i].to(self.device),
+                'text_prompts': batch['text_prompts'][i], # List[str]
+                'original_size': batch['original_size'][i]
+            }
+            
+            # 關鍵修改：動態選擇輸入源
+            if use_cached_features:
+                input_dict['image_embedding'] = batch['image_embedding'][i].to(self.device)
+            else:
+                input_dict['image'] = batch['image'][i].to(self.device)
+            
+            batched_input.append(input_dict)
+            
+        return batched_input
+
     def train_epoch(self, epoch_index):
-        """
-        執行一個 Training Epoch
-        """
         self.model.train()
-        # 保持凍結模組在 eval 模式 (例如 BatchNorm)
-        self.model.image_encoder.eval()
+        self.model.image_encoder.eval() # 始終保持 eval (因為凍結)
         self.model.text_encoder.eval()
         
         epoch_metrics = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
@@ -83,19 +107,12 @@ class WeatherSAMTrainer:
         step_count = 0
         
         for batch in pbar:
-            # 1. 資料準備：轉換為 List[Dict] 格式以符合 WeatherSAM 輸入
-            batched_input = []
-            batch_size = len(batch['text_prompts']) # 實際 Batch Size
+            batch_size = len(batch['text_prompts'])
             
-            for i in range(batch_size):
-                batched_input.append({
-                    'image': batch['image'][i].to(self.device),
-                    'reference_mask': batch['reference_mask'][i].to(self.device),
-                    'text_prompts': batch['text_prompts'][i], # List[str]
-                    'original_size': batch['original_size'][i]
-                })
+            # 1. 準備輸入資料 (使用新的輔助函式)
+            batched_input = self._prepare_batch_input(batch, batch_size)
             
-            # GT Masks: (B, 1024, 1024) - 整數類別 ID
+            # GT Masks (修正 key 為 'gt_mask')
             gt_masks = batch['gt_mask'].to(self.device)
 
             self.optimizer.zero_grad()
@@ -103,17 +120,15 @@ class WeatherSAMTrainer:
             # 2. 混合精度前向傳播
             with torch.amp.autocast('cuda'):
                 # Forward Pass
+                # 模型內部會根據 key 是 image 還是 image_embedding 自動處理
                 outputs = self.model(batched_input, multimask_output=True)
                 
                 # 3. 計算 Loss
-                # 由於 WeatherSAM 針對每張圖可能有不同數量的 prompt，
-                # 我們採用逐張計算 Loss 再平均的策略。
                 total_loss = 0
                 loss_dict_accum = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
                 
                 for i in range(batch_size):
-                    # 取出 Logits (K, 3, 256, 256) 並上採樣回 (1024, 1024)
-                    # Loss Function 需要 Float Logits 來計算 BCE
+                    # 取出 Logits 並上採樣
                     low_res_logits = outputs[i]['low_res_logits']
                     full_res_logits = F.interpolate(
                         low_res_logits,
@@ -122,13 +137,12 @@ class WeatherSAMTrainer:
                         align_corners=False
                     )
                     
-                    # 呼叫 SAMLoss
-                    # 注意：參數名稱需對應 loss.py 的定義
+                    # 計算 Loss
                     sample_loss, sample_dict = self.criterion(
-                        pred_masks=full_res_logits,                 # (K, 3, 1024, 1024)
-                        gt_mask=gt_masks[i],                        # (1024, 1024) [ID Map]
-                        iou_predictions=outputs[i]['iou_predictions'], # (K, 3)
-                        text_prompts=batched_input[i]['text_prompts']  # List[str]
+                        pred_masks=full_res_logits,
+                        gt_mask=gt_masks[i],
+                        iou_predictions=outputs[i]['iou_predictions'],
+                        text_prompts=batched_input[i]['text_prompts']
                     )
                     
                     total_loss += sample_loss
@@ -138,48 +152,36 @@ class WeatherSAMTrainer:
                 # 平均 Batch Loss
                 total_loss = total_loss / batch_size
 
-            # 4. 反向傳播與優化
+            # 4. 反向傳播
             self.scaler.scale(total_loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            # 5. 更新統計數據
+            # 5. 更新統計
             step_count += 1
             for k in epoch_metrics:
-                # 這裡除以 batch_size 是為了還原單張平均，再累加
                 epoch_metrics[k] += (loss_dict_accum[k] / batch_size)
             
-            # 更新進度條
             pbar.set_postfix(
                 loss=total_loss.item(), 
                 dice=(loss_dict_accum['dice']/batch_size)
             )
 
-        # 計算整個 Epoch 的平均指標
         avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
         return avg_metrics
 
     @torch.no_grad()
     def validate_epoch(self, epoch_index):
-        """
-        執行一個 Validation Epoch (不更新權重)
-        """
         self.model.eval()
         epoch_metrics = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
         
         for batch in pbar:
-            # 資料準備 (同 Train)
-            batched_input = []
             batch_size = len(batch['text_prompts'])
-            for i in range(batch_size):
-                batched_input.append({
-                    'image': batch['image'][i].to(self.device),
-                    'reference_mask': batch['reference_mask'][i].to(self.device),
-                    'text_prompts': batch['text_prompts'][i],
-                    'original_size': batch['original_size'][i]
-                })
+            
+            # 1. 準備輸入
+            batched_input = self._prepare_batch_input(batch, batch_size)
             gt_masks = batch['gt_mask'].to(self.device)
 
             with torch.amp.autocast('cuda'):
@@ -211,7 +213,7 @@ class WeatherSAMTrainer:
                 
         avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
         
-        # 驗證結束後，更新 Scheduler (根據 Val Loss)
+        # 根據 Validation Loss 更新 LR
         self.scheduler.step(avg_metrics['total'])
         
         return avg_metrics
