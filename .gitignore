@@ -209,6 +209,7 @@ __marimo__/
 segment-anything/data/
 Datasets/features_train/
 Datasets/features_val/
-Datasets/features_test/
+segment-anything/debug_viz
+
 
 

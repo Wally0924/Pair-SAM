@@ -50,7 +50,7 @@ def main():
     
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam")
     
     args = parser.parse_args()
