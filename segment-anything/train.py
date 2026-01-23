@@ -39,7 +39,7 @@ def plot_history(history, output_dir):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/sam_vit_h_4b8939.pth", help="Path to SAM checkpoint")
+    parser.add_argument("--checkpoint", type=str, default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", help="Path to SAM checkpoint")
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     
     # 修改：建議使用者優先使用 cached CSV
@@ -48,8 +48,8 @@ def main():
     parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_cached.csv", 
                         help="Path to val CSV.")
     
-    parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam")
     

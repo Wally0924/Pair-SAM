@@ -3,131 +3,106 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SAMLoss(nn.Module):
-    def __init__(self, focal_weight=20.0, dice_weight=1.0, iou_weight=1.0):
+    def __init__(self, focal_weight=2.0, dice_weight=1.0, iou_weight=1.0):
         super().__init__()
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
         self.iou_weight = iou_weight
+        self.smooth = 1.0 # 數值穩定與平滑
 
-        # 定義類別映射表 (Prompt文字 -> GT中的ID)
-        # ⚠️ 注意：必須與您 dataloader.py 中的 CLASS_MAP 完全一致
+        # 定義類別映射表 (必須與 dataloader 一致)
         self.class_map = {
-            "road": 0,
-            "sidewalk": 1,
-            "building": 2,
-            "wall": 3,
-            "fence": 4,
-            "pole": 5,
-            "traffic light": 6,
-            "traffic sign": 7,
-            "vegetation": 8,
-            "terrain": 9,
-            "sky": 10,
-            "person": 11,
-            "rider": 12,
-            "car": 13,
-            "truck": 14,
-            "bus": 15,
-            "train": 16,
-            "motorcycle": 17,
-            "bicycle": 18
+            "road": 0, "sidewalk": 1, "building": 2, "wall": 3, "fence": 4,
+            "pole": 5, "traffic light": 6, "traffic sign": 7, "vegetation": 8,
+            "terrain": 9, "sky": 10, "person": 11, "rider": 12, "car": 13,
+            "truck": 14, "bus": 15, "train": 16, "motorcycle": 17, "bicycle": 18
         }
 
     def forward(self, pred_masks, gt_mask, iou_predictions, text_prompts):
         """
-        計算單張影像(包含多個 Prompt)的 Loss
+        修正版: 實作 Min-Loss Strategy (Anchor-Free like)
         
         Args:
-            pred_masks (Tensor): (K, 3, H, W) 模型預測的 Logits (Float)，K 為 Prompt 數量。
-            gt_mask (Tensor): (H, W) 真實標籤 ID Map (Int64/Long)。
-            iou_predictions (Tensor): (K, 3) 模型預測的 IoU 信心分數。
-            text_prompts (List[str]): 長度為 K 的文字提示列表。
-
-        Returns:
-            total_loss: 純量 Tensor
-            metrics: 包含各項 loss數值的字典
+            pred_masks: (K, 3, H, W) - K個Prompts, 每個有3個多義性遮罩
+            gt_mask: (H, W) - 真實標籤
+            iou_predictions: (K, 3) - 預測的 IoU 信心度
         """
         device = pred_masks.device
+        total_loss = 0.0
+        metrics = {"total": 0.0, "bce": 0.0, "dice": 0.0, "iou_mse": 0.0}
         
-        # ------------------------------------------------------------------
-        # 1. 準備 Ground Truth (ID Map -> Binary Masks)
-        # ------------------------------------------------------------------
-        target_masks = []
-        valid_indices = [] # 記錄哪些 prompt 是有效的 (有對應到 class_map)
+        valid_prompts_count = 0
 
-        for i, prompt in enumerate(text_prompts):
-            if prompt in self.class_map:
-                class_id = self.class_map[prompt]
-                # 製作 Binary Mask: 只有該類別的位置是 1.0
-                binary_gt = (gt_mask == class_id).float()
-                target_masks.append(binary_gt)
-                valid_indices.append(i)
+        # 針對每一個 Prompt 獨立計算
+        for k, prompt in enumerate(text_prompts):
+            if prompt not in self.class_map:
+                continue
+            
+            valid_prompts_count += 1
+            class_id = self.class_map[prompt]
+            
+            # 1. 準備 GT: (1, H, W)
+            target = (gt_mask == class_id).float().unsqueeze(0).to(device)
+            
+            # 2. 取出該 Prompt 的 3 個預測遮罩: (3, H, W)
+            # 這裡我們不看 iou_predictions 選誰，而是三個都算
+            current_preds = pred_masks[k] # (3, H, W)
+            
+            # 為了廣播計算，擴展維度
+            # Preds: (3, H, W), Target: (1, H, W) -> Broadcasting OK
+            
+            # --- 計算每個 Mask 的 Dice Loss ---
+            pred_prob = torch.sigmoid(current_preds)
+            intersection = (pred_prob * target).sum(dim=(1, 2)) # (3,)
+            union = pred_prob.sum(dim=(1, 2)) + target.sum(dim=(1, 2)) # (3,)
+            dice_losses = 1 - (2 * intersection + self.smooth) / (union + self.smooth) # (3,)
+            
+            # --- 計算每個 Mask 的 Focal Loss ---
+            # 這裡需要把 target 擴展成 (3, H, W)
+            target_expanded = target.expand_as(current_preds)
+            bce_losses = F.binary_cross_entropy_with_logits(
+                current_preds, target_expanded, reduction='none'
+            ).mean(dim=(1, 2)) # (3,)
+            
+            # --- 組合分割 Loss ---
+            # 這裡暫時不加 IoU Loss，只用分割品質來決定誰是最好的 Mask
+            seg_losses = (self.focal_weight * bce_losses) + (self.dice_weight * dice_losses)
+            
+            # 3. [關鍵] Min-Loss Strategy
+            # 找出 Loss 最小的那個 Mask index (0, 1, or 2)
+            best_mask_idx = torch.argmin(seg_losses)
+            
+            min_seg_loss = seg_losses[best_mask_idx]
+            best_dice_val = dice_losses[best_mask_idx]
+            best_bce_val = bce_losses[best_mask_idx]
+            
+            # 4. IoU Head 的監督
+            # 我們希望模型預測的 IoU 分數，能逼近「真實計算出來的 IoU」
+            # 只有「最佳 Mask」對應的 IoU Head 需要被更新，其他的不管 (Hard Example Mining 概念)
+            with torch.no_grad():
+                pred_binary = (pred_prob[best_mask_idx] > 0.5).float()
+                inter = (pred_binary * target.squeeze(0)).sum()
+                uni = pred_binary.sum() + target.squeeze(0).sum() - inter
+                actual_iou = inter / (uni + 1e-5)
+                
+            pred_iou_conf = iou_predictions[k, best_mask_idx]
+            iou_loss = F.mse_loss(pred_iou_conf, actual_iou)
+            
+            # 5. 該 Prompt 的總 Loss
+            prompt_total_loss = min_seg_loss + (self.iou_weight * iou_loss)
+            
+            total_loss += prompt_total_loss
+            metrics["bce"] += best_bce_val.item()
+            metrics["dice"] += best_dice_val.item()
+            metrics["iou_mse"] += iou_loss.item()
+
+        if valid_prompts_count > 0:
+            total_loss /= valid_prompts_count
+            for k in metrics:
+                metrics[k] /= valid_prompts_count
+        else:
+            total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+
+        metrics["total"] = total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss
         
-        # 防呆：如果這一批 prompts 裡沒有任何一個在 class_map 中 (極少見)
-        if not target_masks:
-            zero_loss = torch.tensor(0.0, device=device, requires_grad=True)
-            return zero_loss, {"total": 0.0, "bce": 0.0, "dice": 0.0, "iou_mse": 0.0}
-
-        # 堆疊 Targets: (K_valid, H, W) -> (K_valid, 1, H, W)
-        targets = torch.stack(target_masks).unsqueeze(1).to(device)
-
-        # ------------------------------------------------------------------
-        # 2. 選擇最佳預測 (Selection Strategy)
-        # ------------------------------------------------------------------
-        # 根據 iou_predictions 選出最有信心的那個 mask
-        # 篩選出有效的預測
-        valid_preds = pred_masks[valid_indices]      # (K_valid, 3, H, W)
-        valid_iou_pred = iou_predictions[valid_indices] # (K_valid, 3)
-
-        # 找出每個 prompt 分數最高的 index (0, 1, or 2)
-        best_mask_indices = torch.argmax(valid_iou_pred, dim=1) # (K_valid,)
-
-        # Gather: 取出最佳 Mask 與對應的 IoU 分數
-        # 我們希望從 (K, 3, H, W) 變成 (K, 1, H, W)
-        final_preds = []
-        final_iou_conf = []
-
-        for k, best_idx in enumerate(best_mask_indices):
-            final_preds.append(valid_preds[k, best_idx, :, :])
-            final_iou_conf.append(valid_iou_pred[k, best_idx])
-        
-        # 堆疊回 Tensor
-        final_preds = torch.stack(final_preds).unsqueeze(1) # (K_valid, 1, H, W)
-        final_iou_conf = torch.stack(final_iou_conf).unsqueeze(1) # (K_valid, 1)
-
-        # ------------------------------------------------------------------
-        # 3. 計算 Loss
-        # ------------------------------------------------------------------
-        
-        # A. Dice Loss
-        pred_prob = torch.sigmoid(final_preds)
-        intersection = (pred_prob * targets).sum(dim=(2, 3))
-        union = pred_prob.sum(dim=(2, 3)) + targets.sum(dim=(2, 3))
-        dice_loss = 1 - (2 * intersection + 1e-5) / (union + 1e-5)
-        dice_loss = dice_loss.mean()
-
-        # B. Focal Loss (使用 BCEWithLogits 近似)
-        # 這裡直接用 BCE，配合外層的 focal_weight 加權
-        bce_loss = F.binary_cross_entropy_with_logits(final_preds, targets)
-        
-        # C. IoU Prediction Loss (MSE)
-        # 計算"真實"的 IoU
-        with torch.no_grad():
-            pred_binary = (pred_prob > 0.5).float()
-            inter = (pred_binary * targets).sum(dim=(2, 3))
-            uni = pred_binary.sum(dim=(2, 3)) + targets.sum(dim=(2, 3)) - inter
-            actual_iou = inter / (uni + 1e-5) # (K_valid, 1)
-
-        iou_loss = F.mse_loss(final_iou_conf, actual_iou)
-        
-        # D. 總 Loss
-        total_loss = (self.focal_weight * bce_loss) + \
-                     (self.dice_weight * dice_loss) + \
-                     (self.iou_weight * iou_loss)
-        
-        return total_loss, {
-            "total": total_loss.item(),
-            "bce": bce_loss.item(),
-            "dice": dice_loss.item(),
-            "iou_mse": iou_loss.item()
-        }
+        return total_loss, metrics
