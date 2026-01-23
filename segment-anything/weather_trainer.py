@@ -29,7 +29,7 @@ class WeatherSAMTrainer:
         self.device = device
         
         # 初始化 Loss
-        self.criterion = SAMLoss(focal_weight=20.0, dice_weight=1.0, iou_weight=1.0)
+        self.criterion = SAMLoss(focal_weight=5.0, dice_weight=2.0, iou_weight=1.0)
         
         # 使用混合精度訓練 (AMP)
         self.scaler = torch.amp.GradScaler('cuda')

@@ -66,26 +66,43 @@ class WeatherSAM(nn.Module):
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Forward Pass
-        Args:
-            batched_input: List of dicts, 每個 dict 包含:
-                - 'image': (3, H, W) 惡劣天氣影像
-                - 'reference_mask': (3, H, W) 檢索到的清晰遮罩 (RGB)
-                - 'text_prompts': List[str] 文字提示 (e.g., ["road", "car"])
-                - 'original_size': (H, W) 原始尺寸
         """
         outputs = []
         
         # ------------------------------------------------------------------
         # 1. Image Encoding (ViT) -> F_curr
         # ------------------------------------------------------------------
-        input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
-        image_embeddings = self.image_encoder(input_images) # (B, 256, 64, 64)
+        # [修改 1]：支援 Cached Features (加速訓練用)
+        if "image_embedding" in batched_input[0]:
+            image_embeddings = torch.stack([x["image_embedding"] for x in batched_input], dim=0)
+        else:
+            input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
+            image_embeddings = self.image_encoder(input_images) # (B, 256, 64, 64)
 
         # ------------------------------------------------------------------
         # 2. Mask Encoding (Reference Mask) -> F_ref
         # ------------------------------------------------------------------
-        # 注意：reference_mask 也需要預處理 (Resize/Pad) 以符合 ViT 輸入
-        ref_masks = torch.stack([self.preprocess(x["reference_mask"]) for x in batched_input], dim=0)
+        # [修改 2]：針對 MaskEncoder (自定義CNN) 改用 0~1 標準化
+        ref_masks_list = []
+        for x in batched_input:
+            mask = x["reference_mask"] # (3, H, W) 來自 DataLoader,數值 0-255
+            
+            # A. 轉為 0~1 float
+            mask = mask.float() / 255.0
+            
+            # B. Padding (確保尺寸對齊 1024，雖然 DataLoader 通常已 Resize，但保留以防萬一)
+            h, w = mask.shape[-2:]
+            padh = self.image_encoder.img_size - h
+            padw = self.image_encoder.img_size - w
+            # F.pad 參數順序: (left, right, top, bottom)
+            mask = F.pad(mask, (0, padw, 0, padh))
+            
+            ref_masks_list.append(mask)
+
+        # 堆疊成 Batch Tensor: (B, 3, 1024, 1024)
+        ref_masks = torch.stack(ref_masks_list, dim=0)
+        
+        # 進入 Mask Encoder
         ref_embeddings = self.mask_encoder(ref_masks) # (B, 256, 64, 64)
 
         # ------------------------------------------------------------------
@@ -95,52 +112,46 @@ class WeatherSAM(nn.Module):
         fused_embeddings = self.gate_module(f_curr=image_embeddings, f_align=aligned_embeddings)
 
         # ------------------------------------------------------------------
-        # 4. Prompt Encoding & Decoding (逐張處理或批次處理)
+        # 4. Prompt Encoding & Decoding
         # ------------------------------------------------------------------
-        # 這裡為了簡單明瞭，展示迴圈處理 (Loop over batch)，
-        # 實際上若 text_prompts 數量固定，可以優化成全 Batch 操作。
-        
         for i, image_record in enumerate(batched_input):
-            # A. Text Encoding -> Sparse Prompts
-            # text_encoder 回傳 (1, K, 256)，我們需要把它放到正確的 device
+            # A. Text Encoding
             texts = image_record["text_prompts"]
-            sparse_embeddings = self.text_encoder(texts) # (1, K, 256) (Batch=1 because TextEncoder handles list)
-            
-            # B. Weather Prompt Encoding (結合 Mask Input，若有)
-            # 這裡暫時沒有 Mask Input 作為 Prompt (區別於 Reference Mask)
+            sparse_embeddings = self.text_encoder(texts)
+            if sparse_embeddings.shape[0] == 1 and sparse_embeddings.shape[1] > 1:
+                sparse_embeddings = sparse_embeddings.permute(1, 0, 2)
+
+            # B. Weather Prompt Encoding
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 text_embeddings=sparse_embeddings,
                 mask_inputs=None 
             )
 
             # C. Mask Decoding
-            # 取出單張圖的 fused embedding 並增加 batch 維度 -> (1, 256, 64, 64)
             curr_fused_embed = fused_embeddings[i].unsqueeze(0)
-            
-            # 取得位置編碼
             image_pe = self.get_image_pe()
 
             low_res_masks, iou_predictions = self.mask_decoder(
-                image_embeddings=curr_fused_embed, # 輸入融合特徵
+                image_embeddings=curr_fused_embed,
                 image_pe=image_pe,
                 sparse_prompt_embeddings=sparse_embeddings,
                 dense_prompt_embeddings=dense_embeddings,
                 multimask_output=multimask_output,
             )
 
-            # D. Post-processing (Resize back to original size)
+            # D. Post-processing
             masks = self.postprocess_masks(
                 low_res_masks,
-                input_size=image_record["image"].shape[-2:],
+                input_size=image_record["original_size"], # 這裡注意 key 要對應 DataLoader
                 original_size=image_record["original_size"],
             )
             
-            # Binary Mask
+            # Binary Mask Threshold
             masks = masks > self.mask_threshold
             
             outputs.append(
                 {
-                    "masks": masks,                 # (K, H_orig, W_orig)
+                    "masks": masks,
                     "iou_predictions": iou_predictions,
                     "low_res_logits": low_res_masks,
                 }
