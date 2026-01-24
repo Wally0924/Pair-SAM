@@ -56,24 +56,24 @@ def main():
     
     # [修改 1] 預設載入上次最好的模型 (請確認你的路徑是否正確)
     parser.add_argument("--checkpoint", type=str, 
-                        default="/home/rvl1421/SAM_research/segment-anything/outputs_weather_sam/weather_sam_best.pth", 
+                        default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint. Point this to your best trained model.")
     
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_cached.csv", 
+    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_all_cached.csv", 
                         help="Path to train CSV.")
-    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_cached.csv", 
+    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_all_cached.csv", 
                         help="Path to val CSV.")
     
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=50)
     
     # [修改 2] 微調時降低 Learning Rate (原為 5e-5)
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (lower for fine-tuning)")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (lower for fine-tuning)")
     
     # [修改 3] 更改輸出目錄名稱，避免覆蓋舊實驗
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_finetune")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_frozen")
     
     args = parser.parse_args()
     
@@ -186,10 +186,10 @@ def main():
             fixed_path = os.path.join(args.output_dir, "weather_sam_best_latest.pth")
             trainer.save_checkpoint(fixed_path)
             
-        # 定期備份 (每 5 Epoch)
-        if (epoch + 1) % 5 == 0:
-            save_path = os.path.join(args.output_dir, f"weather_sam_epoch_{epoch+1}.pth")
-            trainer.save_checkpoint(save_path)
+        # # 定期備份 (每 5 Epoch)
+        # if (epoch + 1) % 5 == 0:
+        #     save_path = os.path.join(args.output_dir, f"weather_sam_epoch_{epoch+1}.pth")
+        #     trainer.save_checkpoint(save_path)
 
     print("\n✅ Fine-Tuning completed!")
 

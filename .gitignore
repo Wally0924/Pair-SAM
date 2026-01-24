@@ -207,9 +207,10 @@ marimo/_lsp/
 __marimo__/
 
 segment-anything/data/
-Datasets/features_train/
-Datasets/features_val/
 segment-anything/debug_viz
-
-
+segment-anything/inference_viz_cityscapes/
+segment-anything/inference_viz_cityscapes_2layers/
+*.pt
+*.pth
+/home/rvl1421/SAM_research/segment-anything/checkpoints
 

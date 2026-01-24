@@ -29,9 +29,9 @@ def preprocess_image(image, pixel_mean, pixel_std, img_size):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv_file", type=str, default="/home/rvl1421/SAM_research/Datasets/val.csv", help="Path to input CSV (e.g., data/weather_dataset/train.csv)")
-    parser.add_argument("--output_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_cached.csv", help="Path to save new CSV with feature paths")
-    parser.add_argument("--feature_dir", type=str, default="/home/rvl1421/SAM_research/Datasets/features_val", help="Directory to save .pt files")
+    parser.add_argument("--csv_file", type=str, default="/home/rvl1421/SAM_research/Datasets/val_all.csv", help="Path to input CSV (e.g., data/weather_dataset/train.csv)")
+    parser.add_argument("--output_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_all_cached.csv", help="Path to save new CSV with feature paths")
+    parser.add_argument("--feature_dir", type=str, default="/home/rvl1421/SAM_research/Datasets/features_val_all", help="Directory to save .pt files")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/sam_vit_h_4b8939.pth")
     parser.add_argument("--model_type", type=str, default="vit_h")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")

@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 # ================= 設定 =================
 # 你要檢查的 CSV 檔案列表
 CSV_FILES = [
-    "train.csv",
-    "val.csv"
+    "train_all.csv",
+    "val_all.csv"
     # "Datasets/test.csv" # Test集通常沒有 GT，可以先註解掉或另外處理
 ]
 
