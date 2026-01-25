@@ -140,8 +140,8 @@ class WeatherSegmentationDataset(Dataset):
             active_prompts = ["road"]
 
         # 訓練時限制 Prompt 數量
-        if self.mode == 'train' and len(active_prompts) > 3:
-            active_prompts = random.sample(active_prompts, 3)
+        # if self.mode == 'train' and len(active_prompts) > 3:
+        #     active_prompts = random.sample(active_prompts, 3)
             
         output["text_prompts"] = active_prompts
 

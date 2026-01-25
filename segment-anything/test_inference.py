@@ -219,8 +219,8 @@ class InferenceRunner:
 # --- Main Execution ---
 if __name__ == "__main__":
     # 設定路徑
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research/segment-anything/outputs_weather_sam/weather_sam_best.pth" # 請確認你的權重檔名
-    TEST_CSV_PATH = "/home/rvl1421/SAM_research/Datasets/test.csv"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research/segment-anything/outputs_weather_sam_all_data_testv3/weather_sam_best_latest.pth" # 請確認你的權重檔名
+    TEST_CSV_PATH = "/home/rvl1421/SAM_research/Datasets/foggy_0.02/val.csv"
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
     # 1. 載入模型
@@ -239,6 +239,6 @@ if __name__ == "__main__":
     )
     
     # 3. 執行推論
-    runner = InferenceRunner(model, DEVICE, output_dir="inference_viz_cityscapes_2layers")
+    runner = InferenceRunner(model, DEVICE, output_dir="inference_viz_cityscapes_valv3")
     # 只跑前 100 張，若要跑全部請設 num_samples=None
-    runner.run_inference(test_loader, num_samples=50)
+    runner.run_inference(test_loader, num_samples=10)

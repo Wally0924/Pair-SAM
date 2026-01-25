@@ -208,8 +208,8 @@ __marimo__/
 
 segment-anything/data/
 segment-anything/debug_viz
-segment-anything/inference_viz_cityscapes/
-segment-anything/inference_viz_cityscapes_2layers/
+segment-anything/outputs_weather_sam*
+segment-anything/inference_viz_cityscapes*/
 *.pt
 *.pth
 /home/rvl1421/SAM_research/segment-anything/checkpoints

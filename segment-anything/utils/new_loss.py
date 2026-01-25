@@ -8,7 +8,7 @@ class SAMLoss(nn.Module):
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
         self.iou_weight = iou_weight
-        self.smooth = 1.0 # 數值穩定與平滑
+        self.smooth = 1e-05 # 數值穩定與平滑
 
         # 定義類別映射表 (必須與 dataloader 一致)
         self.class_map = {

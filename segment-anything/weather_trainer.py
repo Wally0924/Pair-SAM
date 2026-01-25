@@ -19,7 +19,7 @@ class WeatherSAMTrainer:
         train_loader: DataLoader, 
         val_loader: DataLoader, 
         device: str,
-        lr: float = 1e-4
+        lr: float = 5e-5
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -29,6 +29,7 @@ class WeatherSAMTrainer:
         # [修改 1] Loss 權重策略：降低 Focal (背景懲罰)，大幅提高 Dice (形狀獎勵)
         # 這是為了解決 "Background Collapse" (模型預測全黑) 的問題
         self.criterion = SAMLoss(focal_weight=2.0, dice_weight=2.0, iou_weight=1.0)
+        # 紀錄 提高focal_weight 後的效果 本來是2.0
         
         self.scaler = torch.amp.GradScaler('cuda')
         
@@ -61,11 +62,9 @@ class WeatherSAMTrainer:
         #     # 取出最後兩層 (無論是 ViT-B 還是 ViT-H 都通用)
         #     layers_to_unfreeze = [
         #         self.model.image_encoder.blocks[-1],
-        #         self.model.image_encoder.blocks[-2],
-        #         self.model.image_encoder.blocks[-3], # 新增
-        #         self.model.image_encoder.blocks[-4]  # 新增
+        #         self.model.image_encoder.blocks[-2]
         #     ]
-        #     print("🔓 Unfreezing the last 4 blocks of Image Encoder for domain adaptation.")
+        #     print("🔓 Unfreezing the last 2 blocks of Image Encoder for domain adaptation.")
         #     for layer in layers_to_unfreeze:
         #         for param in layer.parameters():
         #             param.requires_grad = True
@@ -183,8 +182,7 @@ class WeatherSAMTrainer:
 
             pbar.set_postfix(
                 loss=total_loss.item(), 
-                dice=(loss_dict_accum['dice']/batch_size),
-                dice_score=1.0 - (loss_dict_accum['dice']/batch_size)
+                dice=(loss_dict_accum['dice']/batch_size)
             )
 
             # -------------------------------------------------------

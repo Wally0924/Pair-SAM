@@ -67,13 +67,13 @@ def main():
                         help="Path to val CSV.")
     
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100)
     
     # [修改 2] 微調時降低 Learning Rate (原為 5e-5)
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (lower for fine-tuning)")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (lower for fine-tuning)")
     
     # [修改 3] 更改輸出目錄名稱，避免覆蓋舊實驗
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_frozen")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv3")
     
     args = parser.parse_args()
     
