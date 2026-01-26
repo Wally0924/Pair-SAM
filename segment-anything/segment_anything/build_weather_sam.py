@@ -110,6 +110,11 @@ def _build_weather_sam(
         # 這裡我們只載入 image_encoder 和 mask_decoder 的權重
         # 注意: 如果你是從原始 SAM checkpoint 載入，key 可能需要調整 (例如加前綴 'image_encoder.')
         # 這裡假設 checkpoint 是標準 SAM 格式
+        # [新增邏輯] 檢查是否為新格式 (包含 config 的 dict)
+        if "model_state_dict" in state_dict:
+            print("📦 Detected new checkpoint format (with config).")
+            # 如果你有需要讀 config，可以在這裡讀 state_dict['config']
+            state_dict = state_dict["model_state_dict"] # 取出真正的權重
         
         sam_dict = sam.state_dict()
         pretrained_dict = {k: v for k, v in state_dict.items() if k in sam_dict and v.shape == sam_dict[k].shape}

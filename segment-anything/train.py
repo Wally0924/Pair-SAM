@@ -13,14 +13,14 @@ from utils.weather_dataloader import WeatherSegmentationDataset
 from weather_trainer import WeatherSAMTrainer
 from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
 
+# plot_history 保持不變 ...
 def plot_history(history, output_dir):
-    """繪製訓練曲線"""
+    # (省略內容，與原檔相同)
     if not history:
         return
     df = pd.DataFrame(history)
     plt.figure(figsize=(12, 6))
     
-    # 繪製 Loss 曲線
     plt.subplot(1, 2, 1)
     plt.plot(df['epoch'], df['train_total'], 'b-o', label='Train Total Loss', linewidth=2)
     plt.plot(df['epoch'], df['val_total'], 'r-s', label='Val Total Loss', linewidth=2)
@@ -30,10 +30,8 @@ def plot_history(history, output_dir):
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.7)
 
-    # 繪製 Dice Score 曲線 (將 Loss 轉為 Score: 1 - Loss)
     plt.subplot(1, 2, 2)
     if 'train_dice' in df.columns and 'val_dice' in df.columns:
-        # 注意: 這裡假設 log 中的 dice 是 Loss，所以用 1 減去它來畫 Score
         train_score = 1.0 - df['train_dice']
         val_score = 1.0 - df['val_dice']
         plt.plot(df['epoch'], train_score, 'g--', label='Train Dice Score', alpha=0.6)
@@ -54,10 +52,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
-    # [修改 1] 預設載入上次最好的模型 (請確認你的路徑是否正確)
     parser.add_argument("--checkpoint", type=str, 
                         default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
-                        help="Path to checkpoint. Point this to your best trained model.")
+                        help="Path to checkpoint.")
     
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     
@@ -69,11 +66,9 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=50)
     
-    # [修改 2] 微調時降低 Learning Rate (原為 5e-5)
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (lower for fine-tuning)")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     
-    # [修改 3] 更改輸出目錄名稱，避免覆蓋舊實驗
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv4")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv5")
     
     args = parser.parse_args()
     
@@ -136,7 +131,8 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         device=args.device,
-        lr=args.lr
+        lr=args.lr,
+        args=args  # [修改 1] 這裡將 args 傳入，讓 Trainer 可以存下來
     )
 
     # 4. 訓練迴圈
@@ -160,36 +156,25 @@ def main():
         
         print(f"   [Epoch {epoch+1}] Train Loss: {train_metrics['total']:.4f} | Val Loss: {val_metrics['total']:.4f}")
         
-        # 存檔與繪圖
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)
         
-        # ------------------------------------------------------------------
-        # [修改 4] 儲存最佳模型 (包含詳細資訊)
-        # ------------------------------------------------------------------
+        # 儲存最佳模型
         if val_metrics['total'] < best_val_loss:
             best_val_loss = val_metrics['total']
             
-            # 取得當前 LR
             current_lr = trainer.optimizer.param_groups[0]['lr']
-            # 計算 Dice Score (假設 metrics 存的是 Loss)
             current_dice_score = 1.0 - val_metrics['dice']
             
-            # 建立詳細檔名
             save_filename = f"best_E{epoch+1}_Dice{current_dice_score:.4f}_LR{current_lr:.1e}.pth"
             save_path = os.path.join(args.output_dir, save_filename)
             
-            trainer.save_checkpoint(save_path)
+            # [修改 2] 呼叫時傳入額外資訊
+            trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=current_dice_score)
             print(f"   🏆 New best model saved: {save_filename}")
             
-            # 同時存一份固定名字的檔案，方便之後使用
             fixed_path = os.path.join(args.output_dir, "weather_sam_best_latest.pth")
-            trainer.save_checkpoint(fixed_path)
-            
-        # # 定期備份 (每 5 Epoch)
-        # if (epoch + 1) % 5 == 0:
-        #     save_path = os.path.join(args.output_dir, f"weather_sam_epoch_{epoch+1}.pth")
-        #     trainer.save_checkpoint(save_path)
+            trainer.save_checkpoint(fixed_path, epoch=epoch+1, best_score=current_dice_score)
 
     print("\n✅ Fine-Tuning completed!")
 
