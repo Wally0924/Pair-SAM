@@ -1,3 +1,4 @@
+# weather_dataloader.py
 import torch
 from torch.utils.data import Dataset
 import numpy as np
@@ -57,38 +58,29 @@ class WeatherSegmentationDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
-        
-        # 輸出字典
         output = {}
         
         # -----------------------------------------------------------
         # 1. 讀取影像或特徵 (Image or Feature)
         # -----------------------------------------------------------
-        # 判斷是否使用快取特徵
         use_cache = False
         if self.has_cached_features and pd.notna(row['feature_path']) and os.path.exists(row['feature_path']):
             use_cache = True
 
         if use_cache:
-            # === 快取模式 (極速) ===
-            # 直接載入 .pt 檔 (Shape: 256, 64, 64)
-            # 注意：這裡載入到 CPU，由 DataLoader worker 處理
+            # === 快取模式 ===
             image_embedding = torch.load(row['feature_path'])
             output["image_embedding"] = image_embedding
-            
-            # 在快取模式下，我們通常沒有讀取原圖，所以 original_size 設為模型輸入尺寸
-            # 若訓練需要嚴格的原始尺寸，需在 precompute 階段存入 CSV
             original_size = (self.image_size, self.image_size)
-            
         else:
-            # === 原始模式 (讀圖) ===
+            # === 原始模式 ===
             image = cv2.imread(row['image_path'])
             if image is None:
                 raise ValueError(f"Could not load image: {row['image_path']}")
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             original_size = image.shape[:2]
             
-            # Resize & Preprocess
+            # Resize
             image = cv2.resize(image, (self.image_size, self.image_size))
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
             output["image"] = image_tensor
@@ -96,9 +88,8 @@ class WeatherSegmentationDataset(Dataset):
         output["original_size"] = original_size
 
         # -----------------------------------------------------------
-        # 2. 讀取參考遮罩 (Reference Mask)
+        # 2. 讀取參考遮罩 (Reference Mask) & 製作 Void Mask
         # -----------------------------------------------------------
-        # 無論是否用快取，MaskEncoder 還是需要讀取參考圖
         ref_mask_path = row.get('ref_mask_path', None)
         if pd.notna(ref_mask_path) and os.path.exists(str(ref_mask_path)):
             ref_mask = cv2.imread(ref_mask_path)
@@ -107,7 +98,14 @@ class WeatherSegmentationDataset(Dataset):
             ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
             
         ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
-        output["reference_mask"] = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
+        # 轉為 Tensor: (3, H, W)
+        ref_mask_tensor = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
+        output["reference_mask"] = ref_mask_tensor
+        
+        # [保留] 檢測黑色區域 (Void/Black Detection)
+        # 邏輯：如果在 RGB 三個通道上的總和為 0，代表是全黑 (0,0,0)
+        ref_void_mask = (ref_mask_tensor.sum(dim=0) == 0) 
+        output["ref_void_mask"] = ref_void_mask
 
         # -----------------------------------------------------------
         # 3. 讀取 Ground Truth
@@ -120,54 +118,58 @@ class WeatherSegmentationDataset(Dataset):
         else:
             gt_mask = np.zeros((self.image_size, self.image_size), dtype=np.uint8)
 
-        # Resize GT (必須與模型輸出對齊)
         gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
         output["gt_mask"] = torch.as_tensor(gt_mask).long()
 
         # -----------------------------------------------------------
-        # 4. 生成 Text Prompts
+        # 4. 生成 Text Prompts (回復為全類別訓練)
         # -----------------------------------------------------------
         active_prompts = []
         if has_gt:
+            # 取得 GT 中存在的所有唯一類別 ID
             unique_classes = np.unique(gt_mask)
             for cls_id in unique_classes:
+                # 確保 ID 在我們定義的 19 類中 (過濾掉 255 或其他無效 ID)
                 if cls_id in self.ID_TO_NAME:
                     active_prompts.append(self.ID_TO_NAME[cls_id])
-        else:
-            active_prompts = ["road"]
-
+        
+        # 預設值 (防空)
         if not active_prompts:
             active_prompts = ["road"]
 
-        # 訓練時限制 Prompt 數量
-        # if self.mode == 'train' and len(active_prompts) > 3:
-        #     active_prompts = random.sample(active_prompts, 3)
+        # [修改] 訓練模式下，不再丟棄任何類別，但進行洗牌
+        if self.mode == 'train':
+            # 隨機打亂順序，避免模型記住 "Road 總是排第一個"
+            random.shuffle(active_prompts)
             
+            # 若您之前有設定 Prompt 數量上限 (如最多 3 個)，這裡已經移除了，
+            # 現在會回傳 GT 裡有的 "所有" 類別。
+
         output["text_prompts"] = active_prompts
 
         return output
     
     @staticmethod
     def collate_fn(batch):
-        """
-        修正後的 Collate Function:
-        自動偵測是堆疊 'image' 還是 'image_embedding'
-        """
         # 1. 處理通用欄位
         ref_masks = torch.stack([item['reference_mask'] for item in batch])
         gt_masks = torch.stack([item['gt_mask'] for item in batch])
+
+        # 堆疊 ref_void_mask
+        ref_void_masks = torch.stack([item['ref_void_mask'] for item in batch])
+
         text_prompts = [item['text_prompts'] for item in batch]
         original_sizes = [item['original_size'] for item in batch]
         
         batch_dict = {
             "reference_mask": ref_masks,
+            "ref_void_mask": ref_void_masks,
             "gt_mask": gt_masks,
             "text_prompts": text_prompts,
             "original_size": original_sizes
         }
 
         # 2. 動態處理影像輸入
-        # 檢查第一個樣本是用 embedding 還是 raw image
         if 'image_embedding' in batch[0]:
             batch_dict['image_embedding'] = torch.stack([item['image_embedding'] for item in batch])
         elif 'image' in batch[0]:

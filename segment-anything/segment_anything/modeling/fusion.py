@@ -31,12 +31,12 @@ class CrossViewAlignment(nn.Module):
         # 使用標準 LayerNorm，因為在 Attention 計算時我們會將特徵攤平成 (B, N, C)
         self.norm = nn.LayerNorm(embed_dim)
         
-    def forward(self, f_curr: torch.Tensor, f_ref: torch.Tensor) -> torch.Tensor:
+    def forward(self, f_curr: torch.Tensor, f_ref: torch.Tensor, ref_void_mask: torch.Tensor = None) -> torch.Tensor:
         """
         Args:
             f_curr (Tensor): 當前影像特徵 (Query), shape (B, C, H, W)
             f_ref (Tensor):  參考遮罩特徵 (Key, Value), shape (B, C, H, W)
-            
+            ref_void_mask (Tensor): 參考遮罩的 Void Mask，shape (B, H, W)
         Returns:
             f_align (Tensor): 對齊後的特徵圖, shape (B, C, H, W)
         """
@@ -44,13 +44,33 @@ class CrossViewAlignment(nn.Module):
         
         # 1. Reshape for Attention: (B, C, H, W) -> (B, H*W, C)
         # Flatten spatial dimensions into sequence
+        key_padding_mask = None
+        if ref_void_mask is not None:
+            # ref_void_mask 原始尺寸是 (B, 1024, 1024)，我們需要縮小到 (B, H, W) 即 (B, 64, 64)
+            # 因為 Attention 是在特徵層級運作的
+            
+            # 轉換為 Float 才能進行 Interpolate
+            mask_float = ref_void_mask.unsqueeze(1).float() # (B, 1, 1024, 1024)
+            
+            # 使用 Nearest Neighbor 插值，確保原本是黑色的地方縮小後還是標記為黑
+            # 使用 Max Pooling 也可以，這裡用 interpolate 比較直觀
+            mask_downsampled = F.interpolate(
+                mask_float, 
+                size=(h, w), 
+                mode='nearest'
+            ) # (B, 1, H, W)
+            
+            # 攤平成 (B, H*W) 以符合 MultiheadAttention 的要求
+            # shape: (B, N)
+            key_padding_mask = mask_downsampled.flatten(2).squeeze(1).bool()
+
         q = f_curr.flatten(2).transpose(1, 2) # [B, N, C], where N = H*W
         k = f_ref.flatten(2).transpose(1, 2)  # [B, N, C]
         v = k                                 # Value 也是來自 Reference
         
         # 2. Cross Attention
         # attn_output: [B, N, C]
-        attn_output, _ = self.attn(query=q, key=k, value=v)
+        attn_output, _ = self.attn(query=q, key=k, value=v, key_padding_mask=key_padding_mask)
         
         # 3. Residual Connection & Norm
         # 這裡保留了 Residual (q + attn)，確保至少有原始影像的資訊
