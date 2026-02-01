@@ -62,7 +62,8 @@ class CrossViewAlignment(nn.Module):
             
             # 攤平成 (B, H*W) 以符合 MultiheadAttention 的要求
             # shape: (B, N)
-            key_padding_mask = mask_downsampled.flatten(2).squeeze(1).bool()
+            # key_padding_mask = mask_downsampled.flatten(2).squeeze(1).bool()
+            key_padding_mask = mask_downsampled.flatten(1).bool()
 
         q = f_curr.flatten(2).transpose(1, 2) # [B, N, C], where N = H*W
         k = f_ref.flatten(2).transpose(1, 2)  # [B, N, C]
@@ -82,6 +83,45 @@ class CrossViewAlignment(nn.Module):
         return f_align
 
 
+# class GatedFusion(nn.Module):
+#     def __init__(self, embed_dim: int = 256):
+#         """
+#         Module 2: Gate Fusion
+#         計算融合權重 alpha，並執行加權融合。
+#         公式: F_fuse = (1 - alpha) * F_curr + alpha * F_align
+#         """
+#         super().__init__()
+        
+#         # 用一個輕量級 CNN 來預測每個像素的 alpha 值
+#         # 輸入是 F_curr 和 F_align 的串接 (Channels * 2) -> 輸出 1 channel 的 alpha map
+#         self.gate_net = nn.Sequential(
+#             nn.Conv2d(embed_dim * 2, embed_dim // 2, kernel_size=1),
+#             nn.ReLU(),
+#             nn.Conv2d(embed_dim // 2, 1, kernel_size=1),
+#             nn.Sigmoid() # 將輸出限制在 0~1 之間作為權重
+#         )
+
+#     def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor) -> torch.Tensor:
+#         """
+#         Args:
+#             f_curr: 原始影像特徵
+#             f_align: 對齊後的參考特徵 (來自 CrossViewAlignment)
+#         Returns:
+#             f_fuse: 融合後的特徵，將送入 Mask Decoder
+#         """
+#         # 1. Concatenate along channel dimension
+#         cat_feat = torch.cat([f_curr, f_align], dim=1) # (B, 512, H, W)
+        
+#         # 2. Predict Alpha map
+#         alpha = self.gate_net(cat_feat) # (B, 1, H, W)
+        
+#         # 3. Weighted Fusion
+#         # alpha 越大，代表模型越依賴 "記憶 (Reference)"
+#         # alpha 越小，代表模型越依賴 "當前視覺 (Current)"
+#         f_fuse = (1 - alpha) * f_curr + alpha * f_align
+        
+#         return f_fuse
+
 class GatedFusion(nn.Module):
     def __init__(self, embed_dim: int = 256):
         """
@@ -100,23 +140,40 @@ class GatedFusion(nn.Module):
             nn.Sigmoid() # 將輸出限制在 0~1 之間作為權重
         )
 
-    def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor) -> torch.Tensor:
+    def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor, ref_void_mask: torch.Tensor = None) -> torch.Tensor:
         """
         Args:
-            f_curr: 原始影像特徵
-            f_align: 對齊後的參考特徵 (來自 CrossViewAlignment)
+            f_curr: 原始影像特徵 (B, C, H, W)
+            f_align: 對齊後的參考特徵 (B, C, H, W)
+            ref_void_mask: 參考遮罩的無效區域遮罩 (B, H_orig, W_orig) [Optional]
+                           True/1 代表無效(黑色), False/0 代表有效
         Returns:
-            f_fuse: 融合後的特徵，將送入 Mask Decoder
+            f_fuse: 融合後的特徵
         """
-        # 1. Concatenate along channel dimension
+        # 1. 串接特徵並預測原始 Alpha
         cat_feat = torch.cat([f_curr, f_align], dim=1) # (B, 512, H, W)
+        alpha = self.gate_net(cat_feat) # (B, 1, H, W), 範圍 [0, 1]
         
-        # 2. Predict Alpha map
-        alpha = self.gate_net(cat_feat) # (B, 1, H, W)
-        
-        # 3. Weighted Fusion
-        # alpha 越大，代表模型越依賴 "記憶 (Reference)"
-        # alpha 越小，代表模型越依賴 "當前視覺 (Current)"
+        # 2. [新增] 應用無效區域屏蔽 (Hard Masking)
+        if ref_void_mask is not None:
+            # 調整遮罩尺寸以匹配特徵圖 (例如 1024x1024 -> 64x64)
+            # ref_void_mask 為 (B, H, W)，需擴展為 (B, 1, H, W) 才能插值
+            mask_float = ref_void_mask.unsqueeze(1).float() 
+            
+            # 使用 Nearest 插值確保二值性質 (0 或 1)
+            mask_downsampled = F.interpolate(
+                mask_float, 
+                size=alpha.shape[-2:], 
+                mode='nearest'
+            )
+            
+            # 邏輯：
+            # mask 為 1 (無效區) -> (1 - 1) = 0 -> alpha 變為 0 -> 只看 f_curr
+            # mask 為 0 (有效區) -> (1 - 0) = 1 -> alpha 保持原值 -> 正常融合
+            alpha = alpha * (1.0 - mask_downsampled)
+
+        # 3. 加權融合
+        # alpha 經過 mask 處理後，無效區域必定為 0
         f_fuse = (1 - alpha) * f_curr + alpha * f_align
         
         return f_fuse

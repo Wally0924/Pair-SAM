@@ -488,7 +488,7 @@ class InferenceRunner:
 # --- Main Execution ---
 if __name__ == "__main__":
     # 設定路徑
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research/segment-anything/outputs_weather_sam/weather_sam_best.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research/segment-anything/outputs_weather_sam_all_data_testv4/weather_sam_best_latest.pth"
     # 使用 validation set 因為它有 GT
     TEST_CSV_PATH = "/home/rvl1421/SAM_research/Datasets/test.csv" 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -507,5 +507,5 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
     
-    runner = InferenceRunner(model, DEVICE, output_dir="inference_viz_cityscapes_test_show")
+    runner = InferenceRunner(model, DEVICE, output_dir="inference_viz_cityscapes_testv4")
     runner.run_inference(test_loader, num_samples=10) # 跑 20 張看看結果

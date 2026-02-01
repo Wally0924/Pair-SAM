@@ -58,7 +58,7 @@ def main():
     
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_all_cached.csv", 
+    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_final_split.csv", 
                         help="Path to train CSV.")
     parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_all_cached.csv", 
                         help="Path to val CSV.")
