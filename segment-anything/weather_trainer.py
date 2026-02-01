@@ -29,7 +29,8 @@ class WeatherSAMTrainer:
         self.args = args # [新增 2] 儲存參數設定
         
         # Loss 權重策略
-        self.criterion = SAMLoss(focal_weight=2.0, dice_weight=2.0, iou_weight=1.0)
+        # focal 是為了處理類別不平衡，dice 強調重疊區域，iou 用於評估預測品質，label_smoothing 減少過擬合
+        self.criterion = SAMLoss(focal_weight=2.0, dice_weight=2.0, iou_weight=1.0, label_smoothing=0.1)
         
         self.scaler = torch.amp.GradScaler('cuda')
         
@@ -71,6 +72,7 @@ class WeatherSAMTrainer:
         for i in range(batch_size):
             input_dict = {
                 'reference_mask': batch['reference_mask'][i].to(self.device),
+                'ref_void_mask': batch['ref_void_mask'][i].to(self.device),
                 'text_prompts': batch['text_prompts'][i], 
                 'original_size': batch['original_size'][i]
             }

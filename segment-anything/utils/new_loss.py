@@ -3,11 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SAMLoss(nn.Module):
-    def __init__(self, focal_weight=2.0, dice_weight=1.0, iou_weight=1.0):
+    def __init__(self, focal_weight=2.0, dice_weight=1.0, iou_weight=1.0, label_smoothing=0.0):
         super().__init__()
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
         self.iou_weight = iou_weight
+        self.label_smoothing = label_smoothing  # Label Smoothing 參數
         self.smooth = 1e-05 # 數值穩定與平滑
 
         # 定義類別映射表 (必須與 dataloader 一致)
@@ -47,6 +48,12 @@ class SAMLoss(nn.Module):
             # 1. 準備 GT: (1, H, W)
             # 在 255 的區域，target 會變成 0 (因為 255 != class_id)，這沒問題
             target = (gt_mask == class_id).float().unsqueeze(0).to(device)
+
+            # [新增步驟] 實作 Label Smoothing
+            # 公式: New_Target = Original_Target * (1 - epsilon) + epsilon / 2
+            # 針對 Binary Classification (0/1) 的平滑方式
+            if self.label_smoothing > 0:
+                target = target * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
             
             # 2. 取出預測: (3, H, W)
             current_preds = pred_masks[k]

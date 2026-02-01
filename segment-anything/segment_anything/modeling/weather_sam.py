@@ -82,7 +82,7 @@ class WeatherSAM(nn.Module):
 
         # 3. Fusion -> (B_img, 256, 64, 64)
         aligned_embeddings = self.fusion_module(f_curr=image_embeddings, f_ref=ref_embeddings, ref_void_mask=ref_void_masks)
-        fused_embeddings = self.gate_module(f_curr=image_embeddings, f_align=aligned_embeddings, ref_void_masks=ref_void_masks)
+        fused_embeddings = self.gate_module(f_curr=image_embeddings, f_align=aligned_embeddings, ref_void_mask=ref_void_masks)
 
         # 4. Prompt Encoding & Decoding Loop
         for i, image_record in enumerate(batched_input):
