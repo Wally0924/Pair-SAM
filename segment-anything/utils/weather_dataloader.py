@@ -8,15 +8,17 @@ import random
 import pandas as pd
 
 class WeatherSegmentationDataset(Dataset):
-    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train'):
+    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train', gps_noise: float = 0.0):
         """
         Args:
             csv_file (str): CSV 路徑
             image_size (int): 統一縮放尺寸 (預設 1024)
             mode (str): 'train', 'val', 或 'test'
+            gps_noise (float): GPS 座標的高斯噪聲標準差 (預設 0.0，表示不添加噪聲)
         """
         self.image_size = image_size
         self.mode = mode
+        self.gps_noise = gps_noise
         
         # 1. 檢查並讀取 CSV
         if not os.path.exists(csv_file):
@@ -147,6 +149,24 @@ class WeatherSegmentationDataset(Dataset):
 
         output["text_prompts"] = active_prompts
 
+        # -----------------------------------------------------------
+        # 5. 讀取 GPS 座標 (Location)
+        # -----------------------------------------------------------
+        if 'lat' in row and 'lon' in row:
+            lat = float(row['lat'])
+            lon = float(row['lon'])
+            if self.mode == 'train':
+                # 添加高斯噪聲
+                lat += np.random.gauss(0, self.gps_noise)
+                lon += np.random.gauss(0, self.gps_noise)
+        else:
+            # 防呆機制：如果沒有 GPS，給定一個預設值 (例如 0,0) 或報錯
+            # 建議訓練前檢查 CSV 完整性
+            lat, lon = 0.0, 0.0
+
+        # 轉為 Tensor (2,)
+        output["location"] = torch.tensor([lat, lon], dtype=torch.float32)
+
         return output
     
     @staticmethod
@@ -160,13 +180,15 @@ class WeatherSegmentationDataset(Dataset):
 
         text_prompts = [item['text_prompts'] for item in batch]
         original_sizes = [item['original_size'] for item in batch]
+        locations = torch.stack([item['location'] for item in batch])
         
         batch_dict = {
             "reference_mask": ref_masks,
             "ref_void_mask": ref_void_masks,
             "gt_mask": gt_masks,
             "text_prompts": text_prompts,
-            "original_size": original_sizes
+            "original_size": original_sizes,
+            "location": locations
         }
 
         # 2. 動態處理影像輸入

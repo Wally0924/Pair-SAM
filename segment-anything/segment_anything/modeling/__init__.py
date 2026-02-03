@@ -14,6 +14,7 @@ from .mask_encoder import MaskEncoder
 from .text_encoder import TextEncoder
 from .weather_prompt_encoder import WeatherPromptEncoder
 from .weather_sam import WeatherSAM
+from .location_encoder import LocationEncoder
 __all__ = [
     "Sam",
     "ImageEncoderViT",
@@ -26,6 +27,7 @@ __all__ = [
     "TextEncoder",
     "WeatherPromptEncoder",
     "WeatherSAM",
+    "LocationEncoder",
 ]
 
 

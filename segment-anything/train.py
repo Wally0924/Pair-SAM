@@ -66,9 +66,10 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=50)
     
-    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
     
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv5")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv7")
+    parser.add_argument("--gps_noise", type=float, default=0.0001, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
     
     args = parser.parse_args()
     
@@ -96,13 +97,13 @@ def main():
     if not os.path.exists(args.val_csv) and "_cached" in args.val_csv:
         args.val_csv = args.val_csv.replace("_cached.csv", ".csv")
 
-    train_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='train')
+    train_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='train', gps_noise=args.gps_noise)
     
     if os.path.exists(args.val_csv):
-        val_ds = WeatherSegmentationDataset(csv_file=args.val_csv, mode='val')
+        val_ds = WeatherSegmentationDataset(csv_file=args.val_csv, mode='val', gps_noise=args.gps_noise)
     else:
         print(f"⚠️ Warning: Validation CSV not found. Using Train set for validation.")
-        val_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='val')
+        val_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='val', gps_noise=args.gps_noise)
 
     train_loader = DataLoader(
         train_ds, 

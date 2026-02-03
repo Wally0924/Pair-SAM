@@ -10,6 +10,7 @@ from .weather_prompt_encoder import WeatherPromptEncoder
 from .weather_mask_decoder import MaskDecoder
 from .fusion import CrossViewAlignment, GatedFusion
 from .text_encoder import TextEncoder
+from .location_encoder import LocationEncoder
 
 class WeatherSAM(nn.Module):
     mask_threshold: float = 0.0
@@ -24,6 +25,7 @@ class WeatherSAM(nn.Module):
         fusion_module: CrossViewAlignment,
         gate_module: GatedFusion,
         text_encoder: TextEncoder,
+        location_encoder: LocationEncoder,
         pixel_mean: List[float] = [123.675, 116.28, 103.53],
         pixel_std: List[float] = [58.395, 57.12, 57.375],
     ) -> None:
@@ -35,6 +37,7 @@ class WeatherSAM(nn.Module):
         self.fusion_module = fusion_module
         self.gate_module = gate_module
         self.text_encoder = text_encoder
+        self.location_encoder = location_encoder
         
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
@@ -92,23 +95,34 @@ class WeatherSAM(nn.Module):
             # 取得原始 Embeddings
             sparse_embeddings = self.text_encoder(texts) 
             
-            # [CRITICAL FIX] 強制修正維度，處理 TextEncoder 可能回傳 3D Tensor 的情況
-            if sparse_embeddings.dim() == 3:
-                # 如果是 (1, K, 256) -> Squeeze dim 0
-                if sparse_embeddings.shape[0] == 1:
-                    sparse_embeddings = sparse_embeddings.squeeze(0)
-                # 如果是 (K, 1, 256) -> Squeeze dim 1
-                elif sparse_embeddings.shape[1] == 1:
-                    sparse_embeddings = sparse_embeddings.squeeze(1)
+            # 維度防呆 (確保是 K, 1, 256)
+            if sparse_embeddings.dim() == 2: # (K, 256)
+                sparse_embeddings = sparse_embeddings.unsqueeze(1)
+            elif sparse_embeddings.dim() == 3 and sparse_embeddings.shape[0] == 1: # (1, K, 256)
+                sparse_embeddings = sparse_embeddings.squeeze(0).unsqueeze(1)
+
+            # --- [Step B] Location Encoding (Call like Text Encoder) ---
+            # 1. 取出座標 (2,) -> (1, 2) Batch dimension
+            location_coords = image_record["location"].unsqueeze(0) 
             
-            # 確保現在是 (K, 256) 後，再執行 unsqueeze 變成 (K, 1, 256)
-            # 這樣 Mask Decoder 才能正確將其視為 K 個獨立的 Batch
-            sparse_embeddings = sparse_embeddings.unsqueeze(1) 
+            # [cite_start]2. 編碼: (1, 2) -> (1, 256) [cite: 219]
+            loc_feats = self.location_encoder(location_coords)
+            
+            # 3. 調整維度以匹配 Text Prompts
+            # 目標: (K, 1, 256) 以便與 (K, 1, 256) 的 Text 串接
+            k_prompts = sparse_embeddings.shape[0]
+            
+            # (1, 256) -> (1, 1, 256)
+            loc_feats = loc_feats.unsqueeze(1)
+            # (1, 1, 256) -> (K, 1, 256) 複製 K 份
+            location_embeddings = loc_feats.repeat(k_prompts, 1, 1)
+
             
             # B. Weather Prompt Encoding (K, 1, 256)
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 text_embeddings=sparse_embeddings,
-                mask_inputs=None 
+                mask_inputs=None,
+                location_embeddings=location_embeddings
             )
 
             # C. Mask Decoding

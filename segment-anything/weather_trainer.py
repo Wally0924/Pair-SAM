@@ -19,7 +19,7 @@ class WeatherSAMTrainer:
         train_loader: DataLoader, 
         val_loader: DataLoader, 
         device: str,
-        lr: float = 5e-5,
+        lr: float = 1e-5,
         args = None  # [新增 1] 接收參數設定
     ):
         self.model = model.to(device)
@@ -30,7 +30,7 @@ class WeatherSAMTrainer:
         
         # Loss 權重策略
         # focal 是為了處理類別不平衡，dice 強調重疊區域，iou 用於評估預測品質，label_smoothing 減少過擬合
-        self.criterion = SAMLoss(focal_weight=2.0, dice_weight=2.0, iou_weight=1.0, label_smoothing=0.1)
+        self.criterion = SAMLoss(focal_weight=2.0, dice_weight=3.0, iou_weight=1.0, label_smoothing=0.1)
         
         self.scaler = torch.amp.GradScaler('cuda')
         
@@ -43,7 +43,8 @@ class WeatherSAMTrainer:
             self.model.fusion_module,
             self.model.gate_module,
             self.model.mask_decoder,
-            self.model.prompt_encoder, 
+            self.model.prompt_encoder,
+            self.model.location_encoder, 
         ]
         for module in trainable_modules:
             for param in module.parameters():
@@ -74,7 +75,8 @@ class WeatherSAMTrainer:
                 'reference_mask': batch['reference_mask'][i].to(self.device),
                 'ref_void_mask': batch['ref_void_mask'][i].to(self.device),
                 'text_prompts': batch['text_prompts'][i], 
-                'original_size': batch['original_size'][i]
+                'original_size': batch['original_size'][i],
+                'location': batch['location'][i].to(self.device)
             }
             if use_cached_features:
                 input_dict['image_embedding'] = batch['image_embedding'][i].to(self.device)
@@ -132,7 +134,7 @@ class WeatherSAMTrainer:
 
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.3)
             self.scaler.step(self.optimizer)
             self.scaler.update()
 

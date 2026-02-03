@@ -35,6 +35,8 @@ class SAMLoss(nn.Module):
         valid_mask = (gt_mask != 255).float().unsqueeze(0).to(device)
         
         # 計算這張圖有多少個有效像素 (用於 BCE 平均)
+        if num_valid_pixels < 1:
+            return torch.tensor(0.0, device=device, requires_grad=True), metrics
         # 避免除以 0，加一個極小值
         num_valid_pixels = valid_mask.sum(dim=(1, 2)) + 1e-6 
 

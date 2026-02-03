@@ -2,7 +2,7 @@
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, MaskDecoder, TwoWayTransformer, MaskEncoder, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM
+from .modeling import ImageEncoderViT, MaskDecoder, TwoWayTransformer, MaskEncoder, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder
 
 def build_weather_sam_vit_b(checkpoint=None):
     return _build_weather_sam(
@@ -90,6 +90,11 @@ def _build_weather_sam(
         freeze=True
     )
 
+    location_encoder = LocationEncoder(
+            sigma=[2**0, 2**4, 2**8],
+            embed_dim=prompt_embed_dim
+    )
+    
     # 2. 組合 WeatherSAM
     sam = WeatherSAM(
         image_encoder=image_encoder,
@@ -99,28 +104,26 @@ def _build_weather_sam(
         fusion_module=fusion_module,
         gate_module=gate_module,
         text_encoder=text_encoder,
+        location_encoder=location_encoder,
     )
 
     # 3. 載入預訓練權重 (如果有提供)
     if checkpoint is not None:
-        with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f)
-        
-        # 過濾掉不匹配的鍵值 (因為我們有新模組)
-        # 這裡我們只載入 image_encoder 和 mask_decoder 的權重
-        # 注意: 如果你是從原始 SAM checkpoint 載入，key 可能需要調整 (例如加前綴 'image_encoder.')
-        # 這裡假設 checkpoint 是標準 SAM 格式
-        # [新增邏輯] 檢查是否為新格式 (包含 config 的 dict)
-        if "model_state_dict" in state_dict:
-            print("📦 Detected new checkpoint format (with config).")
-            # 如果你有需要讀 config，可以在這裡讀 state_dict['config']
-            state_dict = state_dict["model_state_dict"] # 取出真正的權重
-        
-        sam_dict = sam.state_dict()
-        pretrained_dict = {k: v for k, v in state_dict.items() if k in sam_dict and v.shape == sam_dict[k].shape}
-        
-        # 載入匹配的權重 (ViT, Decoder)
-        sam.load_state_dict(pretrained_dict, strict=False)
-        print(f"Loaded {len(pretrained_dict)} keys from checkpoint.")
+            print(f"Loading weights from {checkpoint}...")
+            with open(checkpoint, "rb") as f:
+                state_dict = torch.load(f)
+            
+            # 過濾不匹配的鍵值 (例如我們改了 mask_decoder 或 prompt_encoder)
+            model_dict = sam.state_dict()
+            
+            # 僅載入匹配的 Image Encoder 與部分 Decoder 權重
+            pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
+            
+            missing_keys = [k for k in model_dict if k not in pretrained_dict]
+            print(f"Missing keys (New modules initialized from scratch): {len(missing_keys)}")
+            # print(missing_keys[:5]) # Debug usage
+            
+            model_dict.update(pretrained_dict)
+            sam.load_state_dict(model_dict)
         
     return sam

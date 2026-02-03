@@ -7,7 +7,7 @@ class CrossViewAlignment(nn.Module):
         self,
         embed_dim: int = 256,
         num_heads: int = 8,
-        dropout: float = 0.1,
+        dropout: float = 0.2,
     ):
         """
         Module 2: Cross-View Attention
@@ -71,7 +71,7 @@ class CrossViewAlignment(nn.Module):
         
         # 2. Cross Attention
         # attn_output: [B, N, C]
-        attn_output, _ = self.attn(query=q, key=k, value=v, key_padding_mask=key_padding_mask)
+        attn_output, _ = self.attn(query=q, key=k, value=v, key_padding_mask= None)
         
         # 3. Residual Connection & Norm
         # 這裡保留了 Residual (q + attn)，確保至少有原始影像的資訊
@@ -154,23 +154,23 @@ class GatedFusion(nn.Module):
         cat_feat = torch.cat([f_curr, f_align], dim=1) # (B, 512, H, W)
         alpha = self.gate_net(cat_feat) # (B, 1, H, W), 範圍 [0, 1]
         
-        # 2. [新增] 應用無效區域屏蔽 (Hard Masking)
-        if ref_void_mask is not None:
-            # 調整遮罩尺寸以匹配特徵圖 (例如 1024x1024 -> 64x64)
-            # ref_void_mask 為 (B, H, W)，需擴展為 (B, 1, H, W) 才能插值
-            mask_float = ref_void_mask.unsqueeze(1).float() 
+        # # 2. [新增] 應用無效區域屏蔽 (Hard Masking)
+        # if ref_void_mask is not None:
+        #     # 調整遮罩尺寸以匹配特徵圖 (例如 1024x1024 -> 64x64)
+        #     # ref_void_mask 為 (B, H, W)，需擴展為 (B, 1, H, W) 才能插值
+        #     mask_float = ref_void_mask.unsqueeze(1).float() 
             
-            # 使用 Nearest 插值確保二值性質 (0 或 1)
-            mask_downsampled = F.interpolate(
-                mask_float, 
-                size=alpha.shape[-2:], 
-                mode='nearest'
-            )
+        #     # 使用 Nearest 插值確保二值性質 (0 或 1)
+        #     mask_downsampled = F.interpolate(
+        #         mask_float, 
+        #         size=alpha.shape[-2:], 
+        #         mode='nearest'
+        #     )
             
-            # 邏輯：
-            # mask 為 1 (無效區) -> (1 - 1) = 0 -> alpha 變為 0 -> 只看 f_curr
-            # mask 為 0 (有效區) -> (1 - 0) = 1 -> alpha 保持原值 -> 正常融合
-            alpha = alpha * (1.0 - mask_downsampled)
+        #     # 邏輯：
+        #     # mask 為 1 (無效區) -> (1 - 1) = 0 -> alpha 變為 0 -> 只看 f_curr
+        #     # mask 為 0 (有效區) -> (1 - 0) = 1 -> alpha 保持原值 -> 正常融合
+        #     alpha = alpha * (1.0 - mask_downsampled)
 
         # 3. 加權融合
         # alpha 經過 mask 處理後，無效區域必定為 0
