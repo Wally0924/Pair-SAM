@@ -4,7 +4,7 @@ import numpy as np
 
 # 假設 layers.py 和 functional.py 放在名為 rff 的資料夾中
 # 如果放在同級目錄，請改成 from layers import GaussianEncoding
-from rff.layers import GaussianEncoding 
+from .rff.layers import GaussianEncoding
 
 # ==========================================
 # 1. 投影函式: Equal Earth Projection (維持 GeoCLIP 原作)

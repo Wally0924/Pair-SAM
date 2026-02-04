@@ -24,7 +24,7 @@ class SAMLoss(nn.Module):
         修正版: 實作 Min-Loss Strategy + 忽略 Ignore Label (255)
         """
         device = pred_masks.device
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=device, requires_grad=True)
         metrics = {"total": 0.0, "bce": 0.0, "dice": 0.0, "iou_mse": 0.0}
         
         valid_prompts_count = 0
@@ -33,10 +33,12 @@ class SAMLoss(nn.Module):
         # gt_mask shape: (H, W) -> 數值為 0~18 或 255
         # valid_mask: (1, H, W) -> 255的地方是 0 (False), 其他是 1 (True)
         valid_mask = (gt_mask != 255).float().unsqueeze(0).to(device)
+
+        num_valid_pixels_raw = valid_mask.sum(dim=(1, 2))
         
-        # 計算這張圖有多少個有效像素 (用於 BCE 平均)
-        if num_valid_pixels < 1:
-            return torch.tensor(0.0, device=device, requires_grad=True), metrics
+        if num_valid_pixels_raw < 1:
+                    return total_loss, metrics
+        
         # 避免除以 0，加一個極小值
         num_valid_pixels = valid_mask.sum(dim=(1, 2)) + 1e-6 
 
@@ -59,6 +61,8 @@ class SAMLoss(nn.Module):
             
             # 2. 取出預測: (3, H, W)
             current_preds = pred_masks[k]
+
+            current_preds = torch.clamp(current_preds, min=-10.0, max=10.0)
             
             # --- 計算 Dice Loss (需過濾無效區域) ---
             pred_prob = torch.sigmoid(current_preds)
@@ -109,7 +113,7 @@ class SAMLoss(nn.Module):
             pred_iou_conf = iou_predictions[k, best_mask_idx]
             iou_loss = F.mse_loss(pred_iou_conf, actual_iou)
             
-            total_loss += (min_seg_loss + self.iou_weight * iou_loss)
+            total_loss = total_loss + (min_seg_loss + self.iou_weight * iou_loss)
             
             # Metrics
             metrics["bce"] += bce_losses[best_mask_idx].item()
@@ -117,12 +121,11 @@ class SAMLoss(nn.Module):
             metrics["iou_mse"] += iou_loss.item()
 
         if valid_prompts_count > 0:
-            total_loss /= valid_prompts_count
+            total_loss = total_loss / valid_prompts_count
             for k in metrics:
-                metrics[k] /= valid_prompts_count
-        else:
-            total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+                if k != "total":
+                    metrics[k] /= valid_prompts_count
 
-        metrics["total"] = total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss
+        metrics["total"] = total_loss.item()
         
         return total_loss, metrics

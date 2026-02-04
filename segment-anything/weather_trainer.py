@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import math
 
 # 確保引用路徑正確
 from utils.new_loss import SAMLoss
@@ -18,23 +19,27 @@ class WeatherSAMTrainer:
         model: WeatherSAM, 
         train_loader: DataLoader, 
         val_loader: DataLoader, 
-        device: str,
-        lr: float = 1e-5,
-        args = None  # [新增 1] 接收參數設定
+        args=None
     ):
-        self.model = model.to(device)
+        self.model = model.to(args.device)
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.device = device
-        self.args = args # [新增 2] 儲存參數設定
+        self.device = args.device
+        self.args = args
         
-        # Loss 權重策略
-        # focal 是為了處理類別不平衡，dice 強調重疊區域，iou 用於評估預測品質，label_smoothing 減少過擬合
-        self.criterion = SAMLoss(focal_weight=2.0, dice_weight=3.0, iou_weight=1.0, label_smoothing=0.1)
+        # [修改] 從 args 讀取 Loss 權重，若無則使用預設值
+        f_w = args.focal_weight if args else 2.0
+        d_w = args.dice_weight if args else 2.0
+        i_w = args.iou_weight if args else 1.0
+        ls = args.label_smoothing if args else 0.1
+        lr = args.lr if args else 1e-4
+        
+        print(f"📉 Initializing Loss with: Focal={f_w}, Dice={d_w}, IoU={i_w}, Smooth={ls}")
+        self.criterion = SAMLoss(focal_weight=f_w, dice_weight=d_w, iou_weight=i_w, label_smoothing=ls)
         
         self.scaler = torch.amp.GradScaler('cuda')
         
-        # 解凍策略 (Unfreezing Strategy)
+        # 凍結與解凍策略
         for param in self.model.parameters():
             param.requires_grad = False
             
@@ -44,29 +49,44 @@ class WeatherSAMTrainer:
             self.model.gate_module,
             self.model.mask_decoder,
             self.model.prompt_encoder,
-            self.model.location_encoder, 
+            self.model.location_encoder,
         ]
+        
         for module in trainable_modules:
             for param in module.parameters():
                 param.requires_grad = True
         
         self.model.pe_layer.requires_grad = True
 
-        # 統計可訓練參數
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         print(f"✅ 總可訓練參數數量: {len(trainable_params)}")
         
-        # Optimizer & Scheduler
         self.optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=1e-2)
-        
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=3
-        )
+
+        # ==========================================
+        # [修改] 實作 Warmup + Cosine Decay 策略
+        # ==========================================
+        num_epochs = args.epochs if args else 50
+        warmup_epochs = 5
+
+        def lr_lambda(epoch_idx):
+            # 1. Warmup 階段: 線性上升
+            if epoch_idx < warmup_epochs:
+                # 例如第 0 epoch 返回 0，第 5 epoch 返回 1.0
+                return float(epoch_idx + 1) / float(warmup_epochs)
+            
+            # 2. Cosine Decay 階段: 緩慢下降
+            else:
+                # 計算進度 (0.0 ~ 1.0)
+                progress = float(epoch_idx - warmup_epochs) / float(max(1, num_epochs - warmup_epochs))
+                # 餘弦公式: 0.5 * (1 + cos(pi * progress))
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
+            
+        self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
 
         os.makedirs("debug_viz", exist_ok=True)
 
     def _prepare_batch_input(self, batch, batch_size):
-        # ... (保持不變) ...
         batched_input = []
         use_cached_features = 'image_embedding' in batch
         
@@ -76,7 +96,7 @@ class WeatherSAMTrainer:
                 'ref_void_mask': batch['ref_void_mask'][i].to(self.device),
                 'text_prompts': batch['text_prompts'][i], 
                 'original_size': batch['original_size'][i],
-                'location': batch['location'][i].to(self.device)
+                'location': batch['location'][i].to(self.device) 
             }
             if use_cached_features:
                 input_dict['image_embedding'] = batch['image_embedding'][i].to(self.device)
@@ -86,12 +106,14 @@ class WeatherSAMTrainer:
         return batched_input
 
     def train_epoch(self, epoch_index):
-        # ... (保持不變) ...
         self.model.train()
         epoch_metrics = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
         step_count = 0
+        
+        # 取得 max_norm 設定
+        max_norm = self.args.max_norm if self.args else 0.3
         
         for batch in pbar:
             batch_size = len(batch['text_prompts'])
@@ -134,7 +156,9 @@ class WeatherSAMTrainer:
 
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.3)
+            
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_norm)
+            
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
@@ -152,20 +176,26 @@ class WeatherSAMTrainer:
             )
 
             if step_count % 1000 == 0 and first_batch_logits is not None:
-                pred_logit = first_batch_logits[0, 0, :, :]
-                mask_viz = torch.sigmoid(pred_logit).detach().cpu().numpy()
-                save_path = f"debug_viz/epoch_{epoch_index+1}_step_{step_count}.png"
-                plt.imsave(save_path, mask_viz, cmap='gray')
-                max_val = mask_viz.max()
-                status = "🟢 OK" if max_val > 0.1 else "🔴 Collapsed (Black)"
-                print(f"   📸 Snapshot saved! Max Value: {max_val:.4f} [{status}]")
+                self._save_debug_snapshot(first_batch_logits, epoch_index, step_count)
 
+        self.scheduler.step()
         avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
+        current_lr = self.optimizer.param_groups[0]['lr']
+        print(f"   🔄 Learning Rate Updated: {current_lr:.2e}")
+        
         return avg_metrics
+
+    def _save_debug_snapshot(self, logits, epoch, step):
+        pred_logit = logits[0, 0, :, :]
+        mask_viz = torch.sigmoid(pred_logit).detach().cpu().numpy()
+        save_path = f"debug_viz/epoch_{epoch+1}_step_{step}.png"
+        plt.imsave(save_path, mask_viz, cmap='gray')
+        max_val = mask_viz.max()
+        status = "🟢 OK" if max_val > 0.1 else "🔴 Collapsed"
+        # print(f"   📸 Snapshot saved! Max Value: {max_val:.4f} [{status}]")
 
     @torch.no_grad()
     def validate_epoch(self, epoch_index):
-        # ... (保持不變) ...
         self.model.eval()
         epoch_metrics = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
@@ -179,7 +209,6 @@ class WeatherSAMTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input, multimask_output=True)
                 
-                total_loss = 0
                 loss_dict_accum = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
                 
                 for i in range(batch_size):
@@ -188,14 +217,13 @@ class WeatherSAMTrainer:
                         low_res_logits, size=(1024, 1024), mode="bilinear", align_corners=False
                     )
                     
-                    sample_loss, sample_dict = self.criterion(
+                    _, sample_dict = self.criterion(
                         pred_masks=full_res_logits,
                         gt_mask=gt_masks[i],
                         iou_predictions=outputs[i]['iou_predictions'],
                         text_prompts=batched_input[i]['text_prompts']
                     )
                     
-                    total_loss += sample_loss
                     for k, v in sample_dict.items():
                         loss_dict_accum[k] += v
             
@@ -204,14 +232,10 @@ class WeatherSAMTrainer:
                 epoch_metrics[k] += (loss_dict_accum[k] / batch_size)
                 
         avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
-        self.scheduler.step(avg_metrics['total'])
+        # self.scheduler.step(avg_metrics['total'])
         return avg_metrics
 
     def save_checkpoint(self, path, epoch=None, best_score=None):
-        """
-        [修改 3] 儲存 Checkpoint 與完整 Config
-        """
-        # 1. 準備要儲存的字典
         checkpoint_dict = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -219,10 +243,8 @@ class WeatherSAMTrainer:
             'epoch': epoch,
             'best_score': best_score
         }
-        
-        # 2. 如果有 Config (args)，轉成 dict 存入
+        # 儲存參數配置以便未來查看
         if self.args:
-            # 判斷是否為 argparse.Namespace，若是則轉 dict
             if hasattr(self.args, '__dict__'):
                 checkpoint_dict['config'] = vars(self.args)
             else:
@@ -230,6 +252,5 @@ class WeatherSAMTrainer:
         else:
             checkpoint_dict['config'] = {}
             
-        # 3. 儲存
         torch.save(checkpoint_dict, path)
-        print(f"💾 Checkpoint (with Config) saved to {path}")
+        print(f"💾 Checkpoint saved to {path}")

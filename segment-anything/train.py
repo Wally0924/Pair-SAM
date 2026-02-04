@@ -13,7 +13,9 @@ from utils.weather_dataloader import WeatherSegmentationDataset
 from weather_trainer import WeatherSAMTrainer
 from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
 
-# plot_history 保持不變 ...
+# ==========================================
+# 📊 1. 繪製圖表功能
+# ==========================================
 def plot_history(history, output_dir):
     # (省略內容，與原檔相同)
     if not history:
@@ -44,42 +46,83 @@ def plot_history(history, output_dir):
     plt.grid(True, linestyle='--', alpha=0.7)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'training_curve.png'))
+    save_path = os.path.join(output_dir, 'training_curve.png')
+    plt.savefig(save_path)
     plt.close()
-    print(f"📉 Curves updated at: {os.path.join(output_dir, 'training_curve.png')}")
+    print(f"📉 Curves updated at: {save_path}")
+
+# ==========================================
+# 🖨️ 2. 美觀的參數列印函式
+# ==========================================
+def print_training_config(args, device):
+    print("\n" + "="*60)
+    print(f"🚀  WeatherSAM Training Configuration")
+    print("="*60)
+    
+    # 1. 系統與環境
+    print(f"🖥️  System Info:")
+    print(f"   • Device:            {device}")
+    print(f"   • Model Type:        {args.model_type}")
+    print(f"   • Checkpoint:        {args.checkpoint if args.checkpoint else 'None (Scratch)'}")
+    print(f"   • Output Dir:        {args.output_dir}")
+    
+    # 2. 訓練超參數
+    print(f"\n⚙️  Hyperparameters:")
+    print(f"   • Epochs:            {args.epochs}")
+    print(f"   • Batch Size:        {args.batch_size}")
+    print(f"   • Learning Rate:     {args.lr}")
+    print(f"   • Max Norm (Clip):   {args.max_norm}")
+    print(f"   • GPS Noise Std:     {args.gps_noise} (approx. {args.gps_noise * 111000:.1f} m)")
+    
+    # 3. Loss 權重
+    print(f"\n⚖️  Loss Weights:")
+    print(f"   • Focal Weight:      {args.focal_weight}")
+    print(f"   • Dice Weight:       {args.dice_weight}")
+    print(f"   • IoU Weight:        {args.iou_weight}")
+    print(f"   • Label Smoothing:   {args.label_smoothing}")
+    
+    # 4. 路徑資訊
+    print(f"\n📂  Paths:")
+    print(f"   • Train CSV:         {args.train_csv}")
+    print(f"   • Val CSV:           {args.val_csv}")
+    print("="*60 + "\n")
 
 def main():
     parser = argparse.ArgumentParser()
+
+    # --- 基礎設定 ---
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    
+    parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     parser.add_argument("--checkpoint", type=str, 
                         default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint.")
-    
-    parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
-    
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_final_split.csv", 
-                        help="Path to train CSV.")
-    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_all_cached.csv", 
-                        help="Path to val CSV.")
-    
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=50)
-    
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
-    
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv7")
-    parser.add_argument("--gps_noise", type=float, default=0.0001, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
+    
+    # --- 訓練超參數 ---
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate")
+    parser.add_argument("--max_norm", type=float, default=1.0, help="Max norm for gradient clipping.")
+    parser.add_argument("--gps_noise", type=float, default=0.00005, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
+    
+    # --- Loss 權重 ---
+    parser.add_argument("--focal_weight", type=float, default=2.0)
+    parser.add_argument("--dice_weight", type=float, default=2.0)
+    parser.add_argument("--iou_weight", type=float, default=1.0)
+    parser.add_argument("--label_smoothing", type=float, default=0.1)
+
+    # --- 資料路徑 ---
+    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_with_gps.csv", 
+                        help="Path to train CSV.")
+    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_with_gps.csv", 
+                        help="Path to val CSV.")
     
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
 
-    print(f"🚀 Start Fine-Tuning WeatherSAM ({args.model_type})...")
-    print(f"   Checkpoint: {args.checkpoint}")
-    print(f"   Learning Rate: {args.lr}")
-    print(f"   Output Dir: {args.output_dir}")
-    
+    print_training_config(args, args.device)
+
     # 1. 建立模型
     print("🏗️  Building model...")
     if args.model_type == "vit_h":
@@ -89,21 +132,20 @@ def main():
     
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
-    
-    if not os.path.exists(args.train_csv) and "_cached" in args.train_csv:
-        print(f"⚠️ Cached CSV not found. Falling back to non-cached version...")
-        args.train_csv = args.train_csv.replace("_cached.csv", ".csv")
-        
-    if not os.path.exists(args.val_csv) and "_cached" in args.val_csv:
-        args.val_csv = args.val_csv.replace("_cached.csv", ".csv")
 
-    train_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='train', gps_noise=args.gps_noise)
+    train_ds = WeatherSegmentationDataset(
+        csv_file=args.train_csv,
+        image_size=1024,
+        mode='train', 
+        gps_noise=args.gps_noise
+    )
     
-    if os.path.exists(args.val_csv):
-        val_ds = WeatherSegmentationDataset(csv_file=args.val_csv, mode='val', gps_noise=args.gps_noise)
-    else:
-        print(f"⚠️ Warning: Validation CSV not found. Using Train set for validation.")
-        val_ds = WeatherSegmentationDataset(csv_file=args.train_csv, mode='val', gps_noise=args.gps_noise)
+    val_ds = WeatherSegmentationDataset(
+        csv_file=args.val_csv, 
+        image_size=1024, 
+        mode='val', 
+        gps_noise=args.gps_noise
+    )
 
     train_loader = DataLoader(
         train_ds, 
@@ -131,16 +173,14 @@ def main():
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        device=args.device,
-        lr=args.lr,
-        args=args  # [修改 1] 這裡將 args 傳入，讓 Trainer 可以存下來
+        args=args
     )
 
     # 4. 訓練迴圈
+    print(f"🔥 Start training loop for {args.epochs} epochs")
+
     best_val_loss = float('inf')
     history = []
-
-    print(f"🔥 Start training loop for {args.epochs} epochs")
     
     for epoch in range(args.epochs):
         train_metrics = trainer.train_epoch(epoch)

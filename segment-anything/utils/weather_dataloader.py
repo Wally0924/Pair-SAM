@@ -157,8 +157,8 @@ class WeatherSegmentationDataset(Dataset):
             lon = float(row['lon'])
             if self.mode == 'train':
                 # 添加高斯噪聲
-                lat += np.random.gauss(0, self.gps_noise)
-                lon += np.random.gauss(0, self.gps_noise)
+                lat += random.gauss(0, self.gps_noise)
+                lon += random.gauss(0, self.gps_noise)
         else:
             # 防呆機制：如果沒有 GPS，給定一個預設值 (例如 0,0) 或報錯
             # 建議訓練前檢查 CSV 完整性
