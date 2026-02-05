@@ -107,6 +107,7 @@ class WeatherSAM(nn.Module):
             
             # [cite_start]2. 編碼: (1, 2) -> (1, 256) [cite: 219]
             loc_feats = self.location_encoder(location_coords)
+            loc_feats = F.normalize(loc_feats, p=2, dim=-1)
             
             # 3. 調整維度以匹配 Text Prompts
             # 目標: (K, 1, 256) 以便與 (K, 1, 256) 的 Text 串接
@@ -122,7 +123,7 @@ class WeatherSAM(nn.Module):
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 text_embeddings=sparse_embeddings,
                 mask_inputs=None,
-                location_embeddings=location_embeddings
+                location_embeddings=location_embeddings,  
             )
 
             # C. Mask Decoding

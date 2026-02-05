@@ -83,7 +83,8 @@ class WeatherSegmentationDataset(Dataset):
             original_size = image.shape[:2]
             
             # Resize
-            image = cv2.resize(image, (self.image_size, self.image_size))
+            # image = cv2.resize(image, (self.image_size, self.image_size))
+            image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
             output["image"] = image_tensor
 
@@ -99,7 +100,8 @@ class WeatherSegmentationDataset(Dataset):
         else:
             ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
             
-        ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+        # ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+        ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
         # 轉為 Tensor: (3, H, W)
         ref_mask_tensor = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
         output["reference_mask"] = ref_mask_tensor

@@ -129,3 +129,119 @@ class SAMLoss(nn.Module):
         metrics["total"] = total_loss.item()
         
         return total_loss, metrics
+
+
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+
+# class SAMLoss(nn.Module):
+#     def __init__(self, focal_weight=2.0, dice_weight=1.0, iou_weight=1.0, label_smoothing=0.0):
+#         super().__init__()
+#         self.focal_weight = focal_weight
+#         self.dice_weight = dice_weight
+#         self.iou_weight = iou_weight
+#         self.label_smoothing = label_smoothing
+#         self.smooth = 1e-5
+
+#         self.class_map = {
+#             "road": 0, "sidewalk": 1, "building": 2, "wall": 3, "fence": 4,
+#             "pole": 5, "traffic light": 6, "traffic sign": 7, "vegetation": 8,
+#             "terrain": 9, "sky": 10, "person": 11, "rider": 12, "car": 13,
+#             "truck": 14, "bus": 15, "train": 16, "motorcycle": 17, "bicycle": 18
+#         }
+
+#     def forward(self, pred_masks, gt_mask, iou_predictions, text_prompts):
+#         device = pred_masks.device
+#         total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+#         metrics = {"total": 0.0, "bce": 0.0, "dice": 0.0, "iou_mse": 0.0}
+        
+#         valid_prompts_count = 0
+
+#         # [修正 1] 計算有效像素數時，先轉 float() 避免溢位
+#         valid_mask = (gt_mask != 255).float().unsqueeze(0).to(device)
+#         num_valid_pixels = valid_mask.float().sum(dim=(1, 2)) + 1e-6 
+        
+#         # 如果整張圖都是 255 (無效)，直接回傳 0
+#         if valid_mask.float().sum() < 1:
+#              return total_loss, metrics
+
+#         for k, prompt in enumerate(text_prompts):
+#             if prompt not in self.class_map:
+#                 continue
+            
+#             valid_prompts_count += 1
+#             class_id = self.class_map[prompt]
+            
+#             target = (gt_mask == class_id).float().unsqueeze(0).to(device)
+
+#             if self.label_smoothing > 0:
+#                 target = target * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
+            
+#             current_preds = pred_masks[k]
+#             # 限制範圍防止 BCE 爆炸
+#             current_preds = torch.clamp(current_preds, min=-10.0, max=10.0)
+            
+#             # --- 計算 Dice Loss ---
+#             pred_prob = torch.sigmoid(current_preds)
+            
+#             p_masked = pred_prob * valid_mask
+#             t_masked = target * valid_mask 
+            
+#             # [修正 2: 關鍵!] 必須先轉 .float() 再 sum()，否則 FP16 會溢位變成 Inf -> NaN
+#             intersection = (p_masked * t_masked).float().sum(dim=(1, 2)) 
+#             union = p_masked.float().sum(dim=(1, 2)) + t_masked.float().sum(dim=(1, 2))
+            
+#             dice_losses = 1 - (2 * intersection + self.smooth) / (union + self.smooth)
+            
+#             # --- 計算 Focal / BCE Loss ---
+#             target_expanded = target.expand_as(current_preds)
+            
+#             pixel_loss = F.binary_cross_entropy_with_logits(
+#                 current_preds, target_expanded, reduction='none'
+#             )
+            
+#             masked_pixel_loss = pixel_loss * valid_mask
+            
+#             # [修正 3] BCE 加總也要用 float32
+#             bce_losses = masked_pixel_loss.float().sum(dim=(1, 2)) / num_valid_pixels
+            
+#             # --- 組合 Loss ---
+#             seg_losses = (self.focal_weight * bce_losses) + (self.dice_weight * dice_losses)
+            
+#             best_mask_idx = torch.argmin(seg_losses)
+#             min_seg_loss = seg_losses[best_mask_idx]
+            
+#             # --- IoU Loss ---
+#             with torch.no_grad():
+#                 pred_binary = (pred_prob[best_mask_idx] > 0.5).float()
+#                 # 這裡也要防溢位
+#                 inter = (pred_binary * target.squeeze(0) * valid_mask.squeeze(0)).float().sum()
+#                 uni = (pred_binary * valid_mask.squeeze(0)).float().sum() + \
+#                       (target.squeeze(0) * valid_mask.squeeze(0)).float().sum() - inter
+#                 actual_iou = inter / (uni + 1e-5)
+            
+#             pred_iou_conf = iou_predictions[k, best_mask_idx]
+#             iou_loss = F.mse_loss(pred_iou_conf, actual_iou)
+            
+#             total_loss = total_loss + (min_seg_loss + self.iou_weight * iou_loss)
+            
+#             metrics["bce"] += bce_losses[best_mask_idx].item()
+#             metrics["dice"] += dice_losses[best_mask_idx].item()
+#             metrics["iou_mse"] += iou_loss.item()
+
+#         if valid_prompts_count > 0:
+#             total_loss = total_loss / valid_prompts_count
+#             for k in metrics:
+#                 if k != "total":
+#                     metrics[k] /= valid_prompts_count
+
+#         metrics["total"] = total_loss.item()
+        
+#         # 最後一道防線：如果還是 NaN，回傳 0.0 防止 scaler 壞掉
+#         if torch.isnan(total_loss) or torch.isinf(total_loss):
+#             print("⚠️ Warning: Loss became NaN/Inf in forward pass!")
+#             # 回傳一個有 grad 的 0 tensor，避免 DDP 報錯 (如果單機訓練則沒差)
+#             total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+
+#         return total_loss, metrics

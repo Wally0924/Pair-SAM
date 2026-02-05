@@ -49,7 +49,8 @@ class WeatherSAMTrainer:
             self.model.gate_module,
             self.model.mask_decoder,
             self.model.prompt_encoder,
-            self.model.location_encoder,
+            self.model.location_encoder.output_projection,
+            self.model.text_encoder.projection,
         ]
         
         for module in trainable_modules:
@@ -73,7 +74,7 @@ class WeatherSAMTrainer:
             # 1. Warmup 階段: 線性上升
             if epoch_idx < warmup_epochs:
                 # 例如第 0 epoch 返回 0，第 5 epoch 返回 1.0
-                return float(epoch_idx + 1) / float(warmup_epochs)
+                return float(epoch_idx) / float(warmup_epochs)
             
             # 2. Cosine Decay 階段: 緩慢下降
             else:
@@ -83,6 +84,10 @@ class WeatherSAMTrainer:
                 return 0.5 * (1.0 + math.cos(math.pi * progress))
             
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
+
+        # self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        #     self.optimizer, mode='min', factor=0.5, patience=3
+        # )
 
         os.makedirs("debug_viz", exist_ok=True)
 
@@ -177,7 +182,7 @@ class WeatherSAMTrainer:
 
             if step_count % 1000 == 0 and first_batch_logits is not None:
                 self._save_debug_snapshot(first_batch_logits, epoch_index, step_count)
-
+        
         self.scheduler.step()
         avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
         current_lr = self.optimizer.param_groups[0]['lr']
@@ -233,6 +238,7 @@ class WeatherSAMTrainer:
                 
         avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
         # self.scheduler.step(avg_metrics['total'])
+        # self.scheduler.step()
         return avg_metrics
 
     def save_checkpoint(self, path, epoch=None, best_score=None):
