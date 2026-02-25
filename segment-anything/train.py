@@ -96,12 +96,12 @@ def main():
     parser.add_argument("--checkpoint", type=str, 
                         default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv7")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv8")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--max_norm", type=float, default=0.5, help="Max norm for gradient clipping.")
     parser.add_argument("--gps_noise", type=float, default=0.00005, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
     
@@ -109,7 +109,7 @@ def main():
     parser.add_argument("--focal_weight", type=float, default=2.0)
     parser.add_argument("--dice_weight", type=float, default=2.0)
     parser.add_argument("--iou_weight", type=float, default=1.0)
-    parser.add_argument("--label_smoothing", type=float, default=0)
+    parser.add_argument("--label_smoothing", type=float, default=0.1)
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_with_gps.csv", 

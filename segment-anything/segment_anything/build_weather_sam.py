@@ -2,7 +2,7 @@
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, MaskDecoder, TwoWayTransformer, MaskEncoder, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder
+from .modeling import ImageEncoderViT, TwoWayTransformer, MaskEncoder, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
 
 def build_weather_sam_vit_b(checkpoint=None):
     return _build_weather_sam(
@@ -21,6 +21,12 @@ def build_weather_sam_vit_h(checkpoint=None):
         encoder_global_attn_indexes=[7, 15, 23, 31],
         checkpoint=checkpoint,
     )
+
+weather_sam_model_registry = {
+    "default": build_weather_sam_vit_h,
+    "vit_h": build_weather_sam_vit_h,
+    "vit_b": build_weather_sam_vit_b,
+}
 
 def _build_weather_sam(
     encoder_embed_dim,
@@ -110,21 +116,31 @@ def _build_weather_sam(
 
     # 3. 載入預訓練權重 (如果有提供)
     if checkpoint is not None:
-            print(f"Loading weights from {checkpoint}...")
-            with open(checkpoint, "rb") as f:
-                state_dict = torch.load(f)
+        print(f"Loading weights from {checkpoint}...")
+        with open(checkpoint, "rb") as f:
+            state_dict = torch.load(f)
             
-            # 過濾不匹配的鍵值 (例如我們改了 mask_decoder 或 prompt_encoder)
-            model_dict = sam.state_dict()
+        # 🌟 【關鍵修復】檢查這是否是由 Trainer 儲存的 checkpoint 字典
+        if 'model_state_dict' in state_dict:
+            print("Detected Trainer checkpoint. Extracting 'model_state_dict'...")
+            state_dict = state_dict['model_state_dict']
             
-            # 僅載入匹配的 Image Encoder 與部分 Decoder 權重
-            pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
-            
-            missing_keys = [k for k in model_dict if k not in pretrained_dict]
-            print(f"Missing keys (New modules initialized from scratch): {len(missing_keys)}")
-            # print(missing_keys[:5]) # Debug usage
-            
-            model_dict.update(pretrained_dict)
-            sam.load_state_dict(model_dict)
+        # 過濾不匹配的鍵值
+        model_dict = sam.state_dict()
+        
+        # 僅載入匹配的 Image Encoder 與部分 Decoder 權重
+        pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
+        
+        missing_keys = [k for k in model_dict if k not in pretrained_dict]
+        print(f"Missing keys (New modules initialized from scratch): {len(missing_keys)}")
+
+        # 👇 加入這兩行來進行診斷
+        if len(missing_keys) > 0:
+            print("🕵️ 遺失的前 10 個權重名稱:")
+            for mk in missing_keys[:10]:
+                print(f"   - {mk}")
+        
+        model_dict.update(pretrained_dict)
+        sam.load_state_dict(model_dict)
         
     return sam

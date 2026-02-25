@@ -113,7 +113,6 @@ class MaskDecoder(nn.Module):
         sparse_prompt_embeddings: torch.Tensor,
         dense_prompt_embeddings: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        [cite_start]
         """核心預測邏輯 [cite: 100, 121, 294]"""
         
         # 1. 準備 Output Tokens (IoU Token + Mask Tokens)
