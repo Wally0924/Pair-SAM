@@ -74,12 +74,12 @@ def print_training_config(args, device):
     print(f"   • Max Norm (Clip):   {args.max_norm}")
     print(f"   • GPS Noise Std:     {args.gps_noise} (approx. {args.gps_noise * 111000:.1f} m)")
     
-    # 3. Loss 權重
-    print(f"\n⚖️  Loss Weights:")
-    print(f"   • Focal Weight:      {args.focal_weight}")
-    print(f"   • Dice Weight:       {args.dice_weight}")
-    print(f"   • IoU Weight:        {args.iou_weight}")
-    print(f"   • Label Smoothing:   {args.label_smoothing}")
+    # 3. Loss 權重 (Commented Out for Semantic CrossEntropy)
+    # print(f"\n⚖️  Loss Weights:")
+    # print(f"   • Focal Weight:      {args.focal_weight}")
+    # print(f"   • Dice Weight:       {args.dice_weight}")
+    # print(f"   • IoU Weight:        {args.iou_weight}")
+    # print(f"   • Label Smoothing:   {args.label_smoothing}")
     
     # 4. 路徑資訊
     print(f"\n📂  Paths:")
@@ -105,11 +105,11 @@ def main():
     parser.add_argument("--max_norm", type=float, default=0.5, help="Max norm for gradient clipping.")
     parser.add_argument("--gps_noise", type=float, default=0.00005, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
     
-    # --- Loss 權重 ---
-    parser.add_argument("--focal_weight", type=float, default=2.0)
-    parser.add_argument("--dice_weight", type=float, default=2.0)
-    parser.add_argument("--iou_weight", type=float, default=1.0)
-    parser.add_argument("--label_smoothing", type=float, default=0.1)
+    # --- Loss 權重 (Commented Out for Semantic CrossEntropy) ---
+    # parser.add_argument("--focal_weight", type=float, default=2.0)
+    # parser.add_argument("--dice_weight", type=float, default=2.0)
+    # parser.add_argument("--iou_weight", type=float, default=1.0)
+    # parser.add_argument("--label_smoothing", type=float, default=0.1)
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_with_gps.csv", 

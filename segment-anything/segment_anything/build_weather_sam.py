@@ -4,21 +4,23 @@ from functools import partial
 
 from .modeling import ImageEncoderViT, TwoWayTransformer, MaskEncoder, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
 
-def build_weather_sam_vit_b(checkpoint=None):
+def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
     return _build_weather_sam(
         encoder_embed_dim=768,
         encoder_depth=12,
         encoder_num_heads=12,
         encoder_global_attn_indexes=[2, 5, 8, 11],
+        num_classes=num_classes,
         checkpoint=checkpoint,
     )
 
-def build_weather_sam_vit_h(checkpoint=None):
+def build_weather_sam_vit_h(num_classes=19, checkpoint=None):
     return _build_weather_sam(
         encoder_embed_dim=1280,
         encoder_depth=32,
         encoder_num_heads=16,
         encoder_global_attn_indexes=[7, 15, 23, 31],
+        num_classes=num_classes,
         checkpoint=checkpoint,
     )
 
@@ -33,6 +35,7 @@ def _build_weather_sam(
     encoder_depth,
     encoder_num_heads,
     encoder_global_attn_indexes,
+    num_classes=19,
     checkpoint=None,
 ):
     prompt_embed_dim = 256
@@ -112,6 +115,7 @@ def _build_weather_sam(
         gate_module=gate_module,
         text_encoder=text_encoder,
         location_encoder=location_encoder,
+        num_classes=num_classes,
     )
 
     # 3. 載入預訓練權重 (如果有提供)

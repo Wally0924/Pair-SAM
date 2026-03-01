@@ -385,7 +385,7 @@ class InferenceRunner:
         
         best_idx = torch.argmax(iou_preds, dim=1) # 找出每個類別預測最佳的 Mask 索引
         
-        # 3. 建立畫布 (大小為 Original Size，而非 1024)
+        # 3. 建立畫布 (大小為 Original Size)
         orig_h, orig_w = sample['original_size']
         final_class_logits = torch.full((self.num_classes, orig_h, orig_w), -1000.0, device=self.device)
         
@@ -393,14 +393,21 @@ class InferenceRunner:
         for k, prompt in enumerate(active_prompts):
             cls_i = self.classes.index(prompt)
             idx = best_idx[k]
-            # 這裡避免了低解析度上採樣產生的嚴重鋸齒與雜訊
+            # 這裡的 masks 已經透過 postprocess_masks 處理過且對齊 original_size
             final_class_logits[cls_i] = masks[k, idx, :, :] 
             
-        # 5. 決策邊界
-        max_logits, pred_mask = torch.max(final_class_logits, dim=0)
+        # 5. Semantic Fusion Head 互斥預測
+        # 將 (19, H, W) 擴充為 (1, 19, H, W) 送入 Head
+        fused_logits = self.predictor.model.semantic_fusion_head(final_class_logits.unsqueeze(0))
         
-        # [雜訊修復關鍵] 可以微調這個閥值。如果 Logit < 0，代表模型認為它是背景的機率大於前景。
-        # 為了減少零星的雜訊斑塊，可以適當將 0.0 提升到 0.5 等。
+        # 6. 決策邊界 (Argmax 直接得到互斥結果)
+        fused_logits = fused_logits.squeeze(0) # (19, H, W)
+        pred_mask = torch.argmax(fused_logits, dim=0) # (H, W)
+        
+        # 濾波機制 (如果最大機率依然小於某個閾值，判定為背景 255)
+        # 這裡我們用 Softmax 或直接看 logit 值。如果是 CrossEntropy 訓練的，logit < 0 可能不適用。
+        # 但為了保險起見，如果所有 class 的 logit 都極低 (例如都小於 0)，我們還是將其設為 255。
+        max_logits, _ = torch.max(fused_logits, dim=0)
         pred_mask[max_logits < 0.0] = 255 
 
         return pred_mask.cpu().numpy()
@@ -542,7 +549,7 @@ class InferenceRunner:
                 break
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research/segment-anything/outputs_weather_sam_all_data_testv6/weather_sam_best_latest.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv7/weather_sam_best_latest.pth"
     TEST_CSV_PATH = "/home/rvl1421/SAM_research/Datasets/test_with_gps.csv" 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -560,5 +567,5 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
     
-    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv6")
+    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv7")
     runner.run_inference(test_loader, num_samples=10)

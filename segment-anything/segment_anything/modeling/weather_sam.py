@@ -11,6 +11,7 @@ from .weather_mask_decoder import MaskDecoder
 from .fusion import CrossViewAlignment, GatedFusion
 from .text_encoder import TextEncoder
 from .location_encoder import LocationEncoder
+from .fusion_head import SemanticFusionHead
 
 class WeatherSAM(nn.Module):
     mask_threshold: float = 0.0
@@ -26,6 +27,7 @@ class WeatherSAM(nn.Module):
         gate_module: GatedFusion,
         text_encoder: TextEncoder,
         location_encoder: LocationEncoder,
+        num_classes: int = 19,
         pixel_mean: List[float] = [123.675, 116.28, 103.53],
         pixel_std: List[float] = [58.395, 57.12, 57.375],
     ) -> None:
@@ -38,6 +40,10 @@ class WeatherSAM(nn.Module):
         self.gate_module = gate_module
         self.text_encoder = text_encoder
         self.location_encoder = location_encoder
+        
+        # New Semantic Fusion Head for dynamic classes
+        self.num_classes = num_classes
+        self.semantic_fusion_head = SemanticFusionHead(num_classes=num_classes, hidden_dim=64)
         
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
@@ -150,12 +156,14 @@ class WeatherSAM(nn.Module):
                 original_size=image_record["original_size"],
             )
             
-            # Binary Mask Threshold
-            masks = masks > self.mask_threshold
+            # E. Semantic Fusion (Optional but recommended for semantic segmentation)
+            # low_res_masks is (K, 3, 256, 256). We typically take the best mask (index 0 if multimask=False, or from iou).
+            # We will process it after upsampling to original size, OR at 256 resolution.
+            # Doing it at high-res provides best edge quality. However, passing K back and handling later is cleaner.
             
             outputs.append(
                 {
-                    "masks": masks,              # (K, 3, H, W) Boolean
+                    "masks": masks,              # (K, 3, H, W) Boolean / Float masks
                     "iou_predictions": iou_predictions, # (K, 3)
                     "low_res_logits": low_res_masks,    # (K, 3, 256, 256)
                 }
