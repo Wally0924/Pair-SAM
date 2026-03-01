@@ -177,9 +177,8 @@ class WeatherSegmentationDataset(Dataset):
         # ===========================================================
         # 1. 判斷是否使用 Cache (訓練模式下強制關閉 Cache 以便做增強)
         # ===========================================================
-        use_cache = False
-        # 只有在非訓練模式 (val/test) 且檔案存在時，才使用 cache
-        if self.mode != 'train' and self.has_cached_features and pd.notna(row['feature_path']) and os.path.exists(row['feature_path']):
+        # 只有當檔案存在時，才使用 cache (現在訓練與驗證都支援 Cache)
+        if self.has_cached_features and pd.notna(row['feature_path']) and os.path.exists(row['feature_path']):
             use_cache = True
 
         # 準備變數 (若是 cache 模式，這些變數可能不會被建立，所以先 init)

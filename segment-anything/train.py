@@ -23,25 +23,13 @@ def plot_history(history, output_dir):
     df = pd.DataFrame(history)
     plt.figure(figsize=(12, 6))
     
-    plt.subplot(1, 2, 1)
-    plt.plot(df['epoch'], df['train_total'], 'b-o', label='Train Total Loss', linewidth=2)
-    plt.plot(df['epoch'], df['val_total'], 'r-s', label='Val Total Loss', linewidth=2)
+    plt.subplot(1, 1, 1)
+    if 'train_ce' in df.columns and 'val_ce' in df.columns:
+        plt.plot(df['epoch'], df['train_ce'], 'b-o', label='Train CE Loss', linewidth=2)
+        plt.plot(df['epoch'], df['val_ce'], 'r-s', label='Val CE Loss', linewidth=2)
     plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Loss Curve')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.7)
-
-    plt.subplot(1, 2, 2)
-    if 'train_dice' in df.columns and 'val_dice' in df.columns:
-        train_score = 1.0 - df['train_dice']
-        val_score = 1.0 - df['val_dice']
-        plt.plot(df['epoch'], train_score, 'g--', label='Train Dice Score', alpha=0.6)
-        plt.plot(df['epoch'], val_score, 'm--', label='Val Dice Score', alpha=0.6)
-    
-    plt.xlabel('Epoch')
-    plt.ylabel('Dice Score')
-    plt.title('Accuracy Curve (Dice Score)')
+    plt.ylabel('CrossEntropy Loss')
+    plt.title('Training and Validation Loss Curve')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.7)
     
@@ -96,13 +84,13 @@ def main():
     parser.add_argument("--checkpoint", type=str, 
                         default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv8")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv9")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
-    parser.add_argument("--max_norm", type=float, default=0.5, help="Max norm for gradient clipping.")
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--max_norm", type=float, default=1.0, help="Max norm for gradient clipping.")
     parser.add_argument("--gps_noise", type=float, default=0.00005, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
     
     # --- Loss 權重 (Commented Out for Semantic CrossEntropy) ---
@@ -188,34 +176,31 @@ def main():
         
         log_entry = {
             "epoch": epoch + 1,
-            "train_total": train_metrics["total"],
-            "train_dice": train_metrics["dice"],
-            "val_total": val_metrics["total"],
-            "val_dice": val_metrics["dice"]
+            "train_ce": train_metrics["ce_loss"],
+            "val_ce": val_metrics["ce_loss"]
         }
         history.append(log_entry)
         
-        print(f"   [Epoch {epoch+1}] Train Loss: {train_metrics['total']:.4f} | Val Loss: {val_metrics['total']:.4f}")
+        print(f"   [Epoch {epoch+1}] Train CE Loss: {train_metrics['ce_loss']:.4f} | Val CE Loss: {val_metrics['ce_loss']:.4f}")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)
         
         # 儲存最佳模型
-        if val_metrics['total'] < best_val_loss:
-            best_val_loss = val_metrics['total']
+        if val_metrics['ce_loss'] < best_val_loss:
+            best_val_loss = val_metrics['ce_loss']
             
             current_lr = trainer.optimizer.param_groups[0]['lr']
-            current_dice_score = 1.0 - val_metrics['dice']
             
-            save_filename = f"best_E{epoch+1}_Dice{current_dice_score:.4f}_LR{current_lr:.1e}.pth"
+            save_filename = f"best_E{epoch+1}_CELoss{best_val_loss:.4f}_LR{current_lr:.1e}.pth"
             save_path = os.path.join(args.output_dir, save_filename)
             
             # [修改 2] 呼叫時傳入額外資訊
-            trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=current_dice_score)
+            trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=best_val_loss)
             print(f"   🏆 New best model saved: {save_filename}")
             
             fixed_path = os.path.join(args.output_dir, "weather_sam_best_latest.pth")
-            trainer.save_checkpoint(fixed_path, epoch=epoch+1, best_score=current_dice_score)
+            trainer.save_checkpoint(fixed_path, epoch=epoch+1, best_score=best_val_loss)
 
     print("\n✅ Fine-Tuning completed!")
 

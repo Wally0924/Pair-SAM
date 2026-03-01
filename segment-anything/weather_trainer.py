@@ -114,7 +114,7 @@ class WeatherSAMTrainer:
 
     def train_epoch(self, epoch_index):
         self.model.train()
-        epoch_metrics = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
+        epoch_metrics = {"ce_loss": 0.0}
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
         step_count = 0
@@ -133,7 +133,7 @@ class WeatherSAMTrainer:
                 outputs = self.model(batched_input, multimask_output=True)
                 
                 total_loss = 0
-                loss_dict_accum = {"total": 0, "ce_loss": 0}
+                loss_dict_accum = {"ce_loss": 0.0}
                 first_batch_logits = None 
                 
                 # 這裡原本是 iterated over batch_size
@@ -214,7 +214,7 @@ class WeatherSAMTrainer:
     @torch.no_grad()
     def validate_epoch(self, epoch_index):
         self.model.eval()
-        epoch_metrics = {"total": 0, "bce": 0, "dice": 0, "iou_mse": 0}
+        epoch_metrics = {"ce_loss": 0.0}
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
         
@@ -226,7 +226,7 @@ class WeatherSAMTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input, multimask_output=True)
                 
-                loss_dict_accum = {"total": 0, "ce_loss": 0}
+                loss_dict_accum = {"ce_loss": 0.0}
                 
                 for i in range(batch_size):
                     low_res_logits = outputs[i]['low_res_logits']

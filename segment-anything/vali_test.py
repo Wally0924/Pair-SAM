@@ -10,7 +10,6 @@ import random
 # 為了避免 import 錯誤，請確保目錄結構正確
 from segment_anything.build_weather_sam import build_weather_sam_vit_h
 from weather_trainer import WeatherSAMTrainer
-from utils.new_loss import SAMLoss
 # 嘗試導入 collate_fn，如果失敗則使用本地定義的 fallback
 try:
     from utils.weather_dataloader import WeatherSegmentationDataset
@@ -196,22 +195,31 @@ def run_sanity_check():
             print("✅ Forward pass successful.")
 
             print("▶️  Calculating Loss...")
-            loss_fn = SAMLoss()
+            loss_fn = torch.nn.CrossEntropyLoss(ignore_index=255)
             
             # 針對 Batch 中第一張圖計算
             i = 0
             low_res = outputs[i]['low_res_logits'] 
-            # 模擬上採樣
-            full_res = torch.nn.functional.interpolate(
-                low_res, size=(1024, 1024), mode="bilinear", align_corners=False
+            
+            # 使用官方的 postprocess 放大
+            full_res_logits = model.postprocess_masks(
+                low_res,
+                input_size=(1024, 1024),
+                original_size=(1024, 1024)
             )
             
-            loss_val, loss_dict = loss_fn(
-                pred_masks=full_res,
-                gt_mask=gt_masks[i],
-                iou_predictions=outputs[i]['iou_predictions'],
-                text_prompts=batched_input[i]['text_prompts']
-            )
+            # 取最佳 mask index
+            best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1)
+            selected_logits = full_res_logits[torch.arange(19), best_idx, :, :].unsqueeze(0)
+            
+            # 通過 Fusion Head
+            fused_logits = model.semantic_fusion_head(selected_logits)
+            
+            # 確保 gt 的類別是 long
+            gt_mask_var = gt_masks[i].unsqueeze(0).long()
+            
+            loss_val = loss_fn(fused_logits, gt_mask_var)
+            
             print(f"📉 Calculated Loss: {loss_val.item():.4f}")
 
         # Backward Pass (雖然 backward 通常可以放在外面，但為了保險起見，scale 必須接續上面的 loss)
@@ -221,16 +229,16 @@ def run_sanity_check():
         print("✅ Backward pass successful (Gradients computed).")
         
         # 檢查梯度
-        print("🔍 Checking Gradients on Mask Decoder:")
+        print("🔍 Checking Gradients on Semantic Fusion Head:")
         has_grad = False
-        for name, param in model.mask_decoder.named_parameters():
+        for name, param in model.semantic_fusion_head.named_parameters():
             if param.grad is not None:
                 print(f"   Layer: {name} | Grad Mean: {param.grad.mean().item():.2e} | ✅ Has Grad")
                 has_grad = True
                 break
         
         if not has_grad:
-            print("⚠️ Warning: No gradients found in Mask Decoder! Check freeze settings.")
+            print("⚠️ Warning: No gradients found in Semantic Fusion Head!")
 
     except Exception as e:
         print(f"❌ Pipeline failed: {e}")
