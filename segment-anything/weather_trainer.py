@@ -53,6 +53,7 @@ class WeatherSAMTrainer:
             self.model.location_encoder.output_projection,
             self.model.text_encoder.projection,
             self.model.semantic_fusion_head,
+            self.model.mask_encoder,
         ]
         
         for module in trainable_modules:
@@ -120,14 +121,15 @@ class WeatherSAMTrainer:
         step_count = 0
         
         # 取得 max_norm 設定
-        max_norm = self.args.max_norm if self.args else 0.3
+        max_norm = getattr(self.args, 'max_norm', 1.0)
+        accumulation_steps = getattr(self.args, 'accumulate_steps', 4)
+        
+        self.optimizer.zero_grad()
         
         for batch in pbar:
             batch_size = len(batch['text_prompts'])
             batched_input = self._prepare_batch_input(batch, batch_size)
             gt_masks = batch['gt_mask'].to(self.device)
-
-            self.optimizer.zero_grad()
 
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input, multimask_output=True)
@@ -152,14 +154,31 @@ class WeatherSAMTrainer:
                     )
                     
                     # full_res_logits (K, 3, 1024, 1024) -> 取 best mask (idx 0) -> (K, 1024, 1024)
-                    # 假設我們信任 best_mask 是第一個，可以直接 squeeze，或者用 iou_predictions 挑
-                    best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1) # (19,)
+                    num_prompts = len(batched_input[i]['text_prompts'])
                     
-                    # 取出 19 類最佳的通道: shape (1, 19, 1024, 1024)
-                    selected_logits = full_res_logits[torch.arange(19), best_idx, :, :].unsqueeze(0)
+                    # 取出預測出的最佳遮罩 (num_prompts,)
+                    best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1) 
+                    
+                    # 取出每個 prompt 的最佳通道: shape (num_prompts, 1024, 1024)
+                    selected_logits = full_res_logits[torch.arange(num_prompts), best_idx, :, :]
+                    
+                    # 🚀 SemanticFusionHead 必須吃固定 Channel 大小 (譬如 19)
+                    # 如果目前的 prompts 數量少於 19 (例如只有 9 個有效類別)，我們必須塞入 background 補齊
+                    # 或者，若是用來融合特定類別的通道配置
+                    # 最嚴謹的寫法：建立一個 (19, 1024, 1024) 的全零 Tensor，將對應的 class_idx 填入
+                    
+                    full_class_logits = torch.full((self.model.num_classes, 1024, 1024), -10.0, device=self.device)
+                    for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
+                        if class_name in self.train_loader.dataset.CLASS_MAP:
+                            cls_id = self.train_loader.dataset.CLASS_MAP[class_name]
+                            if cls_id < self.model.num_classes:
+                                full_class_logits[cls_id] = selected_logits[prompt_idx]
+                    
+                    # 將補齊後的 Logits 架構成 Batch 形狀 (1, 19, 1024, 1024)
+                    full_class_logits = full_class_logits.unsqueeze(0)
                     
                     # 傳入 SemanticFusionHead 進行類別間的融合與互斥打架消除
-                    fused_logits = self.model.semantic_fusion_head(selected_logits) # (1, 19, 1024, 1024)
+                    fused_logits = self.model.semantic_fusion_head(full_class_logits) # (1, 19, 1024, 1024)
 
                     if i == 0:
                         first_batch_logits = fused_logits.squeeze(0)
@@ -172,16 +191,20 @@ class WeatherSAMTrainer:
                     loss_dict_accum['ce_loss'] += sample_loss.item()
 
                 total_loss = total_loss / batch_size
+                loss_to_backward = total_loss / accumulation_steps
 
-            self.scaler.scale(total_loss).backward()
-            self.scaler.unscale_(self.optimizer)
+            self.scaler.scale(loss_to_backward).backward()
             
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_norm)
-            
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
             step_count += 1
+            
+            # Gradient Accumulation Step
+            if step_count % accumulation_steps == 0 or step_count == len(self.train_loader):
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_norm)
+                
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad()
             
             for k in loss_dict_accum:
                 val_to_add = loss_dict_accum[k]
@@ -203,7 +226,8 @@ class WeatherSAMTrainer:
         return avg_metrics
 
     def _save_debug_snapshot(self, logits, epoch, step):
-        pred_logit = logits[0, 0, :, :]
+        # logits is (C, H, W) after squeeze(0) in train_epoch
+        pred_logit = logits[0, :, :]
         mask_viz = torch.sigmoid(pred_logit).detach().cpu().numpy()
         save_path = f"debug_viz/epoch_{epoch+1}_step_{step}.png"
         plt.imsave(save_path, mask_viz, cmap='gray')
@@ -238,10 +262,19 @@ class WeatherSAMTrainer:
                         original_size=(1024, 1024)
                     )
                     
-                    best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1) # (19,)
-                    selected_logits = full_res_logits[torch.arange(19), best_idx, :, :].unsqueeze(0)
+                    num_prompts = len(batched_input[i]['text_prompts'])
+                    best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1) 
+                    selected_logits = full_res_logits[torch.arange(num_prompts), best_idx, :, :]
                     
-                    fused_logits = self.model.semantic_fusion_head(selected_logits)
+                    full_class_logits = torch.full((self.model.num_classes, 1024, 1024), -10.0, device=self.device)
+                    for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
+                        if class_name in self.val_loader.dataset.CLASS_MAP:
+                            cls_id = self.val_loader.dataset.CLASS_MAP[class_name]
+                            if cls_id < self.model.num_classes:
+                                full_class_logits[cls_id] = selected_logits[prompt_idx]
+                    
+                    full_class_logits = full_class_logits.unsqueeze(0)
+                    fused_logits = self.model.semantic_fusion_head(full_class_logits)
                     
                     gt_mask = gt_masks[i].unsqueeze(0).long()
                     sample_loss = self.criterion(fused_logits, gt_mask)

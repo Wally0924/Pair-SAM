@@ -102,7 +102,7 @@ def _build_weather_sam(
     location_encoder = LocationEncoder(
             sigma=[2**0, 2**4, 2**8],
             output_dim=prompt_embed_dim,
-            pretrained_path="/home/rvl1421/SAM_research/segment-anything/checkpoints/location_encoder_weights.pth"
+            pretrained_path="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/location_encoder_weights.pth"
     )
     
     # 2. 組合 WeatherSAM

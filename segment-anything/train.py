@@ -82,13 +82,14 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     parser.add_argument("--checkpoint", type=str, 
-                        default="/home/rvl1421/SAM_research/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
+                        default="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint.")
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv9")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=2, help="Mini-batch size (per forward pass)")
+    parser.add_argument("--accumulate_steps", type=int, default=4, help="Gradient accumulation steps (effective = batch_size * accumulate_steps)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--max_norm", type=float, default=1.0, help="Max norm for gradient clipping.")
     parser.add_argument("--gps_noise", type=float, default=0.00005, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
@@ -100,9 +101,9 @@ def main():
     # parser.add_argument("--label_smoothing", type=float, default=0.1)
 
     # --- 資料路徑 ---
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/train_with_gps.csv", 
+    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", 
                         help="Path to train CSV.")
-    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research/Datasets/val_with_gps.csv", 
+    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/val_with_gps.csv", 
                         help="Path to val CSV.")
     
     args = parser.parse_args()
@@ -195,7 +196,6 @@ def main():
             save_filename = f"best_E{epoch+1}_CELoss{best_val_loss:.4f}_LR{current_lr:.1e}.pth"
             save_path = os.path.join(args.output_dir, save_filename)
             
-            # [修改 2] 呼叫時傳入額外資訊
             trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=best_val_loss)
             print(f"   🏆 New best model saved: {save_filename}")
             
