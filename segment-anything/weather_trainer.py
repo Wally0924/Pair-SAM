@@ -35,10 +35,15 @@ class WeatherSAMTrainer:
         # -------------------------------------------------------------
         
         # [修改] 使用 Semantic CrossEntropy Loss
+        # [修改] 使用 CombinedSemanticLoss
         lr = args.lr if args else 1e-4
         
-        print(f"📉 Initializing Semantic CrossEntropy Loss")
-        self.criterion = torch.nn.CrossEntropyLoss(ignore_index=255)
+        ce_w = getattr(args, 'ce_weight', 1.0)
+        focal_w = getattr(args, 'focal_weight', 2.0)
+        dice_w = getattr(args, 'dice_weight', 2.0)
+        from utils.new_loss import CombinedSemanticLoss
+        print(f"📉 Initializing CombinedSemanticLoss (CE: {ce_w}, Focal: {focal_w}, Dice: {dice_w})")
+        self.criterion = CombinedSemanticLoss(ce_weight=ce_w, focal_weight=focal_w, dice_weight=dice_w)
         
         self.scaler = torch.amp.GradScaler('cuda')
         
@@ -54,6 +59,7 @@ class WeatherSAMTrainer:
             self.model.text_encoder.projection,
             self.model.semantic_fusion_head,
             self.model.mask_encoder,
+            self.model.mask_decoder.iou_prediction_head,  # 解凍 IoU Head
         ]
         
         for module in trainable_modules:
@@ -115,7 +121,7 @@ class WeatherSAMTrainer:
 
     def train_epoch(self, epoch_index):
         self.model.train()
-        epoch_metrics = {"ce_loss": 0.0}
+        epoch_metrics = {"total": 0.0, "ce": 0.0, "focal": 0.0, "dice": 0.0}
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
         step_count = 0
@@ -134,62 +140,64 @@ class WeatherSAMTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input, multimask_output=True)
                 
-                total_loss = 0
-                loss_dict_accum = {"ce_loss": 0.0}
+                total_loss = torch.tensor(0.0, device=self.device)
+                loss_dict_accum = {"ce": 0.0, "focal": 0.0, "dice": 0.0}
                 first_batch_logits = None 
                 
                 # 這裡原本是 iterated over batch_size
                 # 在我們的新設計中，每個 i 代表一張圖，且 outputs[i]['masks'] 是 (19, 1024, 1024)
                 for i in range(batch_size):
-                    # 取出 SAM 的高解析度 mask 推論
-                    # 注意：如果原本 masks[k, idx, :, :] 是最好的，我們這裡可以直接拿 'masks' 裡最好的 index 0
-                    # 或是直接使用 low_res_logits 再過一次 postprocess
-                    low_res_logits = outputs[i]['low_res_logits']
-                    
-                    # 替換為 SAM 內建的高解析度後處理 (1024x1024)
-                    full_res_logits = self.model.postprocess_masks(
-                        low_res_logits,
-                        input_size=(1024, 1024),
-                        original_size=(1024, 1024)
-                    )
-                    
-                    # full_res_logits (K, 3, 1024, 1024) -> 取 best mask (idx 0) -> (K, 1024, 1024)
+                    low_res_logits = outputs[i]['low_res_logits']   # (K, 3, 256, 256)
+                    iou_preds = outputs[i]['iou_predictions']       # (K, 3)
                     num_prompts = len(batched_input[i]['text_prompts'])
                     
-                    # 取出預測出的最佳遮罩 (num_prompts,)
-                    best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1) 
+                    # ── Step 1: Temperature-Scaled Soft Weighted Sum (可微分) ──
+                    iou_temp = getattr(self.args, 'iou_temp', 0.1)
+                    weights = F.softmax(iou_preds / iou_temp, dim=1)       # (K, 3)
+                    weights = weights.unsqueeze(-1).unsqueeze(-1)           # (K, 3, 1, 1)
+                    selected_logits = (low_res_logits * weights).sum(dim=1) # (K, 256, 256) ✅ 可微分
                     
-                    # 取出每個 prompt 的最佳通道: shape (num_prompts, 1024, 1024)
-                    selected_logits = full_res_logits[torch.arange(num_prompts), best_idx, :, :]
-                    
-                    # 🚀 SemanticFusionHead 必須吃固定 Channel 大小 (譬如 19)
-                    # 如果目前的 prompts 數量少於 19 (例如只有 9 個有效類別)，我們必須塞入 background 補齊
-                    # 或者，若是用來融合特定類別的通道配置
-                    # 最嚴謹的寫法：建立一個 (19, 1024, 1024) 的全零 Tensor，將對應的 class_idx 填入
-                    
-                    full_class_logits = torch.full((self.model.num_classes, 1024, 1024), -10.0, device=self.device)
+                    # ── Step 2: list + cat 保留梯度鏈 ──
+                    prompt_to_cls = {}
                     for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
                         if class_name in self.train_loader.dataset.CLASS_MAP:
                             cls_id = self.train_loader.dataset.CLASS_MAP[class_name]
                             if cls_id < self.model.num_classes:
-                                full_class_logits[cls_id] = selected_logits[prompt_idx]
+                                prompt_to_cls[cls_id] = prompt_idx
                     
-                    # 將補齊後的 Logits 架構成 Batch 形狀 (1, 19, 1024, 1024)
-                    full_class_logits = full_class_logits.unsqueeze(0)
+                    class_channels = []
+                    for cls_id in range(self.model.num_classes):
+                        if cls_id in prompt_to_cls:
+                            class_channels.append(selected_logits[prompt_to_cls[cls_id]].unsqueeze(0))
+                        else:
+                            class_channels.append(torch.full((1, 256, 256), -10.0, device=self.device))
                     
-                    # 傳入 SemanticFusionHead 進行類別間的融合與互斥打架消除
-                    fused_logits = self.model.semantic_fusion_head(full_class_logits) # (1, 19, 1024, 1024)
-
+                    full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)  # (1, 19, 256, 256)
+                    
+                    # ── Step 3: FusionHead 在 256×256（VRAM ÷ 16）──
+                    fused_logits = self.model.semantic_fusion_head(full_class_logits)
+                    
+                    # ── Step 4: postprocess_masks 上採樣到 1024×1024 ──
+                    fused_logits_hr = self.model.postprocess_masks(
+                        fused_logits,
+                        input_size=(1024, 1024),
+                        original_size=(1024, 1024),
+                    )
+                    
                     if i == 0:
                         first_batch_logits = fused_logits.squeeze(0)
                     
-                    # 計算 CE Loss
-                    gt_mask = gt_masks[i].unsqueeze(0).long() # (1, 1024, 1024)
-                    sample_loss = self.criterion(fused_logits, gt_mask)
+                    # ── Step 5: Combined Loss ──
+                    gt_mask = gt_masks[i].unsqueeze(0).long()
+                    active_prompts = batched_input[i]['text_prompts']
+                    sample_loss, metrics = self.criterion(fused_logits_hr, gt_mask, active_prompts)
                     
                     total_loss += sample_loss
-                    loss_dict_accum['ce_loss'] += sample_loss.item()
+                    loss_dict_accum['ce'] += metrics['ce']
+                    loss_dict_accum['focal'] += metrics['focal']
+                    loss_dict_accum['dice'] += metrics['dice']
 
+                loss_dict_accum['total'] = total_loss.item()
                 total_loss = total_loss / batch_size
                 loss_to_backward = total_loss / accumulation_steps
 
@@ -212,7 +220,9 @@ class WeatherSAMTrainer:
 
             pbar.set_postfix(
                 loss=total_loss.item(), 
-                ce_loss=(loss_dict_accum['ce_loss']/batch_size)
+                ce=(loss_dict_accum['ce']/batch_size),
+                focal=(loss_dict_accum['focal']/batch_size),
+                dice=(loss_dict_accum['dice']/batch_size)
             )
 
             if step_count % 1000 == 0 and first_batch_logits is not None:
@@ -238,7 +248,7 @@ class WeatherSAMTrainer:
     @torch.no_grad()
     def validate_epoch(self, epoch_index):
         self.model.eval()
-        epoch_metrics = {"ce_loss": 0.0}
+        epoch_metrics = {"total": 0.0, "ce": 0.0, "focal": 0.0, "dice": 0.0}
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
         
@@ -250,38 +260,58 @@ class WeatherSAMTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input, multimask_output=True)
                 
-                loss_dict_accum = {"ce_loss": 0.0}
+                loss_dict_accum = {"ce": 0.0, "focal": 0.0, "dice": 0.0}
+                total_loss = torch.tensor(0.0, device=self.device)
                 
                 for i in range(batch_size):
-                    low_res_logits = outputs[i]['low_res_logits']
-                    
-                    # 取代 F.interpolate
-                    full_res_logits = self.model.postprocess_masks(
-                        low_res_logits, 
-                        input_size=(1024, 1024), 
-                        original_size=(1024, 1024)
-                    )
-                    
+                    low_res_logits = outputs[i]['low_res_logits']   # (K, 3, 256, 256)
+                    iou_preds = outputs[i]['iou_predictions']       # (K, 3)
                     num_prompts = len(batched_input[i]['text_prompts'])
-                    best_idx = torch.argmax(outputs[i]['iou_predictions'], dim=1) 
-                    selected_logits = full_res_logits[torch.arange(num_prompts), best_idx, :, :]
                     
-                    full_class_logits = torch.full((self.model.num_classes, 1024, 1024), -10.0, device=self.device)
+                    # ── Step 1: Temperature-Scaled Soft Weighted Sum ──
+                    iou_temp = getattr(self.args, 'iou_temp', 0.1)
+                    weights = F.softmax(iou_preds / iou_temp, dim=1)
+                    weights = weights.unsqueeze(-1).unsqueeze(-1)
+                    selected_logits = (low_res_logits * weights).sum(dim=1)
+                    
+                    # ── Step 2: list + cat ──
+                    prompt_to_cls = {}
                     for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
                         if class_name in self.val_loader.dataset.CLASS_MAP:
                             cls_id = self.val_loader.dataset.CLASS_MAP[class_name]
                             if cls_id < self.model.num_classes:
-                                full_class_logits[cls_id] = selected_logits[prompt_idx]
+                                prompt_to_cls[cls_id] = prompt_idx
                     
-                    full_class_logits = full_class_logits.unsqueeze(0)
+                    class_channels = []
+                    for cls_id in range(self.model.num_classes):
+                        if cls_id in prompt_to_cls:
+                            class_channels.append(selected_logits[prompt_to_cls[cls_id]].unsqueeze(0))
+                        else:
+                            class_channels.append(torch.full((1, 256, 256), -10.0, device=self.device))
+                    
+                    full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)
+                    
+                    # ── Step 3: FusionHead at 256² ──
                     fused_logits = self.model.semantic_fusion_head(full_class_logits)
                     
-                    gt_mask = gt_masks[i].unsqueeze(0).long()
-                    sample_loss = self.criterion(fused_logits, gt_mask)
+                    # ── Step 4: postprocess_masks 上採樣 ──
+                    fused_logits_hr = self.model.postprocess_masks(
+                        fused_logits,
+                        input_size=(1024, 1024),
+                        original_size=(1024, 1024),
+                    )
                     
-                    loss_dict_accum['ce_loss'] += sample_loss.item()
+                    gt_mask = gt_masks[i].unsqueeze(0).long()
+                    active_prompts = batched_input[i]['text_prompts']
+                    sample_loss, metrics = self.criterion(fused_logits_hr, gt_mask, active_prompts)
+                    
+                    total_loss += sample_loss
+                    loss_dict_accum['ce'] += metrics['ce']
+                    loss_dict_accum['focal'] += metrics['focal']
+                    loss_dict_accum['dice'] += metrics['dice']
             
             step_count += 1
+            loss_dict_accum['total'] = total_loss.item()
             for k in loss_dict_accum:
                 epoch_metrics[k] = epoch_metrics.get(k, 0.0) + (loss_dict_accum[k] / batch_size)
                 

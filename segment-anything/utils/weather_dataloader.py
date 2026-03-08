@@ -58,118 +58,6 @@ class WeatherSegmentationDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    # def __getitem__(self, idx):
-    #     row = self.data.iloc[idx]
-    #     output = {}
-        
-    #     # -----------------------------------------------------------
-    #     # 1. 讀取影像或特徵 (Image or Feature)
-    #     # -----------------------------------------------------------
-    #     use_cache = False
-    #     if self.has_cached_features and pd.notna(row['feature_path']) and os.path.exists(row['feature_path']):
-    #         use_cache = True
-
-    #     if use_cache:
-    #         # === 快取模式 ===
-    #         image_embedding = torch.load(row['feature_path'])
-    #         output["image_embedding"] = image_embedding
-    #         original_size = (self.image_size, self.image_size)
-    #     else:
-    #         # === 原始模式 ===
-    #         image = cv2.imread(row['image_path'])
-    #         if image is None:
-    #             raise ValueError(f"Could not load image: {row['image_path']}")
-    #         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    #         original_size = image.shape[:2]
-            
-    #         # Resize
-    #         # image = cv2.resize(image, (self.image_size, self.image_size))
-    #         image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
-    #         image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
-    #         output["image"] = image_tensor
-
-    #     output["original_size"] = original_size
-
-    #     # -----------------------------------------------------------
-    #     # 2. 讀取參考遮罩 (Reference Mask) & 製作 Void Mask
-    #     # -----------------------------------------------------------
-    #     ref_mask_path = row.get('ref_mask_path', None)
-    #     if pd.notna(ref_mask_path) and os.path.exists(str(ref_mask_path)):
-    #         ref_mask = cv2.imread(ref_mask_path)
-    #         ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
-    #     else:
-    #         ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-            
-    #     # ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
-    #     ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
-    #     # 轉為 Tensor: (3, H, W)
-    #     ref_mask_tensor = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
-    #     output["reference_mask"] = ref_mask_tensor
-        
-    #     # [保留] 檢測黑色區域 (Void/Black Detection)
-    #     # 邏輯：如果在 RGB 三個通道上的總和為 0，代表是全黑 (0,0,0)
-    #     ref_void_mask = (ref_mask_tensor.sum(dim=0) == 0) 
-    #     output["ref_void_mask"] = ref_void_mask
-
-    #     # -----------------------------------------------------------
-    #     # 3. 讀取 Ground Truth
-    #     # -----------------------------------------------------------
-    #     gt_path = row.get('gt_path', None)
-    #     has_gt = False
-    #     if pd.notna(gt_path) and os.path.exists(str(gt_path)):
-    #         gt_mask = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
-    #         has_gt = True
-    #     else:
-    #         gt_mask = np.zeros((self.image_size, self.image_size), dtype=np.uint8)
-
-    #     gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
-    #     output["gt_mask"] = torch.as_tensor(gt_mask).long()
-
-    #     # -----------------------------------------------------------
-    #     # 4. 生成 Text Prompts (回復為全類別訓練)
-    #     # -----------------------------------------------------------
-    #     active_prompts = []
-    #     if has_gt:
-    #         # 取得 GT 中存在的所有唯一類別 ID
-    #         unique_classes = np.unique(gt_mask)
-    #         for cls_id in unique_classes:
-    #             # 確保 ID 在我們定義的 19 類中 (過濾掉 255 或其他無效 ID)
-    #             if cls_id in self.ID_TO_NAME:
-    #                 active_prompts.append(self.ID_TO_NAME[cls_id])
-        
-    #     # 預設值 (防空)
-    #     if not active_prompts:
-    #         active_prompts = ["road"]
-
-    #     # [修改] 訓練模式下，不再丟棄任何類別，但進行洗牌
-    #     if self.mode == 'train':
-    #         # 隨機打亂順序，避免模型記住 "Road 總是排第一個"
-    #         random.shuffle(active_prompts)
-            
-    #         # 若您之前有設定 Prompt 數量上限 (如最多 3 個)，這裡已經移除了，
-    #         # 現在會回傳 GT 裡有的 "所有" 類別。
-
-    #     output["text_prompts"] = active_prompts
-
-    #     # -----------------------------------------------------------
-    #     # 5. 讀取 GPS 座標 (Location)
-    #     # -----------------------------------------------------------
-    #     if 'lat' in row and 'lon' in row:
-    #         lat = float(row['lat'])
-    #         lon = float(row['lon'])
-    #         if self.mode == 'train':
-    #             # 添加高斯噪聲
-    #             lat += random.gauss(0, self.gps_noise)
-    #             lon += random.gauss(0, self.gps_noise)
-    #     else:
-    #         # 防呆機制：如果沒有 GPS，給定一個預設值 (例如 0,0) 或報錯
-    #         # 建議訓練前檢查 CSV 完整性
-    #         lat, lon = 0.0, 0.0
-
-    #     # 轉為 Tensor (2,)
-    #     output["location"] = torch.tensor([lat, lon], dtype=torch.float32)
-
-    #     return output
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
         output = {}
@@ -178,7 +66,8 @@ class WeatherSegmentationDataset(Dataset):
         # 1. 判斷是否使用 Cache (訓練模式下強制關閉 Cache 以便做增強)
         # ===========================================================
         # 只有當檔案存在時，才使用 cache (現在訓練與驗證都支援 Cache)
-        if self.has_cached_features and pd.notna(row['feature_path']) and os.path.exists(row['feature_path']):
+        use_cache = False
+        if self.has_cached_features and pd.notna(row.get('feature_path')) and os.path.exists(str(row.get('feature_path'))):
             use_cache = True
 
         # 準備變數 (若是 cache 模式，這些變數可能不會被建立，所以先 init)
@@ -241,14 +130,8 @@ class WeatherSegmentationDataset(Dataset):
             gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
             # ===========================================================
-            # 🔥 [關鍵修改] Data Augmentation 資料增強
+            # 🔥 [關鍵修改] 移除 Data Augmentation 資料增強 (原先在此)
             # ===========================================================
-            if self.mode == 'train':
-                # 1. 隨機水平翻轉 (Random Horizontal Flip) - 機率 50%
-                if random.random() > 0.5:
-                    image = cv2.flip(image, 1)
-                    ref_mask = cv2.flip(ref_mask, 1)
-                    gt_mask = cv2.flip(gt_mask, 1)
                 
                 # # 2. 隨機色彩擾動 (Color Jitter) - 調整亮度與對比度
                 # # 幫助模型適應不同天氣的光線變化

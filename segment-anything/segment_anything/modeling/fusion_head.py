@@ -11,12 +11,12 @@ class SemanticFusionHead(nn.Module):
         super().__init__()
         # 1x1 Conv to mix class probabilities
         self.conv1 = nn.Conv2d(num_classes, hidden_dim, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(hidden_dim)
+        self.gn1 = nn.GroupNorm(num_groups=8, num_channels=hidden_dim)
         self.relu = nn.ReLU(inplace=True)
         
         # 3x3 Conv to smooth boundaries (Spatial Context)
         self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(hidden_dim)
+        self.gn2 = nn.GroupNorm(num_groups=8, num_channels=hidden_dim)
         
         # Output back to num_classes
         self.classifier = nn.Conv2d(hidden_dim, num_classes, kernel_size=1)
@@ -29,7 +29,8 @@ class SemanticFusionHead(nn.Module):
         Returns:
             out: Fused logits of shape (B, num_classes, H, W)
         """
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.relu(self.bn2(self.conv2(x)))
-        out = self.classifier(x)
-        return out
+        identity = x
+        out = self.relu(self.gn1(self.conv1(x)))
+        out = self.relu(self.gn2(self.conv2(out)))
+        out = self.classifier(out)
+        return out + identity
