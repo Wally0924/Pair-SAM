@@ -92,6 +92,8 @@ def main():
     parser.add_argument("--checkpoint", type=str, 
                         default="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint.")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv12")
     
     # --- 訓練超參數 ---
@@ -122,12 +124,13 @@ def main():
 
     print_training_config(args, args.device)
 
-    # 1. 建立模型
-    print("🏗️  Building model...")
+    # 1. 建立模型（若有 resume 則從訓練 checkpoint 載入權重）
+    model_checkpoint = args.resume if args.resume else args.checkpoint
+    print(f"🏗️  Building model from: {model_checkpoint}")
     if args.model_type == "vit_h":
-        model = build_weather_sam_vit_h(checkpoint=args.checkpoint)
+        model = build_weather_sam_vit_h(checkpoint=model_checkpoint)
     else:
-        model = build_weather_sam_vit_b(checkpoint=args.checkpoint)
+        model = build_weather_sam_vit_b(checkpoint=model_checkpoint)
     
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
@@ -176,13 +179,24 @@ def main():
     )
 
     # 4. 訓練迴圈
-    print(f"🔥 Start training loop for {args.epochs} epochs")
-
+    start_epoch = 0
     best_val_loss = float('inf')
     early_stop_counter = 0
     history = []
+
+    # --- Resume: 從中斷點恢復訓練 ---
+    if args.resume:
+        print(f"🔄 Resuming training from: {args.resume}")
+        resume_ckpt = torch.load(args.resume, map_location=args.device)
+        trainer.optimizer.load_state_dict(resume_ckpt['optimizer_state_dict'])
+        trainer.scheduler.load_state_dict(resume_ckpt['scheduler_state_dict'])
+        start_epoch = resume_ckpt.get('epoch', 0)
+        best_val_loss = resume_ckpt.get('best_score', float('inf'))
+        print(f"   ✅ Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.4f}")
+
+    print(f"🔥 Start training loop for epochs {start_epoch + 1} ~ {args.epochs}")
     
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         train_metrics = trainer.train_epoch(epoch)
         val_metrics = trainer.validate_epoch(epoch)
         
