@@ -78,10 +78,9 @@ class InferenceRunner:
             multimask_output=True
         )
         
-        # 3. Temperature-Scaled Soft Weighted Sum（與訓練一致，T=0.01）
-        T = 0.01
-        weights = torch.softmax(iou_preds / T, dim=1).unsqueeze(-1).unsqueeze(-1)  # (K, 3, 1, 1)
-        selected_logits = (low_res_masks * weights).sum(dim=1)  # (K, 256, 256)
+        # 3. Argmax 選取最佳 candidate（與訓練一致）
+        best_mask_indices = torch.argmax(iou_preds, dim=1)  # (K,)
+        selected_logits = low_res_masks[torch.arange(len(active_prompts)), best_mask_indices]  # (K, 256, 256)
         
         # 4. list + cat 組裝 19 class channels at 256²
         class_channels = []
@@ -98,7 +97,7 @@ class InferenceRunner:
         full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)  # (1, 19, 256, 256)
         
         # 5. FusionHead at 256²
-        fused_logits = self.predictor.model.semantic_fusion_head(full_class_logits)
+        fused_logits = self.predictor.model.context_fusion_head(full_class_logits)
         
         # 6. postprocess_masks 上採樣到 original_size（正確處理 padding）
         orig_h, orig_w = sample['original_size']
@@ -255,7 +254,7 @@ class InferenceRunner:
                 break
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv10/best_E34_CELoss1.3713_LR2.8e-06.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv11/best_E4_CELoss3.6653_LR8.3e-05.pth"
     TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/test_with_gps.csv" 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -273,5 +272,5 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
     
-    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv10")
+    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv11-1")
     runner.run_inference(test_loader, num_samples=10)

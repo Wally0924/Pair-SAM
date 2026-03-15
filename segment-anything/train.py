@@ -33,9 +33,11 @@ def plot_history(history, output_dir):
         plt.plot(df['epoch'], df['val_focal'], 'r-s', label='Val Focal', alpha=0.7)
     if 'val_dice' in df.columns:
         plt.plot(df['epoch'], df['val_dice'], 'g-s', label='Val Dice', alpha=0.7)
+    if 'val_iou' in df.columns:
+        plt.plot(df['epoch'], df['val_iou'], 'm-^', label='Val IoU MSE', alpha=0.7)
     plt.xlabel('Epoch')
     plt.ylabel('Loss Value')
-    plt.title('Combined Semantic Loss Components')
+    plt.title('Decoupled Multi-Loss Components')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.7)
     
@@ -68,11 +70,12 @@ def print_training_config(args, device):
     print(f"   • Max Norm (Clip):   {args.max_norm}")
     print(f"   • Early Stopping:    Patience {args.patience}, Min Delta {args.min_delta}")
     
-    # 3. Combined Loss Weights
-    print(f"\n⚖️  Combined Loss Weights:")
+    # 3. Decoupled Loss Weights
+    print(f"\n⚖️  Decoupled Loss Weights:")
     print(f"   • CE Weight:         {args.ce_weight}")
     print(f"   • Focal Weight:      {args.focal_weight}")
     print(f"   • Dice Weight:       {args.dice_weight}")
+    print(f"   • IoU Weight:        {args.iou_weight}")
     
     # 4. 路徑資訊
     print(f"\n📂  Paths:")
@@ -89,30 +92,29 @@ def main():
     parser.add_argument("--checkpoint", type=str, 
                         default="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
                         help="Path to checkpoint.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv11")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv12")
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--patience", type=int, default=5, help="Early stopping patience")
-    parser.add_argument("--min_delta", type=float, default=0.01, help="Minimum change in val loss to be considered an improvement")
-    parser.add_argument("--batch_size", type=int, default=2, help="Mini-batch size (per forward pass)")
-    parser.add_argument("--accumulate_steps", type=int, default=4, help="Gradient accumulation steps (effective = batch_size * accumulate_steps)")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
-    parser.add_argument("--max_norm", type=float, default=1.0, help="Max norm for gradient clipping.")
-    parser.add_argument("--gps_noise", type=float, default=0.00005, help="Standard deviation of Gaussian noise added to GPS coordinates during training.")
-    parser.add_argument("--iou_temp", type=float, default=0.01,
-        help="Temperature for IoU softmax mask selection. Lower = sharper.")
+    parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--patience", type=int, default=5, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--min_delta", type=float, default=0.01, help="判定為進步的最小 Loss 差異")
+    parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
+    parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps)")
+    parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
+    parser.add_argument("--max_norm", type=float, default=2.0, help="梯度裁剪的 Max norm。")
+    parser.add_argument("--gps_noise", type=float, default=0.00005, help="訓練時添加到 GPS 座標的常態分布噪音標準差。")
     
-    # --- Combined Loss 權重 ---
-    parser.add_argument("--ce_weight", type=float, default=1.0)
-    parser.add_argument("--focal_weight", type=float, default=2.0)
-    parser.add_argument("--dice_weight", type=float, default=2.0)
+    # --- Decoupled Loss 權重 ---
+    parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
+    parser.add_argument("--focal_weight", type=float, default=1.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--dice_weight", type=float, default=1.0, help="MaskLoss (Dice) 權重")
+    parser.add_argument("--iou_weight", type=float, default=1.0, help="IoU MSE Loss 權重")
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", 
-                        help="Path to train CSV.")
+                        help="訓練資料集 CSV 路徑")
     parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/val_with_gps.csv", 
-                        help="Path to val CSV.")
+                        help="驗證資料集 CSV 路徑")
     
     args = parser.parse_args()
     
@@ -190,15 +192,17 @@ def main():
             "train_ce": train_metrics["ce"],
             "train_focal": train_metrics["focal"],
             "train_dice": train_metrics["dice"],
+            "train_iou": train_metrics["iou"],
             "val_total": val_metrics["total"],
             "val_ce": val_metrics["ce"],
             "val_focal": val_metrics["focal"],
-            "val_dice": val_metrics["dice"]
+            "val_dice": val_metrics["dice"],
+            "val_iou": val_metrics["iou"]
         }
         history.append(log_entry)
         
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f})")
+        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, IoU:{val_metrics['iou']:.4f})")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)
@@ -206,20 +210,30 @@ def main():
         # 儲存最佳模型與 Early Stopping 邏輯
         current_val_loss = val_metrics['total']
         
-        # 判斷是否顯著提升 (進步幅度大於 min_delta 才重置計時器)
+        # 判斷是否進步 (打破最佳紀錄)
         if current_val_loss < (best_val_loss - args.min_delta):
-            early_stop_counter = 0
-        else:
-            early_stop_counter += 1
-            print(f"   ⚠️ Early Stopping Counter: {early_stop_counter} / {args.patience} (min_delta={args.min_delta})")
-            
-        # 只要打破最佳紀錄就存檔 (即使進步很小)
-        if current_val_loss < best_val_loss:
+            # 顯著進步，重置耐心值計數器並更新最佳紀錄
             best_val_loss = current_val_loss
+            early_stop_counter = 0
+            is_best = True
+        elif current_val_loss < best_val_loss:
+            # 雖然打破紀錄，但進步幅度小於 min_delta，更新紀錄，但不重置計數器
+            best_val_loss = current_val_loss
+            early_stop_counter += 1
+            is_best = True
+            print(f"   ⚠️ Progress but < min_delta. Early Stopping Counter: {early_stop_counter} / {args.patience}")
+        else:
+            # 沒有進步
+            early_stop_counter += 1
+            is_best = False
+            print(f"   ⚠️ No progress. Early Stopping Counter: {early_stop_counter} / {args.patience} (min_delta={args.min_delta})")
+            
+        # 只要打破最佳紀錄就存檔
+        if is_best:
             
             current_lr = trainer.optimizer.param_groups[0]['lr']
             
-            save_filename = f"best_E{epoch+1}_CELoss{best_val_loss:.4f}_LR{current_lr:.1e}.pth"
+            save_filename = f"best_E{epoch+1}_TotalLoss{best_val_loss:.4f}_LR{current_lr:.1e}.pth"
             save_path = os.path.join(args.output_dir, save_filename)
             
             trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=best_val_loss)

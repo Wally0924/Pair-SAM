@@ -10,8 +10,30 @@ import matplotlib.pyplot as plt
 import math
 
 from segment_anything.modeling import WeatherSAM 
+from utils.new_loss import ContextLoss, MaskLoss, calculate_true_iou
+
+class AverageMeter:
+    """計算並儲存當前值與平均值。"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
 
 class WeatherSAMTrainer:
+    """
+    負責訓練 WeatherSAM 的訓練器，實作解耦式的多重 Loss 計算：
+    包含 MaskLoss (Focal+Dice), IoU MSE Loss, 以及 ContextLoss (CE)。
+    """
     def __init__(
         self, 
         model: WeatherSAM, 
@@ -19,31 +41,28 @@ class WeatherSAMTrainer:
         val_loader: DataLoader, 
         args=None
     ):
+        """
+        初始化訓練器，設定模型、資料載入器、優化器、Scheduler 以及損失函數。
+        """
         self.model = model.to(args.device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = args.device
         self.args = args
         
-        # --- Old Independent Binary Loss Configuration (Commented Out) ---
-        # f_w = args.focal_weight if args else 2.0
-        # d_w = args.dice_weight if args else 2.0
-        # i_w = args.iou_weight if args else 1.0
-        # ls = args.label_smoothing if args else 0.1
-        # from utils.new_loss import SAMLoss
-        # self.criterion_old = SAMLoss(focal_weight=f_w, dice_weight=d_w, iou_weight=i_w, label_smoothing=ls)
-        # -------------------------------------------------------------
-        
-        # [修改] 使用 Semantic CrossEntropy Loss
-        # [修改] 使用 CombinedSemanticLoss
+        # --- 損失函數初始化 ---
         lr = args.lr if args else 1e-4
         
         ce_w = getattr(args, 'ce_weight', 1.0)
-        focal_w = getattr(args, 'focal_weight', 2.0)
-        dice_w = getattr(args, 'dice_weight', 2.0)
-        from utils.new_loss import CombinedSemanticLoss
-        print(f"📉 Initializing CombinedSemanticLoss (CE: {ce_w}, Focal: {focal_w}, Dice: {dice_w})")
-        self.criterion = CombinedSemanticLoss(ce_weight=ce_w, focal_weight=focal_w, dice_weight=dice_w)
+        focal_w = getattr(args, 'focal_weight', 20.0)
+        dice_w = getattr(args, 'dice_weight', 1.0)
+        iou_w = getattr(args, 'iou_weight', 1.0)
+        
+        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], IoU: {iou_w})")
+        self.context_loss_fn = ContextLoss(ce_weight=ce_w)
+        self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
+        self.iou_mse_loss_fn = torch.nn.MSELoss()
+        self.iou_weight = iou_w
         
         self.scaler = torch.amp.GradScaler('cuda')
         
@@ -57,7 +76,7 @@ class WeatherSAMTrainer:
             self.model.gate_module,
             self.model.location_encoder.output_projection,
             self.model.text_encoder.projection,
-            self.model.semantic_fusion_head,
+            self.model.context_fusion_head,
             self.model.mask_encoder,
             self.model.mask_decoder.iou_prediction_head,  # 解凍 IoU Head
         ]
@@ -82,8 +101,7 @@ class WeatherSAMTrainer:
         def lr_lambda(epoch_idx):
             # 1. Warmup 階段: 線性上升
             if epoch_idx < warmup_epochs:
-                # 例如第 0 epoch 返回 0，第 5 epoch 返回 1.0
-                return float(epoch_idx) / float(warmup_epochs)
+                return float(epoch_idx + 1) / float(warmup_epochs + 1)
             
             # 2. Cosine Decay 階段: 緩慢下降
             else:
@@ -119,14 +137,26 @@ class WeatherSAMTrainer:
             batched_input.append(input_dict)
         return batched_input
 
-    def train_epoch(self, epoch_index):
+    def train_epoch(self, epoch_index: int):
+        """
+        執行單一 Epoch 的模型訓練，並實作解耦的 Multi-Loss 更新機制：
+        Stage 1: MaskLoss (候選遮罩形狀優化)。
+        Stage 2: IoU MSE Loss (IoU 預測評分優化)。
+        Stage 3: 最佳遮罩挑選。
+        Stage 4: ContextFusionHead 空間融合。
+        Stage 5: ContextLoss (全域互斥性優化)。
+        """
         self.model.train()
-        epoch_metrics = {"total": 0.0, "ce": 0.0, "focal": 0.0, "dice": 0.0}
+        losses = {
+            "total": AverageMeter(),
+            "ce": AverageMeter(),
+            "focal": AverageMeter(),
+            "dice": AverageMeter(),
+            "iou": AverageMeter()
+        }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
         step_count = 0
-        
-        # 取得 max_norm 設定
         max_norm = getattr(self.args, 'max_norm', 1.0)
         accumulation_steps = getattr(self.args, 'accumulate_steps', 4)
         
@@ -141,30 +171,78 @@ class WeatherSAMTrainer:
                 outputs = self.model(batched_input, multimask_output=True)
                 
                 total_loss = torch.tensor(0.0, device=self.device)
-                loss_dict_accum = {"ce": 0.0, "focal": 0.0, "dice": 0.0}
+                sample_ce_sum = 0.0
+                sample_focal_sum = 0.0
+                sample_dice_sum = 0.0
+                sample_iou_sum = 0.0
                 first_batch_logits = None 
                 
-                # 這裡原本是 iterated over batch_size
-                # 在我們的新設計中，每個 i 代表一張圖，且 outputs[i]['masks'] 是 (19, 1024, 1024)
                 for i in range(batch_size):
                     low_res_logits = outputs[i]['low_res_logits']   # (K, 3, 256, 256)
                     iou_preds = outputs[i]['iou_predictions']       # (K, 3)
                     num_prompts = len(batched_input[i]['text_prompts'])
                     
-                    # ── Step 1: Temperature-Scaled Soft Weighted Sum (可微分) ──
-                    iou_temp = getattr(self.args, 'iou_temp', 0.1)
-                    weights = F.softmax(iou_preds / iou_temp, dim=1)       # (K, 3)
-                    weights = weights.unsqueeze(-1).unsqueeze(-1)           # (K, 3, 1, 1)
-                    selected_logits = (low_res_logits * weights).sum(dim=1) # (K, 256, 256) ✅ 可微分
-                    
-                    # ── Step 2: list + cat 保留梯度鏈 ──
+                    gt_mask_i = gt_masks[i].unsqueeze(0).long() # (1, 1024, 1024)
+                    valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1) # (1, 1, 1024, 1024)
+                    # ── 初始化損失與目標類別對照表 ──
+                    sample_total_loss = torch.tensor(0.0, device=self.device)
                     prompt_to_cls = {}
                     for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
                         if class_name in self.train_loader.dataset.CLASS_MAP:
                             cls_id = self.train_loader.dataset.CLASS_MAP[class_name]
                             if cls_id < self.model.num_classes:
                                 prompt_to_cls[cls_id] = prompt_idx
+
+                    acc_focal, acc_dice = 0.0, 0.0
                     
+                    # ── Stage 1 & 2: MaskLoss (Focal+Dice) & IoU MSE Loss ──
+                    if num_prompts > 0:
+                        # 內部上升取樣至 1024x1024 (僅供計算 Loss 使用)
+                        low_res_logits_upscaled = self.model.postprocess_masks(
+                            low_res_logits,
+                            input_size=(1024, 1024),
+                            original_size=(1024, 1024),
+                        ) # (K, 3, 1024, 1024)
+                        
+                        target_masks_k = []
+                        for prompt_idx in range(num_prompts):
+                            cls_id = next((cid for cid, p_idx in prompt_to_cls.items() if p_idx == prompt_idx), None)
+                            if cls_id is not None:
+                                tgt = (gt_mask_i == cls_id).float().unsqueeze(1) # (1, 1, 1024, 1024)
+                                target_masks_k.append(tgt)
+                            else:
+                                target_masks_k.append(torch.zeros((1, 1, 1024, 1024), device=self.device))
+                                
+                        target_masks_k = torch.cat(target_masks_k, dim=0) # (K, 1, 1024, 1024)
+                        valid_mask_k = valid_mask_i.expand(num_prompts, -1, -1, -1) # (K, 1, 1024, 1024)
+                        
+                        # 計算 Mask Loss (回傳格式 BxK)
+                        mask_total_loss, focal, dice = self.mask_loss_fn(low_res_logits_upscaled, target_masks_k, valid_mask_k)
+                        
+                        # [Stage 1] 保留 V7 架構，從 3 個 candidate 中挑選 Loss 最低的最佳預測作為梯度的依據
+                        min_mask_loss, min_indices = torch.min(mask_total_loss, dim=1) # (K,)
+                        
+                        sample_total_loss += min_mask_loss.mean()
+                        acc_focal = focal[torch.arange(num_prompts), min_indices].mean().item()
+                        acc_dice = dice[torch.arange(num_prompts), min_indices].mean().item()
+                        
+                        # [Stage 2] 計算真實 IoU，並使用 MSE 監督 IoU 預測頭的打分精準度
+                        with torch.no_grad():
+                            true_iou = calculate_true_iou(low_res_logits_upscaled, target_masks_k, valid_mask_k) # (K, 3)
+                        
+                        iou_loss = self.iou_mse_loss_fn(iou_preds, true_iou)
+                        sample_total_loss += self.iou_weight * iou_loss
+                        sample_iou_sum += iou_loss.item()
+
+                    # ── Stage 3: Argmax Selection for ContextFusionHead ──
+                    if num_prompts > 0:
+                        best_mask_indices = torch.argmax(iou_preds, dim=1) # (K,)
+                        # ★ 真正的兩階段解耦：阻斷 ContextLoss 的梯度流回 Mask Decoder 等特徵抽取器，解決梯度互相打架與爆炸的問題
+                        selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices].detach() # (K, 256, 256)
+                    else:
+                        selected_logits = torch.empty((0, 256, 256), device=self.device)
+                    
+                    # ── Stage 4: list + cat 保留梯度鏈給 Fusion Head ──
                     class_channels = []
                     for cls_id in range(self.model.num_classes):
                         if cls_id in prompt_to_cls:
@@ -174,39 +252,37 @@ class WeatherSAMTrainer:
                     
                     full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)  # (1, 19, 256, 256)
                     
-                    # ── Step 3: FusionHead 在 256×256（VRAM ÷ 16）──
-                    fused_logits = self.model.semantic_fusion_head(full_class_logits)
+                    # ── Stage 5: ContextFusionHead & Context Loss (CE) ──
+                    fused_logits = self.model.context_fusion_head(full_class_logits)
                     
-                    # ── Step 4: postprocess_masks 上採樣到 1024×1024 ──
                     fused_logits_hr = self.model.postprocess_masks(
                         fused_logits,
                         input_size=(1024, 1024),
                         original_size=(1024, 1024),
                     )
                     
+                    context_loss, ce_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
+                    sample_total_loss += context_loss
+                    
                     if i == 0:
                         first_batch_logits = fused_logits.squeeze(0)
                     
-                    # ── Step 5: Combined Loss ──
-                    gt_mask = gt_masks[i].unsqueeze(0).long()
-                    active_prompts = batched_input[i]['text_prompts']
-                    sample_loss, metrics = self.criterion(fused_logits_hr, gt_mask, active_prompts)
-                    
-                    total_loss += sample_loss
-                    loss_dict_accum['ce'] += metrics['ce']
-                    loss_dict_accum['focal'] += metrics['focal']
-                    loss_dict_accum['dice'] += metrics['dice']
+                    total_loss = total_loss + sample_total_loss
+                    sample_ce_sum += ce_val
+                    sample_focal_sum += float(acc_focal)
+                    sample_dice_sum += float(acc_dice)
 
-                loss_dict_accum['total'] = total_loss.item()
-                total_loss = total_loss / batch_size
-                loss_to_backward = total_loss / accumulation_steps
+                total_loss = total_loss / float(batch_size)
+                loss_to_backward = total_loss / float(accumulation_steps)
 
             self.scaler.scale(loss_to_backward).backward()
             
             step_count += 1
             
             # Gradient Accumulation Step
-            if step_count % accumulation_steps == 0 or step_count == len(self.train_loader):
+            is_accumulation_step = (step_count % accumulation_steps == 0)
+            is_last_step = (step_count == len(self.train_loader))
+            if is_accumulation_step or (is_last_step and not is_accumulation_step):
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_norm)
                 
@@ -214,41 +290,56 @@ class WeatherSAMTrainer:
                 self.scaler.update()
                 self.optimizer.zero_grad()
             
-            for k in loss_dict_accum:
-                val_to_add = loss_dict_accum[k]
-                epoch_metrics[k] = epoch_metrics.get(k, 0.0) + (val_to_add / batch_size)
+            losses['total'].update(float(total_loss.item()), batch_size)
+            losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
+            losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
+            losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
+            losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)
 
             pbar.set_postfix(
-                loss=total_loss.item(), 
-                ce=(loss_dict_accum['ce']/batch_size),
-                focal=(loss_dict_accum['focal']/batch_size),
-                dice=(loss_dict_accum['dice']/batch_size)
+                loss=losses['total'].avg, 
+                ce=losses['ce'].avg,
+                focal=losses['focal'].avg,
+                dice=losses['dice'].avg,
+                iou=losses['iou'].avg
             )
 
             if step_count % 1000 == 0 and first_batch_logits is not None:
                 self._save_debug_snapshot(first_batch_logits, epoch_index, step_count)
         
         self.scheduler.step()
-        avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
+        avg_metrics = {k: v.avg for k, v in losses.items()}
         current_lr = self.optimizer.param_groups[0]['lr']
         print(f"   🔄 Learning Rate Updated: {current_lr:.2e}")
         
         return avg_metrics
 
     def _save_debug_snapshot(self, logits, epoch, step):
-        # logits is (C, H, W) after squeeze(0) in train_epoch
-        pred_logit = logits[0, :, :]
+        # logits 已經是 (19, 256, 256) 的預測圖 (經過 squeeze(0))
+        # 找出整張圖裡，平均響應最高的那一個類別
+        best_class_idx = logits.mean(dim=(1, 2)).argmax().item()
+        
+        # 截出最強的那個類別的圖
+        pred_logit = logits[best_class_idx, :, :]
         mask_viz = torch.sigmoid(pred_logit).detach().cpu().numpy()
-        save_path = f"debug_viz/epoch_{epoch+1}_step_{step}.png"
+        
+        # 存檔並在檔名標註這是哪一個類別
+        save_path = f"debug_viz/epoch_{epoch+1}_step_{step}_cls_{best_class_idx}.png"
         plt.imsave(save_path, mask_viz, cmap='gray')
-        max_val = mask_viz.max()
-        status = "🟢 OK" if max_val > 0.1 else "🔴 Collapsed"
-        # print(f"   📸 Snapshot saved! Max Value: {max_val:.4f} [{status}]")
 
     @torch.no_grad()
-    def validate_epoch(self, epoch_index):
+    def validate_epoch(self, epoch_index: int):
+        """
+        執行單一 Epoch 的模型驗證，邏輯與 train_epoch 保持一致，但不計算梯度。
+        """
         self.model.eval()
-        epoch_metrics = {"total": 0.0, "ce": 0.0, "focal": 0.0, "dice": 0.0}
+        losses = {
+            "total": AverageMeter(),
+            "ce": AverageMeter(),
+            "focal": AverageMeter(),
+            "dice": AverageMeter(),
+            "iou": AverageMeter()
+        }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
         
@@ -260,7 +351,10 @@ class WeatherSAMTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input, multimask_output=True)
                 
-                loss_dict_accum = {"ce": 0.0, "focal": 0.0, "dice": 0.0}
+                sample_ce_sum = 0.0
+                sample_focal_sum = 0.0
+                sample_dice_sum = 0.0
+                sample_iou_sum = 0.0
                 total_loss = torch.tensor(0.0, device=self.device)
                 
                 for i in range(batch_size):
@@ -268,20 +362,60 @@ class WeatherSAMTrainer:
                     iou_preds = outputs[i]['iou_predictions']       # (K, 3)
                     num_prompts = len(batched_input[i]['text_prompts'])
                     
-                    # ── Step 1: Temperature-Scaled Soft Weighted Sum ──
-                    iou_temp = getattr(self.args, 'iou_temp', 0.1)
-                    weights = F.softmax(iou_preds / iou_temp, dim=1)
-                    weights = weights.unsqueeze(-1).unsqueeze(-1)
-                    selected_logits = (low_res_logits * weights).sum(dim=1)
+                    gt_mask_i = gt_masks[i].unsqueeze(0).long()
+                    valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1)
                     
-                    # ── Step 2: list + cat ──
+                    # ── 初始化損失與目標類別對照表 ──
+                    sample_total_loss = torch.tensor(0.0, device=self.device)
                     prompt_to_cls = {}
                     for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
                         if class_name in self.val_loader.dataset.CLASS_MAP:
                             cls_id = self.val_loader.dataset.CLASS_MAP[class_name]
                             if cls_id < self.model.num_classes:
                                 prompt_to_cls[cls_id] = prompt_idx
+
+                    acc_focal, acc_dice = 0.0, 0.0
                     
+                    # ── Stage 1 & 2: MaskLoss & IoU MSE Loss ──
+                    if num_prompts > 0:
+                        low_res_logits_upscaled = self.model.postprocess_masks(
+                            low_res_logits,
+                            input_size=(1024, 1024),
+                            original_size=(1024, 1024),
+                        )
+                        
+                        target_masks_k = []
+                        for prompt_idx in range(num_prompts):
+                            cls_id = next((cid for cid, p_idx in prompt_to_cls.items() if p_idx == prompt_idx), None)
+                            if cls_id is not None:
+                                tgt = (gt_mask_i == cls_id).float().unsqueeze(1)
+                                target_masks_k.append(tgt)
+                            else:
+                                target_masks_k.append(torch.zeros((1, 1, 1024, 1024), device=self.device))
+                                
+                        target_masks_k = torch.cat(target_masks_k, dim=0)
+                        valid_mask_k = valid_mask_i.expand(num_prompts, -1, -1, -1)
+                        
+                        mask_total_loss, focal, dice = self.mask_loss_fn(low_res_logits_upscaled, target_masks_k, valid_mask_k)
+                        min_mask_loss, min_indices = torch.min(mask_total_loss, dim=1)
+                        
+                        sample_total_loss = sample_total_loss + min_mask_loss.mean()
+                        acc_focal = float(focal[torch.arange(num_prompts), min_indices].mean().item())
+                        acc_dice = float(dice[torch.arange(num_prompts), min_indices].mean().item())
+                        
+                        true_iou = calculate_true_iou(low_res_logits_upscaled, target_masks_k, valid_mask_k)
+                        iou_loss = self.iou_mse_loss_fn(iou_preds, true_iou)
+                        sample_total_loss = sample_total_loss + (self.iou_weight * iou_loss)
+                        sample_iou_sum += iou_loss.item()
+
+                    # ── Stage 3: Argmax Selection ──
+                    if num_prompts > 0:
+                        best_mask_indices = torch.argmax(iou_preds, dim=1)
+                        selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices].detach()
+                    else:
+                        selected_logits = torch.empty((0, 256, 256), device=self.device)
+                    
+                    # ── Stage 4: list + cat ──
                     class_channels = []
                     for cls_id in range(self.model.num_classes):
                         if cls_id in prompt_to_cls:
@@ -291,31 +425,41 @@ class WeatherSAMTrainer:
                     
                     full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)
                     
-                    # ── Step 3: FusionHead at 256² ──
-                    fused_logits = self.model.semantic_fusion_head(full_class_logits)
+                    # ── Stage 5: ContextFusionHead & Context Loss ──
+                    fused_logits = self.model.context_fusion_head(full_class_logits)
                     
-                    # ── Step 4: postprocess_masks 上採樣 ──
                     fused_logits_hr = self.model.postprocess_masks(
                         fused_logits,
                         input_size=(1024, 1024),
                         original_size=(1024, 1024),
                     )
                     
-                    gt_mask = gt_masks[i].unsqueeze(0).long()
-                    active_prompts = batched_input[i]['text_prompts']
-                    sample_loss, metrics = self.criterion(fused_logits_hr, gt_mask, active_prompts)
+                    context_loss, ce_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
+                    sample_total_loss = sample_total_loss + context_loss
                     
-                    total_loss += sample_loss
-                    loss_dict_accum['ce'] += metrics['ce']
-                    loss_dict_accum['focal'] += metrics['focal']
-                    loss_dict_accum['dice'] += metrics['dice']
+                    total_loss = total_loss + sample_total_loss
+                    sample_ce_sum += float(ce_val)
+                    sample_focal_sum += acc_focal
+                    sample_dice_sum += acc_dice
             
             step_count += 1
-            loss_dict_accum['total'] = total_loss.item()
-            for k in loss_dict_accum:
-                epoch_metrics[k] = epoch_metrics.get(k, 0.0) + (loss_dict_accum[k] / batch_size)
+            
+            total_loss_avg = float(total_loss.item()) / float(batch_size)
+            losses['total'].update(total_loss_avg, batch_size)
+            losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
+            losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
+            losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
+            losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)
+            
+            pbar.set_postfix(
+                loss=losses['total'].avg, 
+                ce=losses['ce'].avg,
+                focal=losses['focal'].avg,
+                dice=losses['dice'].avg,
+                iou=losses['iou'].avg
+            )
                 
-        avg_metrics = {k: v / step_count for k, v in epoch_metrics.items()}
+        avg_metrics = {k: v.avg for k, v in losses.items()}
         # self.scheduler.step(avg_metrics['total'])
         # self.scheduler.step()
         return avg_metrics
