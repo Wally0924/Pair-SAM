@@ -205,6 +205,7 @@ class InferenceRunner:
 
     def run_inference(self, test_loader, num_samples=None):
         samples_processed = 0
+        all_mious = []
         pbar = tqdm(test_loader, desc="Inference")
         
         for batch in pbar:
@@ -245,16 +246,24 @@ class InferenceRunner:
                 ).long().squeeze().cpu().numpy()
                 
                 miou = self.calculate_miou(pred_mask, gt_resized_np)
+                all_mious.append(miou)
                 print(f"📊 Image {samples_processed:03d} | mIoU: {miou:.4f}")
             
             self.visualize(sample, pred_mask, gt_resized_np, idx=samples_processed, miou=miou)
             
             samples_processed += 1
-            if num_samples and samples_processed >= num_samples:
+            if num_samples is not None and samples_processed >= num_samples:
                 break
+        
+        # 計算並輸出整體平均 mIoU
+        if all_mious:
+            avg_miou = np.mean(all_mious)
+            print(f"\n{'='*50}")
+            print(f"🏆 Overall Average mIoU: {avg_miou:.4f}  ({len(all_mious)} images)")
+            print(f"{'='*50}")
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv11/best_E4_CELoss3.6653_LR8.3e-05.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv12/weather_sam_best_latest.pth"
     TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/test_with_gps.csv" 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -272,5 +281,5 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
     
-    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv11-1")
-    runner.run_inference(test_loader, num_samples=10)
+    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv12")
+    runner.run_inference(test_loader, num_samples=None)  # num_samples=None → 跑完整個 test dataset

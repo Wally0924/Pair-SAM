@@ -8,6 +8,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import math
+import random
 
 from segment_anything.modeling import WeatherSAM 
 from utils.new_loss import ContextLoss, MaskLoss, calculate_true_iou
@@ -316,15 +317,17 @@ class WeatherSAMTrainer:
 
     def _save_debug_snapshot(self, logits, epoch, step):
         # logits 已經是 (19, 256, 256) 的預測圖 (經過 squeeze(0))
-        # 找出整張圖裡，平均響應最高的那一個類別
-        best_class_idx = logits.mean(dim=(1, 2)).argmax().item()
+        # 隨機挑選一個類別，避免每次都選到面積最大的類別 (e.g. road)
+        num_classes = logits.shape[0]
+        rand_class_idx = random.randint(0, num_classes - 1)
         
-        # 截出最強的那個類別的圖
-        pred_logit = logits[best_class_idx, :, :]
+        # 截出隨機選到的類別的圖
+        pred_logit = logits[rand_class_idx, :, :]
         mask_viz = torch.sigmoid(pred_logit).detach().cpu().numpy()
         
         # 存檔並在檔名標註這是哪一個類別
-        save_path = f"debug_viz/epoch_{epoch+1}_step_{step}_cls_{best_class_idx}.png"
+        cls_name = self.train_loader.dataset.ID_TO_NAME.get(rand_class_idx, f"unknown_{rand_class_idx}")
+        save_path = f"debug_viz/epoch_{epoch+1}_step_{step}_cls_{rand_class_idx}_{cls_name}.png"
         plt.imsave(save_path, mask_viz, cmap='gray')
 
     @torch.no_grad()
