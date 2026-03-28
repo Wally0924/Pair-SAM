@@ -35,6 +35,8 @@ def plot_history(history, output_dir):
         plt.plot(df['epoch'], df['val_dice'], 'g-s', label='Val Dice', alpha=0.7)
     if 'val_iou' in df.columns:
         plt.plot(df['epoch'], df['val_iou'], 'm-^', label='Val IoU MSE', alpha=0.7)
+    if 'val_abl' in df.columns:
+        plt.plot(df['epoch'], df['val_abl'], 'c-d', label='Val ABL', alpha=0.7)
     plt.xlabel('Epoch')
     plt.ylabel('Loss Value')
     plt.title('Decoupled Multi-Loss Components')
@@ -77,6 +79,11 @@ def print_training_config(args, device):
     print(f"   • Dice Weight:       {args.dice_weight}")
     print(f"   • IoU Weight:        {args.iou_weight}")
     
+    # 4. Active Boundary Loss
+    print(f"\n🎯  Active Boundary Loss:")
+    print(f"   • ABL Weight:        {args.abl_weight}")
+    print(f"   • ABL Start Epoch:   {args.abl_start_epoch}")
+    
     # 4. 路徑資訊
     print(f"\n📂  Paths:")
     print(f"   • Train CSV:         {args.train_csv}")
@@ -94,23 +101,27 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv12")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv13")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
-    parser.add_argument("--patience", type=int, default=5, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--patience", type=int, default=7, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.01, help="判定為進步的最小 Loss 差異")
     parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
     parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
     parser.add_argument("--max_norm", type=float, default=2.0, help="梯度裁剪的 Max norm。")
-    parser.add_argument("--gps_noise", type=float, default=0.00005, help="訓練時添加到 GPS 座標的常態分布噪音標準差。")
+    parser.add_argument("--gps_noise", type=float, default=0, help="訓練時添加到 GPS 座標的常態分布噪音標準差。")
     
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
     parser.add_argument("--focal_weight", type=float, default=1.0, help="MaskLoss (Focal) 權重")
     parser.add_argument("--dice_weight", type=float, default=1.0, help="MaskLoss (Dice) 權重")
     parser.add_argument("--iou_weight", type=float, default=1.0, help="IoU MSE Loss 權重")
+    
+    # --- Active Boundary Loss ---
+    parser.add_argument("--abl_weight", type=float, default=1.5, help="Active Boundary Loss 權重")
+    parser.add_argument("--abl_start_epoch", type=int, default=5, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", 
@@ -211,12 +222,14 @@ def main():
             "val_ce": val_metrics["ce"],
             "val_focal": val_metrics["focal"],
             "val_dice": val_metrics["dice"],
-            "val_iou": val_metrics["iou"]
+            "val_iou": val_metrics["iou"],
+            "train_abl": train_metrics["abl"],
+            "val_abl": val_metrics["abl"]
         }
         history.append(log_entry)
         
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, IoU:{val_metrics['iou']:.4f})")
+        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, IoU:{val_metrics['iou']:.4f}, ABL:{val_metrics['abl']:.4f})")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)

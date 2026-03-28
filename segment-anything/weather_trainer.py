@@ -11,7 +11,7 @@ import math
 import random
 
 from segment_anything.modeling import WeatherSAM 
-from utils.new_loss import ContextLoss, MaskLoss, calculate_true_iou
+from utils.new_loss import ContextLoss, MaskLoss, calculate_true_iou, ActiveBoundaryLoss
 
 class AverageMeter:
     """計算並儲存當前值與平均值。"""
@@ -58,12 +58,18 @@ class WeatherSAMTrainer:
         focal_w = getattr(args, 'focal_weight', 20.0)
         dice_w = getattr(args, 'dice_weight', 1.0)
         iou_w = getattr(args, 'iou_weight', 1.0)
+        abl_w = getattr(args, 'abl_weight', 1.0)
+        abl_start = getattr(args, 'abl_start_epoch', 5)
         
         print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], IoU: {iou_w})")
+        print(f"📉 Active Boundary Loss (Weight: {abl_w}, Start Epoch: {abl_start})")
         self.context_loss_fn = ContextLoss(ce_weight=ce_w)
         self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
         self.iou_mse_loss_fn = torch.nn.MSELoss()
         self.iou_weight = iou_w
+        self.abl_loss_fn = ActiveBoundaryLoss()
+        self.abl_weight = abl_w
+        self.abl_start_epoch = abl_start
         
         self.scaler = torch.amp.GradScaler('cuda')
         
@@ -153,7 +159,8 @@ class WeatherSAMTrainer:
             "ce": AverageMeter(),
             "focal": AverageMeter(),
             "dice": AverageMeter(),
-            "iou": AverageMeter()
+            "iou": AverageMeter(),
+            "abl": AverageMeter()
         }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
@@ -176,6 +183,7 @@ class WeatherSAMTrainer:
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
                 sample_iou_sum = 0.0
+                sample_abl_sum = 0.0
                 first_batch_logits = None 
                 
                 for i in range(batch_size):
@@ -265,6 +273,13 @@ class WeatherSAMTrainer:
                     context_loss, ce_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
                     sample_total_loss += context_loss
                     
+                    # ── Stage 6: Active Boundary Loss (ABL) ──
+                    abl_effective_weight = self.abl_weight if epoch_index >= self.abl_start_epoch else 0.0
+                    if abl_effective_weight > 0:
+                        abl_loss = self.abl_loss_fn(fused_logits_hr, gt_mask_i)
+                        sample_total_loss += abl_effective_weight * abl_loss
+                        sample_abl_sum += abl_loss.item()
+                    
                     if i == 0:
                         first_batch_logits = fused_logits.squeeze(0)
                     
@@ -296,13 +311,15 @@ class WeatherSAMTrainer:
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
             losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)
+            losses['abl'].update(float(sample_abl_sum) / float(batch_size), batch_size)
 
             pbar.set_postfix(
                 loss=losses['total'].avg, 
                 ce=losses['ce'].avg,
                 focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
-                iou=losses['iou'].avg
+                iou=losses['iou'].avg,
+                abl=losses['abl'].avg
             )
 
             if step_count % 1000 == 0 and first_batch_logits is not None:
@@ -341,7 +358,8 @@ class WeatherSAMTrainer:
             "ce": AverageMeter(),
             "focal": AverageMeter(),
             "dice": AverageMeter(),
-            "iou": AverageMeter()
+            "iou": AverageMeter(),
+            "abl": AverageMeter()
         }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
@@ -358,6 +376,7 @@ class WeatherSAMTrainer:
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
                 sample_iou_sum = 0.0
+                sample_abl_sum = 0.0
                 total_loss = torch.tensor(0.0, device=self.device)
                 
                 for i in range(batch_size):
@@ -440,6 +459,13 @@ class WeatherSAMTrainer:
                     context_loss, ce_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
                     sample_total_loss = sample_total_loss + context_loss
                     
+                    # ── Stage 6: Active Boundary Loss (ABL) ──
+                    abl_effective_weight = self.abl_weight if epoch_index >= self.abl_start_epoch else 0.0
+                    if abl_effective_weight > 0:
+                        abl_loss = self.abl_loss_fn(fused_logits_hr, gt_mask_i)
+                        sample_total_loss = sample_total_loss + abl_effective_weight * abl_loss
+                        sample_abl_sum += abl_loss.item()
+                    
                     total_loss = total_loss + sample_total_loss
                     sample_ce_sum += float(ce_val)
                     sample_focal_sum += acc_focal
@@ -453,13 +479,15 @@ class WeatherSAMTrainer:
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
             losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)
+            losses['abl'].update(float(sample_abl_sum) / float(batch_size), batch_size)
             
             pbar.set_postfix(
                 loss=losses['total'].avg, 
                 ce=losses['ce'].avg,
                 focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
-                iou=losses['iou'].avg
+                iou=losses['iou'].avg,
+                abl=losses['abl'].avg
             )
                 
         avg_metrics = {k: v.avg for k, v in losses.items()}
