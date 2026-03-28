@@ -34,6 +34,10 @@ class InferenceRunner:
             "truck", "bus", "train", "motorcycle", "bicycle"
         ]
         self.num_classes = len(self.classes)
+        
+        # 全域 mIoU 累積器（Cityscapes 標準算法）
+        self.total_intersection = np.zeros(self.num_classes)
+        self.total_union = np.zeros(self.num_classes)
 
     def colorize_mask(self, mask):
         color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
@@ -42,6 +46,7 @@ class InferenceRunner:
         return color_mask
 
     def calculate_miou(self, pred_mask, gt_mask, ignore_index=255):
+        """計算單張圖片的 mIoU（用於即時顯示），同時累積全域統計量。"""
         ious = []
         valid_mask = gt_mask != ignore_index
         for cls_id in range(self.num_classes):
@@ -49,9 +54,29 @@ class InferenceRunner:
             gt_cls = (gt_mask == cls_id)
             intersection = np.logical_and(pred_cls, gt_cls)[valid_mask].sum()
             union = np.logical_or(pred_cls, gt_cls)[valid_mask].sum()
+            
+            # 全域累積（Cityscapes 標準）
+            self.total_intersection[cls_id] += intersection
+            self.total_union[cls_id] += union
+            
             if union > 0:
                 ious.append(intersection / union)
         return np.mean(ious) if len(ious) > 0 else 0.0
+
+    def compute_global_miou(self):
+        """計算全資料集的 mIoU（Cityscapes 標準：全域累積後再取類別平均）。"""
+        per_class_iou = {}
+        valid_ious = []
+        for cls_id in range(self.num_classes):
+            if self.total_union[cls_id] > 0:
+                iou = self.total_intersection[cls_id] / self.total_union[cls_id]
+                per_class_iou[self.classes[cls_id]] = iou
+                valid_ious.append(iou)
+            else:
+                per_class_iou[self.classes[cls_id]] = float('nan')
+        
+        global_miou = np.mean(valid_ious) if valid_ious else 0.0
+        return global_miou, per_class_iou
 
     @torch.no_grad()
     def predict_single_image(self, sample, active_prompts):
@@ -255,12 +280,22 @@ class InferenceRunner:
             if num_samples is not None and samples_processed >= num_samples:
                 break
         
-        # 計算並輸出整體平均 mIoU
-        if all_mious:
-            avg_miou = np.mean(all_mious)
-            print(f"\n{'='*50}")
-            print(f"🏆 Overall Average mIoU: {avg_miou:.4f}  ({len(all_mious)} images)")
-            print(f"{'='*50}")
+        # 計算並輸出全域 mIoU（Cityscapes 標準算法）
+        if samples_processed > 0:
+            global_miou, per_class_iou = self.compute_global_miou()
+            print(f"\n{'='*60}")
+            print(f"🏆 Global mIoU (Cityscapes Standard): {global_miou:.4f}  ({samples_processed} images)")
+            print(f"{'='*60}")
+            print(f"{'Class':<20} {'IoU':>10}")
+            print(f"{'-'*30}")
+            for cls_name, iou_val in per_class_iou.items():
+                if np.isnan(iou_val):
+                    print(f"{cls_name:<20} {'N/A':>10}")
+                else:
+                    print(f"{cls_name:<20} {iou_val:>10.4f}")
+            print(f"{'-'*30}")
+            print(f"{'mIoU':<20} {global_miou:>10.4f}")
+            print(f"{'='*60}")
 
 if __name__ == "__main__":
     CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv13/weather_sam_best_latest.pth"

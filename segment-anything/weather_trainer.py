@@ -63,7 +63,7 @@ class WeatherSAMTrainer:
         
         print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], IoU: {iou_w})")
         print(f"📉 Active Boundary Loss (Weight: {abl_w}, Start Epoch: {abl_start})")
-        self.context_loss_fn = ContextLoss(ce_weight=ce_w)
+        self.context_loss_fn = ContextLoss(ce_weight=ce_w).to(self.device)
         self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
         self.iou_mse_loss_fn = torch.nn.MSELoss()
         self.iou_weight = iou_w
@@ -85,7 +85,7 @@ class WeatherSAMTrainer:
             self.model.text_encoder.projection,
             self.model.context_fusion_head,
             self.model.mask_encoder,
-            self.model.mask_decoder.iou_prediction_head,  # 解凍 IoU Head
+            self.model.mask_decoder,  # 解凍整個 Mask Decoder（含 Transformer + IoU Head）
         ]
         
         for module in trainable_modules:
@@ -333,19 +333,45 @@ class WeatherSAMTrainer:
         return avg_metrics
 
     def _save_debug_snapshot(self, logits, epoch, step):
-        # logits 已經是 (19, 256, 256) 的預測圖 (經過 squeeze(0))
-        # 隨機挑選一個類別，避免每次都選到面積最大的類別 (e.g. road)
+        """
+        儲存訓練中間狀態的視覺化快照。
+        以 softmax 機率顯示，避免 sigmoid(raw_logit) 飽和成全白的問題。
+        """
         num_classes = logits.shape[0]
         rand_class_idx = random.randint(0, num_classes - 1)
-        
-        # 截出隨機選到的類別的圖
-        pred_logit = logits[rand_class_idx, :, :]
-        mask_viz = torch.sigmoid(pred_logit).detach().cpu().numpy()
-        
-        # 存檔並在檔名標註這是哪一個類別
         cls_name = self.train_loader.dataset.ID_TO_NAME.get(rand_class_idx, f"unknown_{rand_class_idx}")
+
+        # Softmax 機率（正確的視覺化方式，值域 0~1 且加總為 1，不會飽和）
+        with torch.no_grad():
+            probs = torch.softmax(logits.float(), dim=0)  # (19, H, W)
+
+        # Panel 1: 隨機類別的 softmax 機率圖
+        prob_map = probs[rand_class_idx].cpu().numpy()
+
+        # Panel 2: argmax 預測圖（正規化到 0~1 用於灰度顯示）
+        pred_class = torch.argmax(probs, dim=0).cpu().numpy()
+        pred_norm = pred_class.astype(float) / max(num_classes - 1, 1)
+
+        # Panel 3: 最大 softmax 機率（信心度圖）
+        confidence = probs.max(dim=0).values.cpu().numpy()
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        axes[0].imshow(prob_map, cmap='hot', vmin=0, vmax=1)
+        axes[0].set_title(f"P(cls={rand_class_idx} {cls_name})")
+        axes[0].axis('off')
+
+        axes[1].imshow(pred_norm, cmap='tab20', vmin=0, vmax=1)
+        axes[1].set_title("Argmax Prediction")
+        axes[1].axis('off')
+
+        axes[2].imshow(confidence, cmap='viridis', vmin=0, vmax=1)
+        axes[2].set_title("Confidence (max softmax)")
+        axes[2].axis('off')
+
         save_path = f"debug_viz/epoch_{epoch+1}_step_{step}_cls_{rand_class_idx}_{cls_name}.png"
-        plt.imsave(save_path, mask_viz, cmap='gray')
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=80)
+        plt.close(fig)
 
     @torch.no_grad()
     def validate_epoch(self, epoch_index: int):

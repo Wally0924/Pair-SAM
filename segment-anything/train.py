@@ -101,12 +101,12 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv13")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv14")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
     parser.add_argument("--patience", type=int, default=7, help="提早停止 (Early stopping) 的耐心值")
-    parser.add_argument("--min_delta", type=float, default=0.01, help="判定為進步的最小 Loss 差異")
+    parser.add_argument("--min_delta", type=float, default=0.005, help="判定為進步的最小 Loss 差異")
     parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
     parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
@@ -115,13 +115,13 @@ def main():
     
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=1.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--focal_weight", type=float, default=20.0, help="MaskLoss (Focal) 權重")
     parser.add_argument("--dice_weight", type=float, default=1.0, help="MaskLoss (Dice) 權重")
     parser.add_argument("--iou_weight", type=float, default=1.0, help="IoU MSE Loss 權重")
     
     # --- Active Boundary Loss ---
     parser.add_argument("--abl_weight", type=float, default=1.5, help="Active Boundary Loss 權重")
-    parser.add_argument("--abl_start_epoch", type=int, default=5, help="ABL 開始介入的 Epoch（Warmup）")
+    parser.add_argument("--abl_start_epoch", type=int, default=25, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", 

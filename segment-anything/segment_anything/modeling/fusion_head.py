@@ -30,9 +30,10 @@ class ContextFusionHead(nn.Module):
         self.gn1 = nn.GroupNorm(num_groups=8, num_channels=hidden_dim)
         self.relu = nn.ReLU(inplace=True)
         
-        # 使用 7x7 Depthwise Conv 擴充感受野，平滑邊界，且不會大幅增加參數量
+        # 使用 3x3 Depthwise Conv 保留細節邊緣特徵（小物件如電線桿、柵欄）
+        # 原 7x7 核過度平滑，導致細長結構被吃掉
         self.depthwise_conv = nn.Conv2d(
-            hidden_dim, hidden_dim, kernel_size=7, padding=3, groups=hidden_dim, bias=False
+            hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim, bias=False
         )
         self.gn2 = nn.GroupNorm(num_groups=8, num_channels=hidden_dim)
         

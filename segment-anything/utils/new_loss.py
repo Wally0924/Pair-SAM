@@ -333,12 +333,31 @@ class ActiveBoundaryLoss(nn.Module):
 class ContextLoss(nn.Module):
     """
     計算 ContextFusionHead 輸出的 19 類別特徵圖的 Cross Entropy Loss。
-    用於監督模型學習全域的空間佈局與類別互斥性。
+    加入 Class-Balanced Weights，強迫模型重視被吃掉的小物件類別。
     """
-    def __init__(self, ce_weight: float = 1.0):
+    def __init__(self, ce_weight: float = 1.0, num_classes: int = 19):
         super().__init__()
         self.ce_weight = ce_weight
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255)
+
+        # Cityscapes 類別倒數頻率權重（CLASS_MAP 順序）
+        # road=0, sidewalk=1, building=2, wall=3, fence=4, pole=5,
+        # traffic light=6, traffic sign=7, vegetation=8, terrain=9,
+        # sky=10, person=11, rider=12, car=13, truck=14, bus=15,
+        # train=16, motorcycle=17, bicycle=18
+        weights = torch.ones(num_classes)
+
+        # 小物件/稀有類別 → 加重懲罰（強迫模型不忽略它們）
+        # wall, fence, pole, traffic light, traffic sign,
+        # person, rider, truck, bus, train, motorcycle, bicycle
+        heavy_classes = [3, 4, 5, 6, 7, 11, 12, 14, 15, 16, 17, 18]
+        for c in heavy_classes:
+            weights[c] = 5.0
+
+        # register_buffer 確保 weights 跟模型一起搬到 GPU
+        self.register_buffer('class_weights', weights)
+        self.ce_loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights, ignore_index=255
+        )
 
     def forward(self, fused_logits_hr: torch.Tensor, gt_mask: torch.Tensor):
         """
@@ -352,6 +371,7 @@ class ContextLoss(nn.Module):
         ce_loss = self.ce_loss_fn(fused_logits_hr, gt_mask)
         total_loss = self.ce_weight * ce_loss
         return total_loss, ce_loss.item()
+
 
 
 class MaskLoss(nn.Module):
