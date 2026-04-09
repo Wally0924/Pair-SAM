@@ -99,7 +99,8 @@ class ActiveBoundaryLoss(nn.Module):
             # 距離加權：離 GTB 越遠的 PDB 像素，權重越大（鼓勵積極移動）
             dist_weights = dist_map[pdb_coords[:, 0], pdb_coords[:, 1]]
             # 正規化權重避免數值爆炸
-            dist_weights = dist_weights / (dist_weights.max() + 1e-6)
+            # dist_weights = dist_weights / (dist_weights.max() + 1e-6)
+            dist_weights = (dist_weights / 20.0).clamp(max=1.0)
 
             weighted_loss = (ce_per_pixel * dist_weights).mean()
             total_loss = total_loss + weighted_loss
@@ -386,7 +387,7 @@ class MaskLoss(nn.Module):
         self.smooth = 1e-5
         
         self.gamma = 2.0
-        self.alpha = 0.25 
+        self.alpha = 0.75
 
     def forward(self, pred_masks: torch.Tensor, target_mask: torch.Tensor, valid_mask: torch.Tensor):
         """

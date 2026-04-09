@@ -298,7 +298,7 @@ class InferenceRunner:
             print(f"{'='*60}")
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv13/weather_sam_best_latest.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv15/weather_sam_best_latest.pth"
     TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/test_with_gps.csv" 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -316,5 +316,5 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
     
-    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv13")
-    runner.run_inference(test_loader, num_samples=100)  # num_samples=None → 跑完整個 test dataset
+    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv15")
+    runner.run_inference(test_loader, num_samples=None)  # num_samples=None → 跑完整個 test dataset

@@ -85,7 +85,11 @@ class WeatherSAMTrainer:
             self.model.text_encoder.projection,
             self.model.context_fusion_head,
             self.model.mask_encoder,
-            self.model.mask_decoder,  # 解凍整個 Mask Decoder（含 Transformer + IoU Head）
+            
+            # 部分解凍 Mask Decoder (保護內部 Transformer 核心不被大梯度洗除)
+            self.model.mask_decoder.iou_prediction_head,         # 負責 IoU 打分
+            self.model.mask_decoder.output_upscaling,            # 負責將 64x64 放大到 256x256
+            self.model.mask_decoder.output_hypernetworks_mlps,   # 負責生成 Mask 的權重
         ]
         
         for module in trainable_modules:
@@ -153,6 +157,19 @@ class WeatherSAMTrainer:
         Stage 4: ContextFusionHead 空間融合。
         Stage 5: ContextLoss (全域互斥性優化)。
         """
+        # ★ 針對剛解開 detach 的 epoch (epoch_index == 5)，重置 Mask Decoder 的 Adam 動量
+        if epoch_index == 5:
+            print(f"\n[INFO] Epoch 5: Clearing Adam state for MaskDecoder to prevent Momentum shock...")
+            modules_to_reset = [
+                self.model.mask_decoder.iou_prediction_head,
+                self.model.mask_decoder.output_upscaling,
+                self.model.mask_decoder.output_hypernetworks_mlps,
+            ]
+            for module in modules_to_reset:
+                for param in module.parameters():
+                    if param in self.optimizer.state:
+                        del self.optimizer.state[param]
+
         self.model.train()
         losses = {
             "total": AverageMeter(),
@@ -246,8 +263,13 @@ class WeatherSAMTrainer:
                     # ── Stage 3: Argmax Selection for ContextFusionHead ──
                     if num_prompts > 0:
                         best_mask_indices = torch.argmax(iou_preds, dim=1) # (K,)
-                        # ★ 真正的兩階段解耦：阻斷 ContextLoss 的梯度流回 Mask Decoder 等特徵抽取器，解決梯度互相打架與爆炸的問題
-                        selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices].detach() # (K, 256, 256)
+                        # ★ 漸進式梯度解放 (Progressive Gradient Unblocking)
+                        # 前 5 個 Epoch 加上防爆牆 (detach)，避免被 5.0 倍的小物件 Focal Loss 衝擊導致梯度爆炸
+                        # Epoch 5 之後再打通端對端梯度，進行真正的邊界微調
+                        if epoch_index < 5:
+                            selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices].detach() 
+                        else:
+                            selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices] 
                     else:
                         selected_logits = torch.empty((0, 256, 256), device=self.device)
                     
@@ -274,7 +296,7 @@ class WeatherSAMTrainer:
                     sample_total_loss += context_loss
                     
                     # ── Stage 6: Active Boundary Loss (ABL) ──
-                    abl_effective_weight = self.abl_weight if epoch_index >= self.abl_start_epoch else 0.0
+                    abl_effective_weight = self.abl_weight if epoch_index + 1 >= self.abl_start_epoch else 0.0
                     if abl_effective_weight > 0:
                         abl_loss = self.abl_loss_fn(fused_logits_hr, gt_mask_i)
                         sample_total_loss += abl_effective_weight * abl_loss
@@ -356,17 +378,22 @@ class WeatherSAMTrainer:
         confidence = probs.max(dim=0).values.cpu().numpy()
 
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-        axes[0].imshow(prob_map, cmap='hot', vmin=0, vmax=1)
+        
+        # 不要硬性指定 vmin/vmax，讓 matplotlib 自動基於 min/max 展開對比度
+        im0 = axes[0].imshow(prob_map, cmap='magma')
         axes[0].set_title(f"P(cls={rand_class_idx} {cls_name})")
         axes[0].axis('off')
+        fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
-        axes[1].imshow(pred_norm, cmap='tab20', vmin=0, vmax=1)
+        im1 = axes[1].imshow(pred_class, cmap='nipy_spectral') # 直接顯示 class idx，用高對比 cmap
         axes[1].set_title("Argmax Prediction")
         axes[1].axis('off')
+        fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
-        axes[2].imshow(confidence, cmap='viridis', vmin=0, vmax=1)
+        im2 = axes[2].imshow(confidence, cmap='viridis')
         axes[2].set_title("Confidence (max softmax)")
         axes[2].axis('off')
+        fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
 
         save_path = f"debug_viz/epoch_{epoch+1}_step_{step}_cls_{rand_class_idx}_{cls_name}.png"
         plt.tight_layout()
@@ -459,7 +486,7 @@ class WeatherSAMTrainer:
                     # ── Stage 3: Argmax Selection ──
                     if num_prompts > 0:
                         best_mask_indices = torch.argmax(iou_preds, dim=1)
-                        selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices].detach()
+                        selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices]
                     else:
                         selected_logits = torch.empty((0, 256, 256), device=self.device)
                     
@@ -486,7 +513,7 @@ class WeatherSAMTrainer:
                     sample_total_loss = sample_total_loss + context_loss
                     
                     # ── Stage 6: Active Boundary Loss (ABL) ──
-                    abl_effective_weight = self.abl_weight if epoch_index >= self.abl_start_epoch else 0.0
+                    abl_effective_weight = self.abl_weight if epoch_index + 1 >= self.abl_start_epoch else 0.0
                     if abl_effective_weight > 0:
                         abl_loss = self.abl_loss_fn(fused_logits_hr, gt_mask_i)
                         sample_total_loss = sample_total_loss + abl_effective_weight * abl_loss

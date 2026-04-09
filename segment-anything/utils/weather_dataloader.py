@@ -92,7 +92,7 @@ class WeatherSegmentationDataset(Dataset):
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:
                 ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-            ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
+            ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
             # GT Mask 讀取
             if pd.notna(row.get('gt_path')) and os.path.exists(str(row['gt_path'])):
@@ -126,7 +126,7 @@ class WeatherSegmentationDataset(Dataset):
 
             # D. 先統一 Resize 到模型輸入尺寸 (例如 1024)
             image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
-            ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
+            ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
             gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
             # ===========================================================

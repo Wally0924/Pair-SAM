@@ -17,37 +17,56 @@ from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_we
 # 📊 1. 繪製圖表功能
 # ==========================================
 def plot_history(history, output_dir):
-    # (省略內容，與原檔相同)
     if not history:
         return
     df = pd.DataFrame(history)
-    plt.figure(figsize=(12, 6))
-    
-    plt.subplot(1, 1, 1)
-    if 'train_total' in df.columns and 'val_total' in df.columns:
-        plt.plot(df['epoch'], df['train_total'], 'k-', label='Train Total', linewidth=2)
-        plt.plot(df['epoch'], df['val_total'], 'k--', label='Val Total', linewidth=2)
-    if 'val_ce' in df.columns:
-        plt.plot(df['epoch'], df['val_ce'], 'b-s', label='Val CE', alpha=0.7)
-    if 'val_focal' in df.columns:
-        plt.plot(df['epoch'], df['val_focal'], 'r-s', label='Val Focal', alpha=0.7)
-    if 'val_dice' in df.columns:
-        plt.plot(df['epoch'], df['val_dice'], 'g-s', label='Val Dice', alpha=0.7)
-    if 'val_iou' in df.columns:
-        plt.plot(df['epoch'], df['val_iou'], 'm-^', label='Val IoU MSE', alpha=0.7)
-    if 'val_abl' in df.columns:
-        plt.plot(df['epoch'], df['val_abl'], 'c-d', label='Val ABL', alpha=0.7)
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss Value')
-    plt.title('Decoupled Multi-Loss Components')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.7)
-    
+    epochs = df['epoch'].tolist()
+
+    # 每個 loss 各自一個子圖，各有自己的 y 軸尺度
+    components = [
+        ('total',  'Total Loss',   'k',  'Train Total', 'Val Total'),
+        ('ce',     'CE Loss',      'b',  'Train CE',    'Val CE'),
+        ('focal',  'Focal Loss',   'r',  'Train Focal', 'Val Focal'),
+        ('dice',   'Dice Loss',    'g',  'Train Dice',  'Val Dice'),
+        ('iou',    'IoU MSE',      'm',  'Train IoU',   'Val IoU'),
+        ('abl',    'ABL Loss',     'c',  'Train ABL',   'Val ABL'),
+    ]
+
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+    axes = axes.flatten()
+
+    for ax, (key, title, color, train_label, val_label) in zip(axes, components):
+        train_col = f'train_{key}'
+        val_col   = f'val_{key}'
+        has_data  = False
+
+        if train_col in df.columns:
+            ax.plot(epochs, df[train_col], color=color, linestyle='-',
+                    linewidth=2, label=train_label, marker='o', markersize=3)
+            has_data = True
+        if val_col in df.columns:
+            ax.plot(epochs, df[val_col], color=color, linestyle='--',
+                    linewidth=2, label=val_label, marker='s', markersize=3, alpha=0.8)
+            has_data = True
+
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_xlabel('Epoch', fontsize=9)
+        ax.set_ylabel('Loss', fontsize=9)
+        ax.legend(fontsize=8)
+        ax.grid(True, linestyle='--', alpha=0.5)
+
+        # y 軸下限不低於 0，讓坐標軸更直觀
+        if has_data:
+            ymin = ax.get_ylim()[0]
+            ax.set_ylim(bottom=max(0, ymin * 0.95))
+
+    fig.suptitle('WeatherSAM Training Curves (Per-Component)', fontsize=13, fontweight='bold')
     plt.tight_layout()
     save_path = os.path.join(output_dir, 'training_curve.png')
-    plt.savefig(save_path)
+    plt.savefig(save_path, dpi=120)
     plt.close()
     print(f"📉 Curves updated at: {save_path}")
+
 
 # ==========================================
 # 🖨️ 2. 美觀的參數列印函式
@@ -101,27 +120,27 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv14")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv15")
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
-    parser.add_argument("--patience", type=int, default=7, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--epochs", type=int, default=100, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.005, help="判定為進步的最小 Loss 差異")
     parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
     parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
-    parser.add_argument("--max_norm", type=float, default=2.0, help="梯度裁剪的 Max norm。")
-    parser.add_argument("--gps_noise", type=float, default=0, help="訓練時添加到 GPS 座標的常態分布噪音標準差。")
+    parser.add_argument("--max_norm", type=float, default=1.0, help="梯度裁剪的 Max norm。")
+    parser.add_argument("--gps_noise", type=float, default=0.01, help="訓練時添加到 GPS 座標的常態分布噪音標準差。")
     
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=20.0, help="MaskLoss (Focal) 權重")
-    parser.add_argument("--dice_weight", type=float, default=1.0, help="MaskLoss (Dice) 權重")
+    parser.add_argument("--focal_weight", type=float, default=5.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--dice_weight", type=float, default=2.0, help="MaskLoss (Dice) 權重")
     parser.add_argument("--iou_weight", type=float, default=1.0, help="IoU MSE Loss 權重")
     
     # --- Active Boundary Loss ---
     parser.add_argument("--abl_weight", type=float, default=1.5, help="Active Boundary Loss 權重")
-    parser.add_argument("--abl_start_epoch", type=int, default=25, help="ABL 開始介入的 Epoch（Warmup）")
+    parser.add_argument("--abl_start_epoch", type=int, default=20, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", 
@@ -236,6 +255,12 @@ def main():
         
         # 儲存最佳模型與 Early Stopping 邏輯
         current_val_loss = val_metrics['total']
+        
+        # ABL 啟動時重置計數器，避免 loss 跳升誤觸發 early stop
+        if epoch + 1 == args.abl_start_epoch:
+            early_stop_counter = 0
+            best_val_loss = current_val_loss
+            print(f"   🔄 ABL activated at epoch {epoch+1}. Early stop counter & best loss reset (new baseline: {current_val_loss:.4f})")
         
         # 判斷是否進步 (打破最佳紀錄)
         if current_val_loss < (best_val_loss - args.min_delta):
