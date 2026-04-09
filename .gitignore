@@ -213,4 +213,4 @@ segment-anything/inference_viz_cityscapes*/
 *.pt
 *.pth
 /home/rvl1421/SAM_research/segment-anything/checkpoints
-
+CLAUDE.md
