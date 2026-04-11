@@ -102,6 +102,11 @@ def print_training_config(args, device):
     print(f"\n🎯  Active Boundary Loss:")
     print(f"   • ABL Weight:        {args.abl_weight}")
     print(f"   • ABL Start Epoch:   {args.abl_start_epoch}")
+
+    # 5. Decoder Transformer LR
+    print(f"\n🔓  MaskDecoder Transformer:")
+    print(f"   • Decoder LR Scale:      {args.decoder_lr_scale}  (iou/mask tokens LR = {args.lr * args.decoder_lr_scale:.2e})")
+    print(f"   • Transformer LR Scale:  {args.transformer_lr_scale}  (transformer LR    = {args.lr * args.transformer_lr_scale:.2e})")
     
     # 4. 路徑資訊
     print(f"\n📂  Paths:")
@@ -120,7 +125,7 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv15")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv16")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=100, help="總共訓練的 Epoch 數量")
@@ -134,12 +139,18 @@ def main():
     
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=5.0, help="MaskLoss (Focal) 權重")
-    parser.add_argument("--dice_weight", type=float, default=2.0, help="MaskLoss (Dice) 權重")
-    parser.add_argument("--iou_weight", type=float, default=1.0, help="IoU MSE Loss 權重")
-    
+    parser.add_argument("--focal_weight", type=float, default=4.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--dice_weight", type=float, default=1.5, help="MaskLoss (Dice) 權重")
+    parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")
+
     # --- Active Boundary Loss ---
-    parser.add_argument("--abl_weight", type=float, default=1.5, help="Active Boundary Loss 權重")
+    parser.add_argument("--abl_weight", type=float, default=2.0, help="Active Boundary Loss 權重")
+
+    # --- Decoder Transformer LR ---
+    parser.add_argument("--decoder_lr_scale", type=float, default=0.1,
+                        help="MaskDecoder iou_token/mask_tokens 相對主幹 LR 的縮放比例 (預設 0.1 = 1/10 LR)")
+    parser.add_argument("--transformer_lr_scale", type=float, default=0.01,
+                        help="MaskDecoder Transformer weights 相對主幹 LR 的縮放比例 (預設 0.01 = 1/100 LR)")
     parser.add_argument("--abl_start_epoch", type=int, default=20, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- 資料路徑 ---

@@ -241,46 +241,42 @@ class ActiveBoundaryLoss(nn.Module):
         device: torch.device
     ) -> torch.Tensor:
         """
-        利用 EDT 距離映射圖的梯度場計算每個 PDB 像素到最近 GTB 的方向，
-        並產生 Label Smoothed 的 8 維目標分佈 D_g。
+        依照 ABL 論文 Eq.2，對每個 PDB 像素在 8 個鄰域方向中，
+        取 EDT 距離值最小的方向作為 ground-truth 方向目標（argmin）。
 
-        ★ 使用 np.gradient 取代暴力近鄰搜尋，記憶體從 O(N×M) 降至 O(H×W)，
-          徹底解決 GTB 像素過多時的 OOM 問題。
+        D_g_i = Φ(argmin_j M_{i+Δj}),  j ∈ {0,...,7}
+
+        直接查詢 8 個鄰居的 EDT 值取 argmin，嚴格符合論文定義，
+        避免平坦 EDT 區域 np.gradient 估計不穩定的問題。
 
         Args:
             pdb_coords: (N, 2) PDB 像素座標 [y, x]
             dist_map:   (H, W) float tensor，EDT 距離映射圖
             device:     GPU device
         Returns:
-            D_g: (N, 8) soft target distribution
+            D_g: (N, 8) label-smoothed soft target distribution
         """
         N = pdb_coords.shape[0]
-
-        # 在 CPU 上計算 EDT 梯度場（指向遠離邊界的方向）
         dist_np = dist_map.cpu().numpy()
-        grad_y, grad_x = np.gradient(dist_np)
+        H, W = dist_np.shape
 
-        # 取出 PDB 像素的梯度方向（取反 → 指向最近邊界）
         pdb_y = pdb_coords[:, 0].cpu().numpy()
         pdb_x = pdb_coords[:, 1].cpu().numpy()
-        dir_y = -grad_y[pdb_y, pdb_x]
-        dir_x = -grad_x[pdb_y, pdb_x]
 
-        # 組合為方向向量 (N, 2) 並正規化
-        directions = np.stack([dir_y, dir_x], axis=1)  # (N, 2)
-        directions_t = torch.from_numpy(directions).float().to(device)
-        diff_norm = directions_t / (directions_t.norm(dim=1, keepdim=True) + 1e-8)
+        # 對 8 個鄰域方向逐一查詢 EDT 值 → (N, 8)
+        neighbor_dists = np.full((N, 8), np.inf, dtype=np.float32)
+        for d_idx, (dy, dx) in enumerate(self.SHIFTS):
+            ny = pdb_y + dy
+            nx = pdb_x + dx
+            valid = (ny >= 0) & (ny < H) & (nx >= 0) & (nx < W)
+            neighbor_dists[valid, d_idx] = dist_np[ny[valid], nx[valid]]
 
-        # 量化為 8 方向之一：餘弦相似度
-        shift_vectors = torch.tensor(
-            self.SHIFTS, dtype=torch.float32, device=device
-        )  # (8, 2)
-        shift_norm = shift_vectors / (shift_vectors.norm(dim=1, keepdim=True) + 1e-8)
+        # argmin：選 EDT 距離最小（最靠近 GTB）的鄰域方向
+        main_direction_idx = torch.from_numpy(
+            np.argmin(neighbor_dists, axis=1)
+        ).long().to(device)  # (N,)
 
-        cosine_sim = torch.mm(diff_norm, shift_norm.t())  # (N, 8)
-        main_direction_idx = torch.argmax(cosine_sim, dim=1)  # (N,)
-
-        # Label Smoothing：主方向 0.8，其餘 0.2/7
+        # Label Smoothing：主方向 0.8，其餘均分 0.2/7
         other_prob = self.smooth_other / (self.num_dirs - 1)
         D_g = torch.full((N, self.num_dirs), other_prob, device=device)
         D_g[torch.arange(N, device=device), main_direction_idx] = self.smooth_main

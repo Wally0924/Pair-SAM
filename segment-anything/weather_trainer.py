@@ -60,9 +60,12 @@ class WeatherSAMTrainer:
         iou_w = getattr(args, 'iou_weight', 1.0)
         abl_w = getattr(args, 'abl_weight', 1.0)
         abl_start = getattr(args, 'abl_start_epoch', 5)
+        decoder_lr_scale = getattr(args, 'decoder_lr_scale', 0.1)
+        transformer_lr_scale = getattr(args, 'transformer_lr_scale', 0.01)
         
         print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], IoU: {iou_w})")
         print(f"📉 Active Boundary Loss (Weight: {abl_w}, Start Epoch: {abl_start})")
+        print(f"🔓 MaskDecoder Transformer LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
         self.context_loss_fn = ContextLoss(ce_weight=ce_w).to(self.device)
         self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
         self.iou_mse_loss_fn = torch.nn.MSELoss()
@@ -78,30 +81,74 @@ class WeatherSAMTrainer:
             param.requires_grad = False
             
         # 根據我們討論的策略：凍結核心大腦，只訓練適配與融合模組
-        trainable_modules = [
+        # ── 主幹適配模組 (main LR) ──
+        main_lr_modules = [
             self.model.fusion_module,
             self.model.gate_module,
             self.model.location_encoder.output_projection,
             self.model.text_encoder.projection,
             self.model.context_fusion_head,
             self.model.mask_encoder,
-            
-            # 部分解凍 Mask Decoder (保護內部 Transformer 核心不被大梯度洗除)
-            self.model.mask_decoder.iou_prediction_head,         # 負責 IoU 打分
-            self.model.mask_decoder.output_upscaling,            # 負責將 64x64 放大到 256x256
-            self.model.mask_decoder.output_hypernetworks_mlps,   # 負責生成 Mask 的權重
+            self.model.mask_decoder.iou_prediction_head,
+            self.model.mask_decoder.output_upscaling,
+            self.model.mask_decoder.output_hypernetworks_mlps,
         ]
-        
-        for module in trainable_modules:
+
+        # ── 解凍 MaskDecoder Query Embeddings (低 LR) ──
+        # iou_token (1×256) + mask_tokens (4×256) = ~1280 params，極輕量
+        decoder_token_modules = [
+            self.model.mask_decoder.iou_token,
+            self.model.mask_decoder.mask_tokens,
+        ]
+
+        # ── 解凍 MaskDecoder Transformer (極低 LR) ──
+        # 診斷確認 cross-attention 對 fused weather feature 近乎均勻分布（focus ratio < 0.04）
+        # 原因：transformer 在 SAM clean-image feature 上預訓練，fused feature 分布已偏移
+        # 以極低 LR (1/100) fine-tune，讓 transformer 適應 weather fused feature 的分布
+        # 同時保持對 SAM pretrained prior 的破壞降到最低
+        decoder_transformer_modules = [
+            self.model.mask_decoder.transformer,
+        ]
+
+        for module in main_lr_modules:
             for param in module.parameters():
                 param.requires_grad = True
-        
+
+        for module in decoder_token_modules:
+            for param in module.parameters():
+                param.requires_grad = True
+
+        for module in decoder_transformer_modules:
+            for param in module.parameters():
+                param.requires_grad = True
+
         self.model.pe_layer.requires_grad = True
 
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-        print(f"✅ 總可訓練參數數量: {len(trainable_params)}")
-        
-        self.optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=1e-2)
+        # ── 建立分離 LR 的 parameter groups ──
+        main_params        = [p for m in main_lr_modules            for p in m.parameters() if p.requires_grad]
+        decoder_tok_params = [p for m in decoder_token_modules      for p in m.parameters() if p.requires_grad]
+        decoder_tf_params  = [p for m in decoder_transformer_modules for p in m.parameters() if p.requires_grad]
+        pe_params          = [self.model.pe_layer] if self.model.pe_layer.requires_grad else []
+
+        param_groups = [
+            {'params': main_params,        'lr': lr,                             'name': 'main'},
+            {'params': decoder_tok_params, 'lr': lr * decoder_lr_scale,          'name': 'decoder_tokens'},
+            {'params': decoder_tf_params,  'lr': lr * transformer_lr_scale,      'name': 'decoder_transformer'},
+            {'params': pe_params,          'lr': lr,                             'name': 'pe_layer'},
+        ]
+        # 過濾掉空的 group
+        param_groups = [g for g in param_groups if len(g['params']) > 0]
+
+        def count_params(params):
+            return sum(p.numel() for p in params)
+
+        total_trainable = sum(count_params(g['params']) for g in param_groups)
+        print(f"✅ 總可訓練參數數量: {total_trainable:,} ({total_trainable/1e6:.2f}M)")
+        for g in param_groups:
+            n = count_params(g['params'])
+            print(f"   • [{g['name']}] {n:,} params ({n/1e6:.3f}M), LR={g['lr']:.2e}")
+
+        self.optimizer = optim.AdamW(param_groups, weight_decay=1e-2)
 
         # ==========================================
         # [修改] 實作 Warmup + Cosine Decay 策略
@@ -164,6 +211,8 @@ class WeatherSAMTrainer:
                 self.model.mask_decoder.iou_prediction_head,
                 self.model.mask_decoder.output_upscaling,
                 self.model.mask_decoder.output_hypernetworks_mlps,
+                self.model.mask_decoder.iou_token,
+                self.model.mask_decoder.mask_tokens,
             ]
             for module in modules_to_reset:
                 for param in module.parameters():
