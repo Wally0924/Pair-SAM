@@ -162,6 +162,15 @@ class WeatherSegmentationDataset(Dataset):
         # 處理 GT Mask
         output["gt_mask"] = torch.as_tensor(gt_mask).long()
 
+        # 處理 Invalid Mask（optional，目前僅 ACDC 提供）
+        # ACDC invalid_mask 格式：255 = 有效區域，0 = 無效區域（車頭遮擋等固定盲區）
+        if 'invalid_mask' in row and pd.notna(row.get('invalid_mask')) and os.path.exists(str(row['invalid_mask'])):
+            inv = cv2.imread(str(row['invalid_mask']), cv2.IMREAD_GRAYSCALE)
+            inv = cv2.resize(inv, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+            output["invalid_mask"] = torch.as_tensor(inv == 0).bool()  # True = 無效，需排除
+        else:
+            output["invalid_mask"] = torch.zeros(self.image_size, self.image_size, dtype=torch.bool)
+
         # 處理 Text Prompts
         active_prompts = []
         # 注意: 這裡判斷 GT 是否全是 0 (背景)
@@ -191,6 +200,13 @@ class WeatherSegmentationDataset(Dataset):
 
         output["location"] = torch.tensor([lat, lon], dtype=torch.float32)
 
+        # 處理 condition_id（天氣條件索引，ACDC 專用：fog=0, rain=1, snow=2）
+        # Cityscapes 等無此欄位的資料集會輸出 -1，模型 forward 中以 -1 作為退回 GPS 路徑的信號
+        if 'condition_id' in row and pd.notna(row.get('condition_id')):
+            output["condition_id"] = torch.tensor(int(row['condition_id']), dtype=torch.long)
+        else:
+            output["condition_id"] = torch.tensor(-1, dtype=torch.long)
+
         return output
     
     @staticmethod
@@ -201,18 +217,22 @@ class WeatherSegmentationDataset(Dataset):
 
         # 堆疊 ref_void_mask
         ref_void_masks = torch.stack([item['ref_void_mask'] for item in batch])
+        invalid_masks = torch.stack([item['invalid_mask'] for item in batch])
 
         text_prompts = [item['text_prompts'] for item in batch]
         original_sizes = [item['original_size'] for item in batch]
         locations = torch.stack([item['location'] for item in batch])
-        
+        condition_ids = torch.stack([item['condition_id'] for item in batch])
+
         batch_dict = {
             "reference_mask": ref_masks,
             "ref_void_mask": ref_void_masks,
             "gt_mask": gt_masks,
+            "invalid_mask": invalid_masks,
             "text_prompts": text_prompts,
             "original_size": original_sizes,
-            "location": locations
+            "location": locations,
+            "condition_id": condition_ids,
         }
 
         # 2. 動態處理影像輸入

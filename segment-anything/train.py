@@ -120,12 +120,12 @@ def main():
     # --- 基礎設定 ---
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
-    parser.add_argument("--checkpoint", type=str, 
-                        default="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
+    parser.add_argument("--checkpoint", type=str,
+                        default="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/sam_vit_h_4b8939.pth",
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_all_data_testv16")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv1")
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=100, help="總共訓練的 Epoch 數量")
@@ -144,20 +144,24 @@ def main():
     parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")
 
     # --- Active Boundary Loss ---
-    parser.add_argument("--abl_weight", type=float, default=2.0, help="Active Boundary Loss 權重")
+    parser.add_argument("--abl_weight", type=float, default=0.5, help="Active Boundary Loss 權重")
+    parser.add_argument("--abl_start_epoch", type=int, default=5, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- Decoder Transformer LR ---
     parser.add_argument("--decoder_lr_scale", type=float, default=0.1,
                         help="MaskDecoder iou_token/mask_tokens 相對主幹 LR 的縮放比例 (預設 0.1 = 1/10 LR)")
     parser.add_argument("--transformer_lr_scale", type=float, default=0.01,
                         help="MaskDecoder Transformer weights 相對主幹 LR 的縮放比例 (預設 0.01 = 1/100 LR)")
-    parser.add_argument("--abl_start_epoch", type=int, default=20, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- 資料路徑 ---
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", 
+    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv",
                         help="訓練資料集 CSV 路徑")
-    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/val_with_gps.csv", 
+    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/val_with_gps.csv",
                         help="驗證資料集 CSV 路徑")
+
+    # --- 模式切換 ---
+    parser.add_argument("--use_condition_embedding", action="store_true", default=False,
+                        help="ACDC 模式：以天氣條件 Embedding (fog/rain/snow) 取代 GPS LocationEncoder")
     
     args = parser.parse_args()
     

@@ -82,6 +82,7 @@ def _build_weather_sam(
         transformer_dim=prompt_embed_dim,
         iou_head_depth=3,
         iou_head_hidden_dim=256,
+        num_classes=num_classes,
     )
 
     fusion_module = CrossViewAlignment(

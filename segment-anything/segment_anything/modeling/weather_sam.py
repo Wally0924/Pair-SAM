@@ -62,7 +62,21 @@ class WeatherSAM(nn.Module):
         self.gate_module = gate_module
         self.text_encoder = text_encoder
         self.location_encoder = location_encoder
-        
+
+        # ConditionEncoder：天氣條件輕量 Embedding（fog=0, rain=1, snow=2）
+        # 輸出維度 256 與 LocationEncoder 對齊，可直接替換進 prompt pipeline
+        # 僅在 condition_id >= 0 時啟用（ACDC 模式）；Cityscapes 保持走 LocationEncoder
+        self.condition_encoder = nn.Embedding(3, 256)
+        nn.init.normal_(self.condition_encoder.weight, std=0.01)
+
+        # Cityscapes 19 類的 class name → id 對照表（模型內部使用，不是可學習參數）
+        self.CLASS_MAP = {
+            "road": 0, "sidewalk": 1, "building": 2, "wall": 3, "fence": 4,
+            "pole": 5, "traffic light": 6, "traffic sign": 7, "vegetation": 8,
+            "terrain": 9, "sky": 10, "person": 11, "rider": 12, "car": 13,
+            "truck": 14, "bus": 15, "train": 16, "motorcycle": 17, "bicycle": 18
+        }
+
         # New Semantic Fusion Head for dynamic classes
         self.num_classes = num_classes
         self.context_fusion_head = ContextFusionHead(num_classes=num_classes, hidden_dim=64)
@@ -141,12 +155,16 @@ class WeatherSAM(nn.Module):
             elif sparse_embeddings.dim() == 3 and sparse_embeddings.shape[0] == 1: # (1, K, 256)
                 sparse_embeddings = sparse_embeddings.squeeze(0).unsqueeze(1)
 
-            # B. 位置編碼 (Location Encoding)
-            # 1. 取出座標 (2,) -> (1, 2) Batch dimension
-            location_coords = image_record["location"].unsqueeze(0) 
-            
-            # 2. 編碼: (1, 2) -> (1, 256)
-            loc_feats = self.location_encoder(location_coords)
+            # B. 位置/條件編碼
+            # condition_id >= 0：ACDC 模式，使用 ConditionEncoder（fog/rain/snow embedding）
+            # condition_id == -1：Cityscapes 模式，退回 GPS LocationEncoder（行為與原本完全一致）
+            condition_id = image_record.get("condition_id", torch.tensor(-1))
+            if condition_id.item() >= 0:
+                cid = condition_id.to(self.device).unsqueeze(0)   # (1,)
+                loc_feats = self.condition_encoder(cid)            # (1, 256)
+            else:
+                location_coords = image_record["location"].unsqueeze(0)  # (1, 2)
+                loc_feats = self.location_encoder(location_coords)        # (1, 256)
             loc_feats = F.normalize(loc_feats, p=2, dim=-1)
             
             # 3. 調整維度以匹配 Text Prompts
@@ -159,47 +177,46 @@ class WeatherSAM(nn.Module):
             location_embeddings = loc_feats.repeat(k_prompts, 1, 1)
 
             
-            # C. 提示編碼 (Prompt Encoding) (K, 1, 256)
+            # C. 提示編碼 (Prompt Encoding) → sparse: (K, 2, 256)
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 text_embeddings=sparse_embeddings,
                 mask_inputs=None,
-                location_embeddings=location_embeddings,  
+                location_embeddings=location_embeddings,
             )
 
-            # D. 遮罩解碼 (Mask Decoding)
-            # 取出當前這張圖的 Feature: (1, 256, 64, 64)
-            curr_fused_embed = fused_embeddings[i].unsqueeze(0)
+            # D. [Mask2Former-style] 語意解碼 — 所有 K 個類別在單次 transformer forward 中處理
+            # class_ids 必須與 texts 完全同步（同長度、同順序），確保 sparse_embeddings 對應正確
+            # 若 texts 中有不在 CLASS_MAP 的字串則過濾，同時從 sparse_embeddings 中移除對應項
+            valid_indices = [k for k, t in enumerate(texts) if t in self.CLASS_MAP]
+            class_ids = [self.CLASS_MAP[texts[k]] for k in valid_indices]
+            if len(valid_indices) < len(texts):
+                sparse_embeddings = sparse_embeddings[valid_indices]  # 同步過濾 embeddings
+
+            curr_fused_embed = fused_embeddings[i].unsqueeze(0)  # (1, 256, 64, 64)
             image_pe = self.get_image_pe()
 
-            # Decoder 內部會檢測:
-            # Image Embed: (1, ...) 
-            # Prompts: (K, ...)
-            # 自動執行 repeat_interleave，將 Image 複製 K 份
-            low_res_masks, iou_predictions = self.mask_decoder(
+            # forward_semantic：K 個類別 query 在同一 sequence 中互相 attend
+            # 輸出 low_res_masks: (1, K, 256, 256)
+            low_res_masks = self.mask_decoder.forward_semantic(
                 image_embeddings=curr_fused_embed,
                 image_pe=image_pe,
-                sparse_prompt_embeddings=sparse_embeddings,
+                sparse_prompt_embeddings=sparse_embeddings,   # (K, 2, 256)
                 dense_prompt_embeddings=dense_embeddings,
-                multimask_output=multimask_output,
+                class_ids=class_ids,
             )
-            
-            # D. Post-processing
+
+            # E. Post-processing: (1, K, 256, 256) → (1, K, H, W)
             masks = self.postprocess_masks(
                 low_res_masks,
                 input_size=image_record["original_size"],
                 original_size=image_record["original_size"],
             )
-            
-            # E. Semantic Fusion (Optional but recommended for semantic segmentation)
-            # low_res_masks is (K, 3, 256, 256). We typically take the best mask (index 0 if multimask=False, or from iou).
-            # We will process it after upsampling to original size, OR at 256 resolution.
-            # Doing it at high-res provides best edge quality. However, passing K back and handling later is cleaner.
-            
+
             outputs.append(
                 {
-                    "masks": masks,              # (K, 3, H, W) Boolean / Float masks
-                    "iou_predictions": iou_predictions, # (K, 3)
-                    "low_res_logits": low_res_masks,    # (K, 3, 256, 256)
+                    "masks": masks,                  # (1, K, H, W)
+                    "low_res_logits": low_res_masks, # (1, K, 256, 256)
+                    "class_ids": class_ids,          # List[int], len=K
                 }
             )
             

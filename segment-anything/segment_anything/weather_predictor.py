@@ -78,11 +78,16 @@ class WeatherSamPredictor:
         elif sparse_embeddings.dim() == 3 and sparse_embeddings.shape[0] == 1:
             sparse_embeddings = sparse_embeddings.squeeze(0).unsqueeze(1)
 
-        # --- B. Location Encoding ---
-        location_coords = location.unsqueeze(0) 
-        loc_feats = self.model.location_encoder(location_coords)
+        # --- B. Location / Condition Encoding ---
+        condition_id = self.model.CLASS_MAP.get('__condition__', None)  # 由外部透過 set_condition 設定
+        if hasattr(self, '_condition_id') and self._condition_id >= 0:
+            cid = torch.tensor(self._condition_id, dtype=torch.long, device=self.device).unsqueeze(0)
+            loc_feats = self.model.condition_encoder(cid)
+        else:
+            location_coords = location.unsqueeze(0)
+            loc_feats = self.model.location_encoder(location_coords)
         loc_feats = F.normalize(loc_feats, p=2, dim=-1)
-        
+
         k_prompts = sparse_embeddings.shape[0]
         loc_feats = loc_feats.unsqueeze(1)
         location_embeddings = loc_feats.repeat(k_prompts, 1, 1)
@@ -91,27 +96,31 @@ class WeatherSamPredictor:
         sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
             text_embeddings=sparse_embeddings,
             mask_inputs=None,
-            location_embeddings=location_embeddings,  
+            location_embeddings=location_embeddings,
         )
 
         image_pe = self.model.get_image_pe()
 
-        # --- D. Mask Decoding ---
-        low_res_masks, iou_predictions = self.model.mask_decoder(
+        # --- D. [Mask2Former] 語意解碼 ---
+        class_ids = [self.model.CLASS_MAP[t] for t in text_prompts if t in self.model.CLASS_MAP]
+        low_res_masks = self.model.mask_decoder.forward_semantic(
             image_embeddings=self.fused_features,
             image_pe=image_pe,
-            sparse_prompt_embeddings=sparse_embeddings,
+            sparse_prompt_embeddings=sparse_embeddings,   # (K, 2, 256)
             dense_prompt_embeddings=dense_embeddings,
-            multimask_output=multimask_output,
+            class_ids=class_ids,
         )
-        
-        # --- E. 高精度後處理 (修正雜訊的關鍵) ---
-        # 這裡會將 (256, 256) 的 logit 透過 bilinear interpolation 並精準裁切回 Original Size
+        # low_res_masks: (1, K, 256, 256)
+
+        # --- E. 後處理 ---
         masks = self.model.postprocess_masks(
             low_res_masks,
-            input_size=(1024, 1024), 
+            input_size=(1024, 1024),
             original_size=self.original_size,
         )
-        
-        # 回傳 logits (未經 Sigmoid 閾值處理的原始分數)，以利後續做 Argmax
-        return masks, iou_predictions, low_res_masks
+        # 回傳 logits，以利後續做 Argmax；同時回傳 class_ids 供 inference 組裝
+        return masks, low_res_masks, class_ids
+
+    def set_condition(self, condition_id: int):
+        """設定天氣條件 ID（ACDC 模式：fog=0, rain=1, snow=2；-1 = GPS 模式）"""
+        self._condition_id = condition_id

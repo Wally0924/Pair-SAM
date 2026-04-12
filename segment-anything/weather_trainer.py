@@ -11,7 +11,7 @@ import math
 import random
 
 from segment_anything.modeling import WeatherSAM 
-from utils.new_loss import ContextLoss, MaskLoss, calculate_true_iou, ActiveBoundaryLoss
+from utils.new_loss import ContextLoss, MaskLoss, ActiveBoundaryLoss
 
 class AverageMeter:
     """計算並儲存當前值與平均值。"""
@@ -63,13 +63,11 @@ class WeatherSAMTrainer:
         decoder_lr_scale = getattr(args, 'decoder_lr_scale', 0.1)
         transformer_lr_scale = getattr(args, 'transformer_lr_scale', 0.01)
         
-        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], IoU: {iou_w})")
+        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}])")
         print(f"📉 Active Boundary Loss (Weight: {abl_w}, Start Epoch: {abl_start})")
         print(f"🔓 MaskDecoder Transformer LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
         self.context_loss_fn = ContextLoss(ce_weight=ce_w).to(self.device)
         self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
-        self.iou_mse_loss_fn = torch.nn.MSELoss()
-        self.iou_weight = iou_w
         self.abl_loss_fn = ActiveBoundaryLoss()
         self.abl_weight = abl_w
         self.abl_start_epoch = abl_start
@@ -81,17 +79,30 @@ class WeatherSAMTrainer:
             param.requires_grad = False
             
         # 根據我們討論的策略：凍結核心大腦，只訓練適配與融合模組
+        # ── Location / Condition 模組選擇 ──
+        # use_condition_embedding=True  → ACDC 模式：凍結 LocationEncoder，訓練 ConditionEncoder
+        # use_condition_embedding=False → Cityscapes 模式：訓練 LocationEncoder.output_projection（原行為）
+        use_condition_embedding = getattr(args, 'use_condition_embedding', False)
+        if use_condition_embedding:
+            print("🌦️  [Mode] ACDC fine-tune: LocationEncoder 凍結，啟用 ConditionEncoder")
+            location_module = self.model.condition_encoder
+        else:
+            print("🗺️  [Mode] Cityscapes: 使用 LocationEncoder.output_projection")
+            location_module = self.model.location_encoder.output_projection
+
         # ── 主幹適配模組 (main LR) ──
         main_lr_modules = [
             self.model.fusion_module,
             self.model.gate_module,
-            self.model.location_encoder.output_projection,
+            location_module,
             self.model.text_encoder.projection,
             self.model.context_fusion_head,
             self.model.mask_encoder,
-            self.model.mask_decoder.iou_prediction_head,
+            # ── 原始 SAM decoder heads（保留向後兼容）──
+            # ── [Mask2Former] 19 類別專屬模組 ──
             self.model.mask_decoder.output_upscaling,
-            self.model.mask_decoder.output_hypernetworks_mlps,
+            self.model.mask_decoder.class_mask_tokens,
+            self.model.mask_decoder.class_hypernetworks_mlps,
         ]
 
         # ── 解凍 MaskDecoder Query Embeddings (低 LR) ──
@@ -184,9 +195,10 @@ class WeatherSAMTrainer:
             input_dict = {
                 'reference_mask': batch['reference_mask'][i].to(self.device),
                 'ref_void_mask': batch['ref_void_mask'][i].to(self.device),
-                'text_prompts': batch['text_prompts'][i], 
+                'text_prompts': batch['text_prompts'][i],
                 'original_size': batch['original_size'][i],
-                'location': batch['location'][i].to(self.device) 
+                'location': batch['location'][i].to(self.device),
+                'condition_id': batch['condition_id'][i].to(self.device),
             }
             if use_cached_features:
                 input_dict['image_embedding'] = batch['image_embedding'][i].to(self.device)
@@ -205,14 +217,13 @@ class WeatherSAMTrainer:
         Stage 5: ContextLoss (全域互斥性優化)。
         """
         # ★ 針對剛解開 detach 的 epoch (epoch_index == 5)，重置 Mask Decoder 的 Adam 動量
+        # [Mask2Former] 重置清單已更新為新架構的模組，舊的 shared token 已不在梯度路徑中
         if epoch_index == 5:
             print(f"\n[INFO] Epoch 5: Clearing Adam state for MaskDecoder to prevent Momentum shock...")
             modules_to_reset = [
-                self.model.mask_decoder.iou_prediction_head,
+                self.model.mask_decoder.class_mask_tokens,
+                self.model.mask_decoder.class_hypernetworks_mlps,
                 self.model.mask_decoder.output_upscaling,
-                self.model.mask_decoder.output_hypernetworks_mlps,
-                self.model.mask_decoder.iou_token,
-                self.model.mask_decoder.mask_tokens,
             ]
             for module in modules_to_reset:
                 for param in module.parameters():
@@ -253,76 +264,59 @@ class WeatherSAMTrainer:
                 first_batch_logits = None 
                 
                 for i in range(batch_size):
-                    low_res_logits = outputs[i]['low_res_logits']   # (K, 3, 256, 256)
-                    iou_preds = outputs[i]['iou_predictions']       # (K, 3)
-                    num_prompts = len(batched_input[i]['text_prompts'])
-                    
-                    gt_mask_i = gt_masks[i].unsqueeze(0).long() # (1, 1024, 1024)
-                    valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1) # (1, 1, 1024, 1024)
-                    # ── 初始化損失與目標類別對照表 ──
+                    # [Mask2Former] 新輸出格式
+                    low_res_logits = outputs[i]['low_res_logits'].squeeze(0)  # (K, 256, 256)
+                    class_ids_out  = outputs[i]['class_ids']                  # List[int], len=K
+                    num_prompts    = len(class_ids_out)
+
+                    gt_mask_i = gt_masks[i].unsqueeze(0).long()  # (1, 1024, 1024)
+                    if batch['invalid_mask'][i].any():
+                        gt_mask_i = gt_mask_i.clone()
+                        gt_mask_i[batch['invalid_mask'][i].to(self.device).unsqueeze(0)] = 255
+                    valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1)  # (1, 1, 1024, 1024)
+
                     sample_total_loss = torch.tensor(0.0, device=self.device)
-                    prompt_to_cls = {}
-                    for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
-                        if class_name in self.train_loader.dataset.CLASS_MAP:
-                            cls_id = self.train_loader.dataset.CLASS_MAP[class_name]
-                            if cls_id < self.model.num_classes:
-                                prompt_to_cls[cls_id] = prompt_idx
+                    # class_ids_out 已直接給出對應關係：index k → cls_id = class_ids_out[k]
+                    prompt_to_cls = {cls_id: k for k, cls_id in enumerate(class_ids_out)}
 
                     acc_focal, acc_dice = 0.0, 0.0
-                    
-                    # ── Stage 1 & 2: MaskLoss (Focal+Dice) & IoU MSE Loss ──
+
+                    # ── Stage 1: MaskLoss（Mask2Former 簡化版：每類別 1 個 mask，無 candidate 選擇）──
                     if num_prompts > 0:
-                        # 內部上升取樣至 1024x1024 (僅供計算 Loss 使用)
+                        # (K, 256, 256) → (K, 1, 256, 256) 供 postprocess 使用
                         low_res_logits_upscaled = self.model.postprocess_masks(
-                            low_res_logits,
+                            low_res_logits.unsqueeze(1),
                             input_size=(1024, 1024),
                             original_size=(1024, 1024),
-                        ) # (K, 3, 1024, 1024)
-                        
-                        target_masks_k = []
-                        for prompt_idx in range(num_prompts):
-                            cls_id = next((cid for cid, p_idx in prompt_to_cls.items() if p_idx == prompt_idx), None)
-                            if cls_id is not None:
-                                tgt = (gt_mask_i == cls_id).float().unsqueeze(1) # (1, 1, 1024, 1024)
-                                target_masks_k.append(tgt)
-                            else:
-                                target_masks_k.append(torch.zeros((1, 1, 1024, 1024), device=self.device))
-                                
-                        target_masks_k = torch.cat(target_masks_k, dim=0) # (K, 1, 1024, 1024)
-                        valid_mask_k = valid_mask_i.expand(num_prompts, -1, -1, -1) # (K, 1, 1024, 1024)
-                        
-                        # 計算 Mask Loss (回傳格式 BxK)
-                        mask_total_loss, focal, dice = self.mask_loss_fn(low_res_logits_upscaled, target_masks_k, valid_mask_k)
-                        
-                        # [Stage 1] 保留 V7 架構，從 3 個 candidate 中挑選 Loss 最低的最佳預測作為梯度的依據
-                        min_mask_loss, min_indices = torch.min(mask_total_loss, dim=1) # (K,)
-                        
-                        sample_total_loss += min_mask_loss.mean()
-                        acc_focal = focal[torch.arange(num_prompts), min_indices].mean().item()
-                        acc_dice = dice[torch.arange(num_prompts), min_indices].mean().item()
-                        
-                        # [Stage 2] 計算真實 IoU，並使用 MSE 監督 IoU 預測頭的打分精準度
-                        with torch.no_grad():
-                            true_iou = calculate_true_iou(low_res_logits_upscaled, target_masks_k, valid_mask_k) # (K, 3)
-                        
-                        iou_loss = self.iou_mse_loss_fn(iou_preds, true_iou)
-                        sample_total_loss += self.iou_weight * iou_loss
-                        sample_iou_sum += iou_loss.item()
+                        )  # (K, 1, 1024, 1024)
 
-                    # ── Stage 3: Argmax Selection for ContextFusionHead ──
+                        target_masks_k = []
+                        for cls_id in class_ids_out:
+                            tgt = (gt_mask_i == cls_id).float().unsqueeze(1)  # (1, 1, 1024, 1024)
+                            target_masks_k.append(tgt)
+                        target_masks_k = torch.cat(target_masks_k, dim=0)     # (K, 1, 1024, 1024)
+                        valid_mask_k   = valid_mask_i.expand(num_prompts, -1, -1, -1)
+
+                        # 回傳 (K, 1) — 每類別 1 個 candidate，不需再選最佳
+                        mask_total_loss, focal, dice = self.mask_loss_fn(
+                            low_res_logits_upscaled, target_masks_k, valid_mask_k
+                        )
+                        min_mask_loss = mask_total_loss.squeeze(1)   # (K,)
+                        sample_total_loss += min_mask_loss.mean()
+                        acc_focal = focal.squeeze(1).mean().item()
+                        acc_dice  = dice.squeeze(1).mean().item()
+
+                    # ── Stage 3: 直接使用 mask（Mask2Former 無需 argmax 選 candidate）──
                     if num_prompts > 0:
-                        best_mask_indices = torch.argmax(iou_preds, dim=1) # (K,)
-                        # ★ 漸進式梯度解放 (Progressive Gradient Unblocking)
-                        # 前 5 個 Epoch 加上防爆牆 (detach)，避免被 5.0 倍的小物件 Focal Loss 衝擊導致梯度爆炸
-                        # Epoch 5 之後再打通端對端梯度，進行真正的邊界微調
+                        # 前 5 epoch 漸進式梯度解放（防止初期 Focal Loss 梯度爆炸）
                         if epoch_index < 5:
-                            selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices].detach() 
+                            selected_logits = low_res_logits.detach()  # (K, 256, 256)
                         else:
-                            selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices] 
+                            selected_logits = low_res_logits           # (K, 256, 256)
                     else:
                         selected_logits = torch.empty((0, 256, 256), device=self.device)
-                    
-                    # ── Stage 4: list + cat 保留梯度鏈給 Fusion Head ──
+
+                    # ── Stage 4: 組裝 19 個 class channel ──
                     class_channels = []
                     for cls_id in range(self.model.num_classes):
                         if cls_id in prompt_to_cls:
@@ -482,63 +476,51 @@ class WeatherSAMTrainer:
                 total_loss = torch.tensor(0.0, device=self.device)
                 
                 for i in range(batch_size):
-                    low_res_logits = outputs[i]['low_res_logits']   # (K, 3, 256, 256)
-                    iou_preds = outputs[i]['iou_predictions']       # (K, 3)
-                    num_prompts = len(batched_input[i]['text_prompts'])
-                    
+                    # [Mask2Former] 新輸出格式
+                    low_res_logits = outputs[i]['low_res_logits'].squeeze(0)  # (K, 256, 256)
+                    class_ids_out  = outputs[i]['class_ids']                  # List[int], len=K
+                    num_prompts    = len(class_ids_out)
+
                     gt_mask_i = gt_masks[i].unsqueeze(0).long()
+                    if batch['invalid_mask'][i].any():
+                        gt_mask_i = gt_mask_i.clone()
+                        gt_mask_i[batch['invalid_mask'][i].to(self.device).unsqueeze(0)] = 255
                     valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1)
-                    
-                    # ── 初始化損失與目標類別對照表 ──
+
                     sample_total_loss = torch.tensor(0.0, device=self.device)
-                    prompt_to_cls = {}
-                    for prompt_idx, class_name in enumerate(batched_input[i]['text_prompts']):
-                        if class_name in self.val_loader.dataset.CLASS_MAP:
-                            cls_id = self.val_loader.dataset.CLASS_MAP[class_name]
-                            if cls_id < self.model.num_classes:
-                                prompt_to_cls[cls_id] = prompt_idx
+                    prompt_to_cls = {cls_id: k for k, cls_id in enumerate(class_ids_out)}
 
                     acc_focal, acc_dice = 0.0, 0.0
-                    
-                    # ── Stage 1 & 2: MaskLoss & IoU MSE Loss ──
+
+                    # ── Stage 1: MaskLoss ──
                     if num_prompts > 0:
                         low_res_logits_upscaled = self.model.postprocess_masks(
-                            low_res_logits,
+                            low_res_logits.unsqueeze(1),
                             input_size=(1024, 1024),
                             original_size=(1024, 1024),
-                        )
-                        
-                        target_masks_k = []
-                        for prompt_idx in range(num_prompts):
-                            cls_id = next((cid for cid, p_idx in prompt_to_cls.items() if p_idx == prompt_idx), None)
-                            if cls_id is not None:
-                                tgt = (gt_mask_i == cls_id).float().unsqueeze(1)
-                                target_masks_k.append(tgt)
-                            else:
-                                target_masks_k.append(torch.zeros((1, 1, 1024, 1024), device=self.device))
-                                
-                        target_masks_k = torch.cat(target_masks_k, dim=0)
-                        valid_mask_k = valid_mask_i.expand(num_prompts, -1, -1, -1)
-                        
-                        mask_total_loss, focal, dice = self.mask_loss_fn(low_res_logits_upscaled, target_masks_k, valid_mask_k)
-                        min_mask_loss, min_indices = torch.min(mask_total_loss, dim=1)
-                        
-                        sample_total_loss = sample_total_loss + min_mask_loss.mean()
-                        acc_focal = float(focal[torch.arange(num_prompts), min_indices].mean().item())
-                        acc_dice = float(dice[torch.arange(num_prompts), min_indices].mean().item())
-                        
-                        true_iou = calculate_true_iou(low_res_logits_upscaled, target_masks_k, valid_mask_k)
-                        iou_loss = self.iou_mse_loss_fn(iou_preds, true_iou)
-                        sample_total_loss = sample_total_loss + (self.iou_weight * iou_loss)
-                        sample_iou_sum += iou_loss.item()
+                        )  # (K, 1, 1024, 1024)
 
-                    # ── Stage 3: Argmax Selection ──
+                        target_masks_k = []
+                        for cls_id in class_ids_out:
+                            tgt = (gt_mask_i == cls_id).float().unsqueeze(1)
+                            target_masks_k.append(tgt)
+                        target_masks_k = torch.cat(target_masks_k, dim=0)
+                        valid_mask_k   = valid_mask_i.expand(num_prompts, -1, -1, -1)
+
+                        mask_total_loss, focal, dice = self.mask_loss_fn(
+                            low_res_logits_upscaled, target_masks_k, valid_mask_k
+                        )
+                        min_mask_loss = mask_total_loss.squeeze(1)
+                        sample_total_loss = sample_total_loss + min_mask_loss.mean()
+                        acc_focal = float(focal.squeeze(1).mean().item())
+                        acc_dice  = float(dice.squeeze(1).mean().item())
+
+                    # ── Stage 3: 直接使用 mask（無 candidate 選擇）──
                     if num_prompts > 0:
-                        best_mask_indices = torch.argmax(iou_preds, dim=1)
-                        selected_logits = low_res_logits[torch.arange(num_prompts), best_mask_indices]
+                        selected_logits = low_res_logits  # (K, 256, 256)
                     else:
                         selected_logits = torch.empty((0, 256, 256), device=self.device)
-                    
+
                     # ── Stage 4: list + cat ──
                     class_channels = []
                     for cls_id in range(self.model.num_classes):
