@@ -32,8 +32,9 @@ class AverageMeter:
 
 class WeatherSAMTrainer:
     """
-    負責訓練 WeatherSAM 的訓練器，實作解耦式的多重 Loss 計算：
-    包含 MaskLoss (Focal+Dice), IoU MSE Loss, 以及 ContextLoss (CE)。
+    負責訓練 WeatherSAM 的訓練器（Mask2Former-style），實作解耦式的多重 Loss 計算：
+    包含 MaskLoss (Focal+Dice)、ContextLoss (CE)、Active Boundary Loss (ABL)。
+    # IoU MSE Loss 已移除：新架構每類別僅 1 mask，無候選選擇需求。
     """
     def __init__(
         self, 
@@ -57,7 +58,7 @@ class WeatherSAMTrainer:
         ce_w = getattr(args, 'ce_weight', 1.0)
         focal_w = getattr(args, 'focal_weight', 20.0)
         dice_w = getattr(args, 'dice_weight', 1.0)
-        iou_w = getattr(args, 'iou_weight', 1.0)
+        # iou_w = getattr(args, 'iou_weight', 1.0)  # [Mask2Former] IoU MSE Loss 已移除
         abl_w = getattr(args, 'abl_weight', 1.0)
         abl_start = getattr(args, 'abl_start_epoch', 5)
         decoder_lr_scale = getattr(args, 'decoder_lr_scale', 0.1)
@@ -209,12 +210,12 @@ class WeatherSAMTrainer:
 
     def train_epoch(self, epoch_index: int):
         """
-        執行單一 Epoch 的模型訓練，並實作解耦的 Multi-Loss 更新機制：
-        Stage 1: MaskLoss (候選遮罩形狀優化)。
-        Stage 2: IoU MSE Loss (IoU 預測評分優化)。
-        Stage 3: 最佳遮罩挑選。
-        Stage 4: ContextFusionHead 空間融合。
-        Stage 5: ContextLoss (全域互斥性優化)。
+        執行單一 Epoch 的模型訓練（Mask2Former-style 解耦 Multi-Loss）：
+        Stage 1: MaskLoss (Focal+Dice，每類別 1 mask)。
+        Stage 3: 漸進式梯度解放（前 5 epoch detach）。
+        Stage 4: 組裝 19 個 class channel。
+        Stage 5: ResidualDWConvFusion + ContextLoss (CE)。
+        Stage 6: Active Boundary Loss (ABL，延遲啟動)。
         """
         # ★ 針對剛解開 detach 的 epoch (epoch_index == 5)，重置 Mask Decoder 的 Adam 動量
         # [Mask2Former] 重置清單已更新為新架構的模組，舊的 shared token 已不在梯度路徑中
@@ -236,7 +237,7 @@ class WeatherSAMTrainer:
             "ce": AverageMeter(),
             "focal": AverageMeter(),
             "dice": AverageMeter(),
-            "iou": AverageMeter(),
+            # "iou": AverageMeter(),  # [Mask2Former] IoU MSE Loss 已移除，新架構每類別僅 1 mask，無候選選擇需求
             "abl": AverageMeter()
         }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
@@ -259,9 +260,9 @@ class WeatherSAMTrainer:
                 sample_ce_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
-                sample_iou_sum = 0.0
+                # sample_iou_sum = 0.0  # [Mask2Former] IoU MSE Loss 已移除
                 sample_abl_sum = 0.0
-                first_batch_logits = None 
+                first_batch_logits = None
                 
                 for i in range(batch_size):
                     # [Mask2Former] 新輸出格式
@@ -375,15 +376,15 @@ class WeatherSAMTrainer:
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
-            losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)
+            # losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)  # [Mask2Former] 已移除
             losses['abl'].update(float(sample_abl_sum) / float(batch_size), batch_size)
 
             pbar.set_postfix(
-                loss=losses['total'].avg, 
+                loss=losses['total'].avg,
                 ce=losses['ce'].avg,
                 focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
-                iou=losses['iou'].avg,
+                # iou=losses['iou'].avg,  # [Mask2Former] 已移除
                 abl=losses['abl'].avg
             )
 
@@ -454,7 +455,7 @@ class WeatherSAMTrainer:
             "ce": AverageMeter(),
             "focal": AverageMeter(),
             "dice": AverageMeter(),
-            "iou": AverageMeter(),
+            # "iou": AverageMeter(),  # [Mask2Former] IoU MSE Loss 已移除
             "abl": AverageMeter()
         }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
@@ -471,7 +472,7 @@ class WeatherSAMTrainer:
                 sample_ce_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
-                sample_iou_sum = 0.0
+                # sample_iou_sum = 0.0  # [Mask2Former] IoU MSE Loss 已移除
                 sample_abl_sum = 0.0
                 total_loss = torch.tensor(0.0, device=self.device)
                 
@@ -562,15 +563,15 @@ class WeatherSAMTrainer:
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
-            losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)
+            # losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)  # [Mask2Former] 已移除
             losses['abl'].update(float(sample_abl_sum) / float(batch_size), batch_size)
-            
+
             pbar.set_postfix(
-                loss=losses['total'].avg, 
+                loss=losses['total'].avg,
                 ce=losses['ce'].avg,
                 focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
-                iou=losses['iou'].avg,
+                # iou=losses['iou'].avg,  # [Mask2Former] 已移除
                 abl=losses['abl'].avg
             )
                 

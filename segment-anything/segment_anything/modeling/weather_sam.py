@@ -11,14 +11,16 @@ from .weather_mask_decoder import MaskDecoder
 from .fusion import CrossViewAlignment, GatedFusion
 from .text_encoder import TextEncoder
 from .location_encoder import LocationEncoder
-from .fusion_head import ContextFusionHead
+from .fusion_head import ResidualDWConvFusion
+# from .fusion_head import ContextFusionHead  # [舊版] 已由 ResidualDWConvFusion 取代
 
 class WeatherSAM(nn.Module):
     """
     基於 Segment Anything Model (SAM) 改良的天氣語意分割模型 (WeatherSAM)。
     整合了 Image Encoder, Prompt Encoder, Mask Decoder，並額外加入了：
     1. CrossViewAlignment 與 GatedFusion：用於參考畫面 (Reference Frame) 的特徵對齊與融合。
-    2. ContextFusionHead：用於多類別預測結果的互斥性與空間平滑。
+    2. ResidualDWConvFusion：Mask2Former-style 後置精修，補足 pixel 空間的局部空間一致性。
+    # 2. ContextFusionHead：[舊版] 多類別預測結果的互斥性與空間平滑，已由 ResidualDWConvFusion 取代
     """
     mask_threshold: float = 0.0
     image_format: str = "RGB"
@@ -79,7 +81,9 @@ class WeatherSAM(nn.Module):
 
         # New Semantic Fusion Head for dynamic classes
         self.num_classes = num_classes
-        self.context_fusion_head = ContextFusionHead(num_classes=num_classes, hidden_dim=64)
+        # [Mask2Former-style] 輕量殘差精修：3×3 DW Conv + 1×1 PW Conv + residual
+        self.context_fusion_head = ResidualDWConvFusion(num_classes=num_classes)
+        # self.context_fusion_head = ContextFusionHead(num_classes=num_classes, hidden_dim=64)  # [舊版]
         
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)

@@ -28,11 +28,14 @@ def plot_history(history, output_dir):
         ('ce',     'CE Loss',      'b',  'Train CE',    'Val CE'),
         ('focal',  'Focal Loss',   'r',  'Train Focal', 'Val Focal'),
         ('dice',   'Dice Loss',    'g',  'Train Dice',  'Val Dice'),
-        ('iou',    'IoU MSE',      'm',  'Train IoU',   'Val IoU'),
+        # ('iou',    'IoU MSE',      'm',  'Train IoU',   'Val IoU'),  # [Mask2Former] IoU MSE Loss 已移除
         ('abl',    'ABL Loss',     'c',  'Train ABL',   'Val ABL'),
     ]
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+    n_plots = len(components)
+    n_cols = 3
+    n_rows = (n_plots + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
     axes = axes.flatten()
 
     for ax, (key, title, color, train_label, val_label) in zip(axes, components):
@@ -59,6 +62,10 @@ def plot_history(history, output_dir):
         if has_data:
             ymin = ax.get_ylim()[0]
             ax.set_ylim(bottom=max(0, ymin * 0.95))
+
+    # 隱藏多餘的空白 subplot
+    for idx in range(n_plots, len(axes)):
+        axes[idx].set_visible(False)
 
     fig.suptitle('WeatherSAM Training Curves (Per-Component)', fontsize=13, fontweight='bold')
     plt.tight_layout()
@@ -96,7 +103,7 @@ def print_training_config(args, device):
     print(f"   • CE Weight:         {args.ce_weight}")
     print(f"   • Focal Weight:      {args.focal_weight}")
     print(f"   • Dice Weight:       {args.dice_weight}")
-    print(f"   • IoU Weight:        {args.iou_weight}")
+    # print(f"   • IoU Weight:        {args.iou_weight}")  # [Mask2Former] IoU MSE Loss 已移除
     
     # 4. Active Boundary Loss
     print(f"\n🎯  Active Boundary Loss:")
@@ -141,11 +148,11 @@ def main():
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
     parser.add_argument("--focal_weight", type=float, default=4.0, help="MaskLoss (Focal) 權重")
     parser.add_argument("--dice_weight", type=float, default=1.5, help="MaskLoss (Dice) 權重")
-    parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")
+    # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
     # --- Active Boundary Loss ---
     parser.add_argument("--abl_weight", type=float, default=0.5, help="Active Boundary Loss 權重")
-    parser.add_argument("--abl_start_epoch", type=int, default=5, help="ABL 開始介入的 Epoch（Warmup）")
+    parser.add_argument("--abl_start_epoch", type=int, default=35, help="ABL 開始介入的 Epoch（Warmup）")
 
     # --- Decoder Transformer LR ---
     parser.add_argument("--decoder_lr_scale", type=float, default=0.1,
@@ -251,19 +258,19 @@ def main():
             "train_ce": train_metrics["ce"],
             "train_focal": train_metrics["focal"],
             "train_dice": train_metrics["dice"],
-            "train_iou": train_metrics["iou"],
+            # "train_iou": train_metrics["iou"],  # [Mask2Former] IoU MSE Loss 已移除
             "val_total": val_metrics["total"],
             "val_ce": val_metrics["ce"],
             "val_focal": val_metrics["focal"],
             "val_dice": val_metrics["dice"],
-            "val_iou": val_metrics["iou"],
+            # "val_iou": val_metrics["iou"],  # [Mask2Former] IoU MSE Loss 已移除
             "train_abl": train_metrics["abl"],
             "val_abl": val_metrics["abl"]
         }
         history.append(log_entry)
-        
+
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, IoU:{val_metrics['iou']:.4f}, ABL:{val_metrics['abl']:.4f})")
+        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, ABL:{val_metrics['abl']:.4f})")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)
