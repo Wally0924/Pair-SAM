@@ -483,7 +483,7 @@ GatedFusion 輸出的 alpha gate 是 `(1, H, W)` 的空間權重圖，直接代�
 
 ### 6.2 CrossViewAlignment Attention Map 視覺化
 
-CrossViewAlignment 的 cross-attention 權重（shape: B × heads × N_curr × N_ref）隱式包含了對應關係：adverse image 的每個 patch 對 clear ref 的哪些 patch 有高 attention。
+CrossViewAlignment 的 cross-attention 權重（shape: B × heads ×N_curr × N_ref）隱式包含了對應關係：adverse image 的每個 patch 對 clear ref 的哪些 patch 有高 attention。
 
 **預期結果**：若地點對應有效，adverse 影像中道路區域的 attention 應集中在 clear ref 的道路區域，而非隨機分布。
 
