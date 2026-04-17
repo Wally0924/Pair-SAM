@@ -126,19 +126,26 @@ class WeatherSAM(nn.Module):
             image_embeddings = self.image_encoder(input_images)
 
         # --- 階段 2：參考畫面特徵對齊與融合 (Reference Frame Alignment & Fusion) ---
-        # 1. 遮罩編碼 (Mask Encoding) -> (B_img, 256, 64, 64)
-        ref_masks_list = []
-        for x in batched_input:
-            mask = x["reference_mask"] 
-            mask = mask.float() / 255.0 # Normalize 0-1
-            h, w = mask.shape[-2:]
-            padh = self.image_encoder.img_size - h
-            padw = self.image_encoder.img_size - w
-            mask = F.pad(mask, (0, padw, 0, padh))
-            ref_masks_list.append(mask)
 
-        ref_masks = torch.stack(ref_masks_list, dim=0)
-        ref_embeddings = self.mask_encoder(ref_masks)
+        # [image-pair] 使用 clear-weather ViT-H embedding 作為 f_ref
+        # 與 f_curr (foggy ViT-H embedding) 在同一特徵空間，cross-attention 的幾何對應有意義
+        # clear_embedding shape: (B, 256, 64, 64)，由 DataLoader 從預算 .pt 檔案載入
+        ref_embeddings = torch.stack([x["clear_embedding"] for x in batched_input], dim=0)
+        ref_embeddings = ref_embeddings.to(image_embeddings.device)
+
+        # [legacy] MaskEncoder 路徑（原本以 color label mask 作為 f_ref，已由上方取代）
+        # ref_masks_list = []
+        # for x in batched_input:
+        #     mask = x["reference_mask"]
+        #     mask = mask.float() / 255.0
+        #     h, w = mask.shape[-2:]
+        #     padh = self.image_encoder.img_size - h
+        #     padw = self.image_encoder.img_size - w
+        #     mask = F.pad(mask, (0, padw, 0, padh))
+        #     ref_masks_list.append(mask)
+        # ref_masks = torch.stack(ref_masks_list, dim=0)
+        # ref_embeddings = self.mask_encoder(ref_masks)
+
         ref_void_masks = torch.stack([x["ref_void_mask"] for x in batched_input], dim=0)
 
         # 2. 融合 (Fusion) -> (B_img, 256, 64, 64)

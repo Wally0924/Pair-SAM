@@ -35,6 +35,13 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="checkpoints/sam_vit_h_4b8939.pth")
     parser.add_argument("--model_type", type=str, default="vit_h")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    # [image-pair] 指定要預算的影像欄位與輸出欄位名稱
+    # 預設行為（foggy）：--image_col image_path --output_col feature_path
+    # clear-weather：  --image_col clear_image_path --output_col clear_feature_path
+    parser.add_argument("--image_col", type=str, default="image_path",
+                        help="CSV column name for input image paths")
+    parser.add_argument("--output_col", type=str, default="feature_path",
+                        help="CSV column name to write output feature paths")
     args = parser.parse_args()
 
     # 1. 建立目錄
@@ -58,14 +65,16 @@ def main():
 
     # 3. 讀取 CSV
     df = pd.read_csv(args.csv_file)
-    print(f"📂 Processing {len(df)} images from {args.csv_file}")
+    if args.image_col not in df.columns:
+        raise ValueError(f"Column '{args.image_col}' not found in CSV. Available: {list(df.columns)}")
+    print(f"📂 Processing {len(df)} images from '{args.image_col}' column in {args.csv_file}")
 
     feature_paths = []
-    
+
     # 4. 開始轉換
     with torch.no_grad():
         for idx, row in tqdm(df.iterrows(), total=len(df)):
-            image_path = row['image_path']
+            image_path = row[args.image_col]
             
             # 讀取圖片
             image = cv2.imread(image_path)
@@ -103,9 +112,9 @@ def main():
             feature_paths.append(os.path.abspath(save_path))
 
     # 5. 更新 CSV
-    df['feature_path'] = feature_paths
+    df[args.output_col] = feature_paths
     df.to_csv(args.output_csv, index=False)
-    print(f"✅ Done! New CSV saved to: {args.output_csv}")
+    print(f"✅ Done! Column '{args.output_col}' written. New CSV saved to: {args.output_csv}")
 
 if __name__ == "__main__":
     main()

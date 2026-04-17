@@ -30,6 +30,11 @@ class WeatherSegmentationDataset(Dataset):
         self.has_cached_features = 'feature_path' in self.data.columns
         if self.has_cached_features:
             print(f"⚡ [Info] Detected 'feature_path' column. Dataset will use cached features when available.")
+
+        # [image-pair] 檢查是否包含 clear-weather embedding 欄位
+        self.has_clear_features = 'clear_feature_path' in self.data.columns
+        if self.has_clear_features:
+            print(f"⚡ [Info] Detected 'clear_feature_path' column. CrossViewAlignment will use clear-weather ViT-H embeddings.")
         
         # 3. 資料清理
         if mode in ['train', 'val']:
@@ -150,9 +155,18 @@ class WeatherSegmentationDataset(Dataset):
         # ===========================================================
         # 3. 後續處理 (通用)
         # ===========================================================
-        
+
         output["original_size"] = original_size
-        
+
+        # [image-pair] 載入 clear-weather ViT-H embedding（作為 CrossViewAlignment 的 f_ref）
+        # 若 CSV 有 clear_feature_path 且檔案存在，直接載入預算 embedding (256, 64, 64)
+        # 若無，退回全零 tensor（模型仍可訓練，但 CrossViewAlignment 退化為 self-attention）
+        if self.has_clear_features and pd.notna(row.get('clear_feature_path')) and os.path.exists(str(row['clear_feature_path'])):
+            clear_embedding = torch.load(str(row['clear_feature_path']))  # (256, 64, 64)
+        else:
+            clear_embedding = torch.zeros(256, 64, 64, dtype=torch.float32)
+        output["clear_embedding"] = clear_embedding
+
         # 處理 Ref Void Mask (黑色區域檢測)
         ref_mask_tensor = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
         output["reference_mask"] = ref_mask_tensor
@@ -235,10 +249,13 @@ class WeatherSegmentationDataset(Dataset):
             "condition_id": condition_ids,
         }
 
+        # [image-pair] clear-weather ViT-H embedding
+        batch_dict['clear_embedding'] = torch.stack([item['clear_embedding'] for item in batch])
+
         # 2. 動態處理影像輸入
         if 'image_embedding' in batch[0]:
             batch_dict['image_embedding'] = torch.stack([item['image_embedding'] for item in batch])
         elif 'image' in batch[0]:
             batch_dict['image'] = torch.stack([item['image'] for item in batch])
-            
+
         return batch_dict
