@@ -53,8 +53,8 @@ class WeatherSamPredictor:
         ref_void = ref_void_mask.unsqueeze(0)
 
         # 3. 執行特徵融合 (CrossViewAlignment & GatedFusion)
-        aligned_embed = self.model.fusion_module(f_curr=img_embed, f_ref=ref_embed, ref_void_mask=ref_void)
-        self.fused_features = self.model.gate_module(f_curr=img_embed, f_align=aligned_embed, ref_void_mask=ref_void)
+        aligned_embed = self.model.fusion_module(f_curr=img_embed, f_ref=ref_embed)
+        self.fused_features = self.model.gate_module(f_curr=img_embed, f_align=aligned_embed)
         
         self.is_image_set = True
 
@@ -95,7 +95,6 @@ class WeatherSamPredictor:
         # --- C. Prompt Fusion ---
         sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
             text_embeddings=sparse_embeddings,
-            mask_inputs=None,
             location_embeddings=location_embeddings,
         )
 

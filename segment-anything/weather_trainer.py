@@ -79,54 +79,26 @@ class WeatherSAMTrainer:
         for param in self.model.parameters():
             param.requires_grad = False
             
-        # 根據我們討論的策略：凍結核心大腦，只訓練適配與融合模組
-        # ── Location / Condition 模組選擇 ──
-        # use_condition_embedding=True  → ACDC 模式：凍結 LocationEncoder，訓練 ConditionEncoder
-        # use_condition_embedding=False → Cityscapes 模式：訓練 LocationEncoder.output_projection（原行為）
-        use_condition_embedding = getattr(args, 'use_condition_embedding', False)
-        if use_condition_embedding:
-            print("🌦️  [Mode] ACDC fine-tune: LocationEncoder 凍結，啟用 ConditionEncoder")
-            location_module = self.model.condition_encoder
-        else:
-            print("🗺️  [Mode] Cityscapes: 使用 LocationEncoder.output_projection")
-            location_module = self.model.location_encoder.output_projection
-
         # ── 主幹適配模組 (main LR) ──
         main_lr_modules = [
             self.model.fusion_module,
             self.model.gate_module,
-            location_module,
+            self.model.condition_encoder,
             self.model.text_encoder.projection,
             self.model.context_fusion_head,
-            self.model.mask_encoder,
-            # ── 原始 SAM decoder heads（保留向後兼容）──
-            # ── [Mask2Former] 19 類別專屬模組 ──
             self.model.mask_decoder.output_upscaling,
             self.model.mask_decoder.class_mask_tokens,
             self.model.mask_decoder.class_hypernetworks_mlps,
         ]
 
-        # ── 解凍 MaskDecoder Query Embeddings (低 LR) ──
-        # iou_token (1×256) + mask_tokens (4×256) = ~1280 params，極輕量
-        decoder_token_modules = [
-            self.model.mask_decoder.iou_token,
-            self.model.mask_decoder.mask_tokens,
-        ]
-
         # ── 解凍 MaskDecoder Transformer (極低 LR) ──
-        # 診斷確認 cross-attention 對 fused weather feature 近乎均勻分布（focus ratio < 0.04）
-        # 原因：transformer 在 SAM clean-image feature 上預訓練，fused feature 分布已偏移
+        # transformer 在 SAM clean-image feature 上預訓練，fused feature 分布已偏移
         # 以極低 LR (1/100) fine-tune，讓 transformer 適應 weather fused feature 的分布
-        # 同時保持對 SAM pretrained prior 的破壞降到最低
         decoder_transformer_modules = [
             self.model.mask_decoder.transformer,
         ]
 
         for module in main_lr_modules:
-            for param in module.parameters():
-                param.requires_grad = True
-
-        for module in decoder_token_modules:
             for param in module.parameters():
                 param.requires_grad = True
 
@@ -137,16 +109,14 @@ class WeatherSAMTrainer:
         self.model.pe_layer.requires_grad = True
 
         # ── 建立分離 LR 的 parameter groups ──
-        main_params        = [p for m in main_lr_modules            for p in m.parameters() if p.requires_grad]
-        decoder_tok_params = [p for m in decoder_token_modules      for p in m.parameters() if p.requires_grad]
-        decoder_tf_params  = [p for m in decoder_transformer_modules for p in m.parameters() if p.requires_grad]
-        pe_params          = [self.model.pe_layer] if self.model.pe_layer.requires_grad else []
+        main_params       = [p for m in main_lr_modules             for p in m.parameters() if p.requires_grad]
+        decoder_tf_params = [p for m in decoder_transformer_modules for p in m.parameters() if p.requires_grad]
+        pe_params         = [self.model.pe_layer] if self.model.pe_layer.requires_grad else []
 
         param_groups = [
-            {'params': main_params,        'lr': lr,                             'name': 'main'},
-            {'params': decoder_tok_params, 'lr': lr * decoder_lr_scale,          'name': 'decoder_tokens'},
-            {'params': decoder_tf_params,  'lr': lr * transformer_lr_scale,      'name': 'decoder_transformer'},
-            {'params': pe_params,          'lr': lr,                             'name': 'pe_layer'},
+            {'params': main_params,       'lr': lr,                        'name': 'main'},
+            {'params': decoder_tf_params, 'lr': lr * transformer_lr_scale, 'name': 'decoder_transformer'},
+            {'params': pe_params,         'lr': lr,                        'name': 'pe_layer'},
         ]
         # 過濾掉空的 group
         param_groups = [g for g in param_groups if len(g['params']) > 0]
@@ -166,7 +136,7 @@ class WeatherSAMTrainer:
         # [修改] 實作 Warmup + Cosine Decay 策略
         # ==========================================
         num_epochs = args.epochs if args else 50
-        warmup_epochs = 5
+        warmup_epochs = getattr(args, 'warmup_epochs', 5)
 
         def lr_lambda(epoch_idx):
             # 1. Warmup 階段: 線性上升
@@ -205,6 +175,8 @@ class WeatherSAMTrainer:
                 input_dict['image_embedding'] = batch['image_embedding'][i].to(self.device)
             else:
                 input_dict['image'] = batch['image'][i].to(self.device)
+            # [image-pair] clear-weather ViT-H embedding for CrossViewAlignment
+            input_dict['clear_embedding'] = batch['clear_embedding'][i].to(self.device)
             batched_input.append(input_dict)
         return batched_input
 
@@ -254,7 +226,7 @@ class WeatherSAMTrainer:
             gt_masks = batch['gt_mask'].to(self.device)
 
             with torch.amp.autocast('cuda'):
-                outputs = self.model(batched_input, multimask_output=True)
+                outputs = self.model(batched_input)
                 
                 total_loss = torch.tensor(0.0, device=self.device)
                 sample_ce_sum = 0.0
@@ -467,7 +439,7 @@ class WeatherSAMTrainer:
             gt_masks = batch['gt_mask'].to(self.device)
 
             with torch.amp.autocast('cuda'):
-                outputs = self.model(batched_input, multimask_output=True)
+                outputs = self.model(batched_input)
                 
                 sample_ce_sum = 0.0
                 sample_focal_sum = 0.0

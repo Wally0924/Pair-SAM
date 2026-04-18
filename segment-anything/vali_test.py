@@ -191,7 +191,7 @@ def run_sanity_check():
         # ★★★ 關鍵修改：將 Loss 計算也包進 autocast ★★★
         with torch.amp.autocast('cuda' if device=='cuda' else 'cpu'):
             print("▶️  Executing Forward Pass...")
-            outputs = model(batched_input, multimask_output=True)
+            outputs = model(batched_input)
             print("✅ Forward pass successful.")
 
             print("▶️  Calculating Loss...")

@@ -2,7 +2,7 @@
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, TwoWayTransformer, MaskEncoder, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
+from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
 
 def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
     return _build_weather_sam(
@@ -59,11 +59,6 @@ def _build_weather_sam(
         out_chans=prompt_embed_dim,
     )
 
-    mask_encoder = MaskEncoder(
-        in_chans=3, 
-        embed_dim=prompt_embed_dim
-    )
-
     prompt_encoder = WeatherPromptEncoder(
         embed_dim=prompt_embed_dim,
         image_embedding_size=(image_embedding_size, image_embedding_size),
@@ -72,7 +67,6 @@ def _build_weather_sam(
     )
 
     mask_decoder = MaskDecoder(
-        num_multimask_outputs=3,
         transformer=TwoWayTransformer(
             depth=2,
             embedding_dim=prompt_embed_dim,
@@ -80,8 +74,6 @@ def _build_weather_sam(
             num_heads=8,
         ),
         transformer_dim=prompt_embed_dim,
-        iou_head_depth=3,
-        iou_head_hidden_dim=256,
         num_classes=num_classes,
     )
 
@@ -109,7 +101,6 @@ def _build_weather_sam(
     # 2. 組合 WeatherSAM
     sam = WeatherSAM(
         image_encoder=image_encoder,
-        mask_encoder=mask_encoder,
         prompt_encoder=prompt_encoder,
         mask_decoder=mask_decoder,
         fusion_module=fusion_module,

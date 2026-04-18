@@ -1,76 +1,149 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
 
 class CrossViewAlignment(nn.Module):
+    """
+    Cross-attention between degraded (f_curr) and clear (f_ref) ViT-H embeddings.
+
+    Relative Distance Bias (Liu et al., Swin Transformer, ICCV 2021):
+        score(i, j) = Q_i · K_j / sqrt(d) + B(Δrow, Δcol)
+    B is a learnable (2H-1, 2W-1, num_heads) table indexed by relative offset.
+    This gives soft spatial locality preference without enforcing exact alignment,
+    which is appropriate for ACDC image pairs with slight viewpoint shift.
+    """
+
     def __init__(
         self,
         embed_dim: int = 256,
         num_heads: int = 8,
         dropout: float = 0.2,
+        feat_size: int = 64,
     ):
         super().__init__()
-        
-        self.attn = nn.MultiheadAttention(
-            embed_dim=embed_dim, 
-            num_heads=num_heads, 
-            dropout=dropout, 
-            batch_first=True
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = math.sqrt(self.head_dim)
+        self.feat_size = feat_size  # H = W = 64
+
+        # Q, K, V projections (replaces nn.MultiheadAttention)
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.attn_drop = nn.Dropout(dropout)
+
+        # Relative Distance Bias table: shape (2H-1, 2W-1, num_heads)
+        # Indexed by (Δrow + H - 1, Δcol + W - 1)
+        self.rel_bias = nn.Parameter(
+            torch.zeros(2 * feat_size - 1, 2 * feat_size - 1, num_heads)
         )
-        
-        # Norm 是防止特徵被 0 值稀釋的關鍵
+        nn.init.trunc_normal_(self.rel_bias, std=0.02)
+
+        # Pre-compute relative index table: shape (H*W, H*W) — registered as buffer (not trained)
+        self._register_rel_index(feat_size)
+
         self.norm = nn.LayerNorm(embed_dim)
-        
-    def forward(self, f_curr: torch.Tensor, f_ref: torch.Tensor, ref_void_mask: torch.Tensor = None) -> torch.Tensor:
+
+    def _register_rel_index(self, S: int):
+        """Pre-compute (N, N) index table into rel_bias for H=W=S."""
+        coords = torch.stack(torch.meshgrid(
+            torch.arange(S), torch.arange(S), indexing="ij"
+        ))  # (2, S, S)
+        coords_flat = coords.flatten(1)  # (2, N)
+
+        # Relative offsets: (2, N, N)
+        rel = coords_flat[:, :, None] - coords_flat[:, None, :]
+        rel[0] += S - 1  # shift to [0, 2S-2]
+        rel[1] += S - 1
+
+        # Flatten to single index: row * (2S-1) + col
+        rel_index = rel[0] * (2 * S - 1) + rel[1]  # (N, N)
+        self.register_buffer("rel_index", rel_index)  # (N, N), long
+
+    def _get_rel_bias(self) -> torch.Tensor:
+        """Look up bias for all (i, j) pairs. Returns (num_heads, N, N)."""
+        # rel_bias: (2S-1, 2S-1, num_heads) → flatten spatial → (L, num_heads)
+        L = (2 * self.feat_size - 1) ** 2
+        bias_flat = self.rel_bias.view(L, self.num_heads)  # (L, num_heads)
+
+        # rel_index: (N, N) — index into bias_flat
+        N = self.feat_size ** 2
+        idx = self.rel_index.view(-1)  # (N*N,)
+        bias = bias_flat[idx].view(N, N, self.num_heads)  # (N, N, num_heads)
+        return bias.permute(2, 0, 1)  # (num_heads, N, N)
+
+    def forward(self, f_curr: torch.Tensor, f_ref: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            f_curr (Tensor): (B, C, H, W)
-            f_ref (Tensor):  (B, C, H, W)
-            ref_void_mask:   忽略此輸入，因為您決定將 Void 視為特徵
+            f_curr (Tensor): (B, C, H, W) — degraded image features
+            f_ref  (Tensor): (B, C, H, W) — clear image features
+        Returns:
+            f_align (Tensor): (B, C, H, W)
         """
         b, c, h, w = f_curr.shape
-        
-        # 1. 直接展平，不計算 mask (節省運算)
-        q = f_curr.flatten(2).transpose(1, 2) # [B, N, C]
-        k = f_ref.flatten(2).transpose(1, 2)  # [B, N, C]
-        v = k                                 
-        
-        # 2. Cross Attention (不使用 mask，讓模型看見黑色區域)
-        attn_output, _ = self.attn(query=q, key=k, value=v, key_padding_mask=None)
-        
-        # 3. Residual Connection & Norm
-        f_align = self.norm(q + attn_output)
-        
-        # 4. Reshape
+        N = h * w
+
+        # 1. Flatten spatial dims: (B, N, C)
+        q = f_curr.flatten(2).transpose(1, 2)
+        k = f_ref.flatten(2).transpose(1, 2)
+        v = f_ref.flatten(2).transpose(1, 2)
+
+        # 2. Project to multi-head Q, K, V
+        q = self.q_proj(q).view(b, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, d)
+        k = self.k_proj(k).view(b, N, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(v).view(b, N, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # 3. Attention scores + Relative Distance Bias
+        # score(i,j) = Q_i · K_j / sqrt(d) + B(Δrow, Δcol)
+        attn = (q @ k.transpose(-2, -1)) / self.scale        # (B, num_heads, N, N)
+        attn = attn + self._get_rel_bias().unsqueeze(0)       # broadcast over B
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.attn_drop(attn)
+
+        # 4. Weighted sum of values
+        out = (attn @ v).transpose(1, 2).reshape(b, N, c)    # (B, N, C)
+        out = self.out_proj(out)
+
+        # 5. Residual + LayerNorm
+        q_orig = f_curr.flatten(2).transpose(1, 2)            # original f_curr tokens
+        f_align = self.norm(q_orig + out)
+
+        # 6. Reshape back to spatial
         f_align = f_align.transpose(1, 2).view(b, c, h, w)
-        
+
         return f_align
+
 
 class GatedFusion(nn.Module):
     def __init__(self, embed_dim: int = 256):
         super().__init__()
-        
+
         self.gate_net = nn.Sequential(
             nn.Conv2d(embed_dim * 2, embed_dim // 2, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(embed_dim // 2, 1, kernel_size=1),
-            nn.Sigmoid() 
+            nn.Sigmoid()
         )
-        # [關鍵修正] 輸出的歸一化層
         self.norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor, ref_void_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor) -> torch.Tensor:
         # 1. 預測 Alpha
-        cat_feat = torch.cat([f_curr, f_align], dim=1) 
-        alpha = self.gate_net(cat_feat) 
-        
+        cat_feat = torch.cat([f_curr, f_align], dim=1)
+        alpha = self.gate_net(cat_feat)
+
         # 2. 加權融合
         f_fuse = (1 - alpha) * f_curr + alpha * f_align
 
-        # 3. [關鍵修正] LayerNorm 救回被稀釋的特徵
+        # 3. LayerNorm
         b, c, h, w = f_fuse.shape
-        f_fuse = f_fuse.permute(0, 2, 3, 1) # (B, H, W, C)
+        f_fuse = f_fuse.permute(0, 2, 3, 1)  # (B, H, W, C)
         f_fuse = self.norm(f_fuse)
-        f_fuse = f_fuse.permute(0, 3, 1, 2) # (B, C, H, W)
-        
+        f_fuse = f_fuse.permute(0, 3, 1, 2)  # (B, C, H, W)
+
         return f_fuse

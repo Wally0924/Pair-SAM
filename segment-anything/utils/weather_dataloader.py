@@ -37,9 +37,12 @@ class WeatherSegmentationDataset(Dataset):
             print(f"⚡ [Info] Detected 'clear_feature_path' column. CrossViewAlignment will use clear-weather ViT-H embeddings.")
         
         # 3. 資料清理
+        # 支援兩種 ref 欄位名稱：Cityscapes 用 ref_mask_path，ACDC 用 ref_image_path
+        self.ref_col = 'ref_mask_path' if 'ref_mask_path' in self.data.columns else 'ref_image_path'
+
         if mode in ['train', 'val']:
-            # 基本檢查：GT 與 Ref Mask 必須存在
-            subset = ['gt_path', 'ref_mask_path']
+            # 基本檢查：GT 與 Ref 必須存在
+            subset = ['gt_path', self.ref_col]
             # 如果是快取模式，也要檢查 feature_path 是否存在 (非 NaN)
             if self.has_cached_features:
                 subset.append('feature_path')
@@ -87,13 +90,13 @@ class WeatherSegmentationDataset(Dataset):
         if use_cache:
             # --- [Cache Mode] ---
             # 讀取預先計算好的特徵
-            image_embedding = torch.load(row['feature_path'])
+            image_embedding = torch.load(row['feature_path'], weights_only=True)
             output["image_embedding"] = image_embedding
             original_size = (self.image_size, self.image_size) # 假設 cache 都是 1024
             
             # Ref Mask 讀取 (Cache 模式通常不做增強，直接 resize)
-            if pd.notna(row.get('ref_mask_path')) and os.path.exists(str(row['ref_mask_path'])):
-                ref_mask = cv2.imread(row['ref_mask_path'])
+            if pd.notna(row.get(self.ref_col)) and os.path.exists(str(row[self.ref_col])):
+                ref_mask = cv2.imread(str(row[self.ref_col]))
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:
                 ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
@@ -103,7 +106,7 @@ class WeatherSegmentationDataset(Dataset):
             if pd.notna(row.get('gt_path')) and os.path.exists(str(row['gt_path'])):
                 gt_mask = cv2.imread(row['gt_path'], cv2.IMREAD_GRAYSCALE)
             else:
-                gt_mask = np.zeros((self.image_size, self.image_size), dtype=np.uint8)
+                gt_mask = np.full((self.image_size, self.image_size), 255, dtype=np.uint8)
             gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
         else:
@@ -116,9 +119,9 @@ class WeatherSegmentationDataset(Dataset):
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             original_size = image.shape[:2]
             
-            # B. 讀取 Ref Mask
-            if pd.notna(row.get('ref_mask_path')) and os.path.exists(str(row['ref_mask_path'])):
-                ref_mask = cv2.imread(row['ref_mask_path'])
+            # B. 讀取 Ref（支援 ref_mask_path / ref_image_path 兩種欄位名稱）
+            if pd.notna(row.get(self.ref_col)) and os.path.exists(str(row[self.ref_col])):
+                ref_mask = cv2.imread(str(row[self.ref_col]))
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:
                 ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
@@ -127,26 +130,12 @@ class WeatherSegmentationDataset(Dataset):
             if pd.notna(row.get('gt_path')) and os.path.exists(str(row['gt_path'])):
                 gt_mask = cv2.imread(row['gt_path'], cv2.IMREAD_GRAYSCALE)
             else:
-                gt_mask = np.zeros((original_size[0], original_size[1]), dtype=np.uint8)
+                gt_mask = np.full((original_size[0], original_size[1]), 255, dtype=np.uint8)
 
             # D. 先統一 Resize 到模型輸入尺寸 (例如 1024)
             image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
             ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
             gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
-
-            # ===========================================================
-            # 🔥 [關鍵修改] 移除 Data Augmentation 資料增強 (原先在此)
-            # ===========================================================
-                
-                # # 2. 隨機色彩擾動 (Color Jitter) - 調整亮度與對比度
-                # # 幫助模型適應不同天氣的光線變化
-                # if random.random() > 0.5: 
-                #     # 亮度 (Brightness): -30 ~ +30
-                #     brightness = random.randint(-30, 30)
-                #     # 對比度 (Contrast): 0.8 ~ 1.2
-                #     contrast = random.uniform(0.8, 1.2)
-                    
-                #     image = cv2.convertScaleAbs(image, alpha=contrast, beta=brightness)
 
             # E. 轉 Tensor
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
@@ -162,7 +151,7 @@ class WeatherSegmentationDataset(Dataset):
         # 若 CSV 有 clear_feature_path 且檔案存在，直接載入預算 embedding (256, 64, 64)
         # 若無，退回全零 tensor（模型仍可訓練，但 CrossViewAlignment 退化為 self-attention）
         if self.has_clear_features and pd.notna(row.get('clear_feature_path')) and os.path.exists(str(row['clear_feature_path'])):
-            clear_embedding = torch.load(str(row['clear_feature_path']))  # (256, 64, 64)
+            clear_embedding = torch.load(str(row['clear_feature_path']), weights_only=True)  # (256, 64, 64)
         else:
             clear_embedding = torch.zeros(256, 64, 64, dtype=torch.float32)
         output["clear_embedding"] = clear_embedding
@@ -177,11 +166,11 @@ class WeatherSegmentationDataset(Dataset):
         output["gt_mask"] = torch.as_tensor(gt_mask).long()
 
         # 處理 Invalid Mask（optional，目前僅 ACDC 提供）
-        # ACDC invalid_mask 格式：255 = 有效區域，0 = 無效區域（車頭遮擋等固定盲區）
+        # ACDC invalid_mask 實際為二值圖：0 = 有效區域，1 = 無效區域（車頭遮擋等固定盲區）
         if 'invalid_mask' in row and pd.notna(row.get('invalid_mask')) and os.path.exists(str(row['invalid_mask'])):
             inv = cv2.imread(str(row['invalid_mask']), cv2.IMREAD_GRAYSCALE)
             inv = cv2.resize(inv, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
-            output["invalid_mask"] = torch.as_tensor(inv == 0).bool()  # True = 無效，需排除
+            output["invalid_mask"] = torch.as_tensor(inv != 0).bool()  # True = 無效，需排除
         else:
             output["invalid_mask"] = torch.zeros(self.image_size, self.image_size, dtype=torch.bool)
 

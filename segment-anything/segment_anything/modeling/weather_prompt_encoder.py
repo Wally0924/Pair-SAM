@@ -31,11 +31,9 @@ class WeatherPromptEncoder(nn.Module):
         return self.no_mask_embed.weight.device
 
     def forward(
-        self, 
-        text_embeddings: torch.Tensor, 
+        self,
+        text_embeddings: torch.Tensor,
         location_embeddings: Optional[torch.Tensor] = None,
-        mask_inputs: Optional[torch.Tensor] = None, 
-        location_coords: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:

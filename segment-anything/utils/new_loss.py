@@ -329,7 +329,7 @@ class ActiveBoundaryLoss(nn.Module):
 
 class ContextLoss(nn.Module):
     """
-    計算 ContextFusionHead 輸出的 19 類別特徵圖的 Cross Entropy Loss。
+    計算 ResidualDWConvFusion 輸出的 19 類別高解析度 logits 的 Cross Entropy Loss。
     加入 Class-Balanced Weights，強迫模型重視被吃掉的小物件類別。
     """
     def __init__(self, ce_weight: float = 1.0, num_classes: int = 19):
@@ -365,9 +365,16 @@ class ContextLoss(nn.Module):
             total_loss: (scalar) 加權後的 Cross Entropy Loss。
             ce_val: (float) 原始未加權的 Cross Entropy Loss 數值。
         """
+        # Guard：若 batch 中所有像素都是 ignore_index=255，weighted mean 分母為 0 → NaN
+        # 此時回傳 0 loss（視為此 sample 對 CE 無貢獻），避免污染整個訓練 average
+        valid_pixel_count = (gt_mask != 255).sum()
+        if valid_pixel_count == 0:
+            zero = torch.zeros((), device=fused_logits_hr.device, dtype=fused_logits_hr.dtype)
+            return zero, 0.0
+
         ce_loss = self.ce_loss_fn(fused_logits_hr, gt_mask)
         total_loss = self.ce_weight * ce_loss
-        return total_loss, ce_loss.item()
+        return total_loss, total_loss.item()
 
 
 
@@ -383,7 +390,7 @@ class MaskLoss(nn.Module):
         self.smooth = 1e-5
         
         self.gamma = 2.0
-        self.alpha = 0.75
+        self.alpha = 0.75  # 正樣本（前景）權重，負樣本為 1-alpha=0.25；必須在 (0,1)
 
     def forward(self, pred_masks: torch.Tensor, target_mask: torch.Tensor, valid_mask: torch.Tensor):
         """
@@ -432,23 +439,3 @@ class MaskLoss(nn.Module):
         return total_loss, focal_loss, dice_loss
 
 
-def calculate_true_iou(pred_masks: torch.Tensor, target_mask: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
-    """
-    計算二值化預測圖與 Ground Truth 之間的真實交併比 (True IoU)。
-    用於監督 IoU Prediction Head 的準確度。
-    
-    Inputs:
-        pred_masks: (B, K, H, W) 原始的 Mask Logits。
-        target_mask: (B, 1, H, W) 二值化 Ground Truth。
-        valid_mask: (B, 1, H, W) 過濾掉 255 忽略區域的遮罩。
-    Returns:
-        iou: (B, K) 給定 K 個候選的 True IoU 數值。
-    """
-    pred_binary = (pred_masks > 0.0).float() * valid_mask
-    target_masked = target_mask * valid_mask
-    
-    intersection = (pred_binary * target_masked).sum(dim=(2, 3))
-    union = pred_binary.sum(dim=(2, 3)) + target_masked.sum(dim=(2, 3)) - intersection
-    
-    iou = intersection / (union + 1e-6)
-    return iou

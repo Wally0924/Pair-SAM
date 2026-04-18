@@ -5,14 +5,12 @@ from torch.nn import functional as F
 from typing import Any, Dict, List, Tuple
 
 from .image_encoder import ImageEncoderViT
-from .mask_encoder import MaskEncoder
 from .weather_prompt_encoder import WeatherPromptEncoder
 from .weather_mask_decoder import MaskDecoder
 from .fusion import CrossViewAlignment, GatedFusion
 from .text_encoder import TextEncoder
-from .location_encoder import LocationEncoder
+from .location_encoder import LocationEncoder  # 保留供 build 時傳入，forward 已不使用
 from .fusion_head import ResidualDWConvFusion
-# from .fusion_head import ContextFusionHead  # [舊版] 已由 ResidualDWConvFusion 取代
 
 class WeatherSAM(nn.Module):
     """
@@ -20,7 +18,6 @@ class WeatherSAM(nn.Module):
     整合了 Image Encoder, Prompt Encoder, Mask Decoder，並額外加入了：
     1. CrossViewAlignment 與 GatedFusion：用於參考畫面 (Reference Frame) 的特徵對齊與融合。
     2. ResidualDWConvFusion：Mask2Former-style 後置精修，補足 pixel 空間的局部空間一致性。
-    # 2. ContextFusionHead：[舊版] 多類別預測結果的互斥性與空間平滑，已由 ResidualDWConvFusion 取代
     """
     mask_threshold: float = 0.0
     image_format: str = "RGB"
@@ -28,7 +25,6 @@ class WeatherSAM(nn.Module):
     def __init__(
         self,
         image_encoder: ImageEncoderViT,
-        mask_encoder: MaskEncoder,
         prompt_encoder: WeatherPromptEncoder,
         mask_decoder: MaskDecoder,
         fusion_module: CrossViewAlignment,
@@ -39,25 +35,8 @@ class WeatherSAM(nn.Module):
         pixel_mean: List[float] = [123.675, 116.28, 103.53],
         pixel_std: List[float] = [58.395, 57.12, 57.375],
     ) -> None:
-        """
-        初始化 WeatherSAM 模型。
-
-        Args:
-            image_encoder (ImageEncoderViT): 影像編碼器。
-            mask_encoder (MaskEncoder): 遮罩編碼器，用於處理參考遮罩。
-            prompt_encoder (WeatherPromptEncoder): 提示編碼器，用於處理文字和位置提示。
-            mask_decoder (MaskDecoder): 遮罩解碼器，從影像和提示特徵生成遮罩。
-            fusion_module (CrossViewAlignment): 跨視圖對齊模組，用於融合當前和參考影像特徵。
-            gate_module (GatedFusion): 門控融合模組，進一步融合特徵。
-            text_encoder (TextEncoder): 文字編碼器，將文字提示轉換為嵌入。
-            location_encoder (LocationEncoder): 位置編碼器，將地理位置轉換為嵌入。
-            num_classes (int): 語意分割的類別數量。
-            pixel_mean (List[float]): 影像標準化的像素均值。
-            pixel_std (List[float]): 影像標準化的像素標準差。
-        """
         super().__init__()
         self.image_encoder = image_encoder
-        self.mask_encoder = mask_encoder
         self.prompt_encoder = prompt_encoder
         self.mask_decoder = mask_decoder
         self.fusion_module = fusion_module
@@ -65,9 +44,7 @@ class WeatherSAM(nn.Module):
         self.text_encoder = text_encoder
         self.location_encoder = location_encoder
 
-        # ConditionEncoder：天氣條件輕量 Embedding（fog=0, rain=1, snow=2）
-        # 輸出維度 256 與 LocationEncoder 對齊，可直接替換進 prompt pipeline
-        # 僅在 condition_id >= 0 時啟用（ACDC 模式）；Cityscapes 保持走 LocationEncoder
+        # ConditionEncoder：天氣條件 Embedding（fog=0, rain=1, snow=2）
         self.condition_encoder = nn.Embedding(3, 256)
         nn.init.normal_(self.condition_encoder.weight, std=0.01)
 
@@ -83,7 +60,6 @@ class WeatherSAM(nn.Module):
         self.num_classes = num_classes
         # [Mask2Former-style] 輕量殘差精修：3×3 DW Conv + 1×1 PW Conv + residual
         self.context_fusion_head = ResidualDWConvFusion(num_classes=num_classes)
-        # self.context_fusion_head = ContextFusionHead(num_classes=num_classes, hidden_dim=64)  # [舊版]
         
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
@@ -103,17 +79,14 @@ class WeatherSAM(nn.Module):
     def forward(
         self,
         batched_input: List[Dict[str, Any]],
-        multimask_output: bool = False,
     ) -> List[Dict[str, torch.Tensor]]:
         """
         模型的前向傳播 (Forward Pass)。
-        
+
         Inputs:
             batched_input: (List[Dict]) 包含影像、文字提示、參考座標等輸入資訊。
-            multimask_output: (bool) 是否要求模型輸出多個候選 Mask。
         Returns:
-            List[Dict]: 每個 Dict 包含該影像預測的 `masks`, `iou_predictions`, 
-                        以及原始解析度的 `low_res_logits`。
+            List[Dict]: 每個 Dict 包含該影像預測的 `masks`, `low_res_logits`, `class_ids`。
         """
         outputs = []
         
@@ -133,24 +106,9 @@ class WeatherSAM(nn.Module):
         ref_embeddings = torch.stack([x["clear_embedding"] for x in batched_input], dim=0)
         ref_embeddings = ref_embeddings.to(image_embeddings.device)
 
-        # [legacy] MaskEncoder 路徑（原本以 color label mask 作為 f_ref，已由上方取代）
-        # ref_masks_list = []
-        # for x in batched_input:
-        #     mask = x["reference_mask"]
-        #     mask = mask.float() / 255.0
-        #     h, w = mask.shape[-2:]
-        #     padh = self.image_encoder.img_size - h
-        #     padw = self.image_encoder.img_size - w
-        #     mask = F.pad(mask, (0, padw, 0, padh))
-        #     ref_masks_list.append(mask)
-        # ref_masks = torch.stack(ref_masks_list, dim=0)
-        # ref_embeddings = self.mask_encoder(ref_masks)
-
-        ref_void_masks = torch.stack([x["ref_void_mask"] for x in batched_input], dim=0)
-
         # 2. 融合 (Fusion) -> (B_img, 256, 64, 64)
-        aligned_embeddings = self.fusion_module(f_curr=image_embeddings, f_ref=ref_embeddings, ref_void_mask=ref_void_masks)
-        fused_embeddings = self.gate_module(f_curr=image_embeddings, f_align=aligned_embeddings, ref_void_mask=ref_void_masks)
+        aligned_embeddings = self.fusion_module(f_curr=image_embeddings, f_ref=ref_embeddings)
+        fused_embeddings = self.gate_module(f_curr=image_embeddings, f_align=aligned_embeddings)
 
         # --- 階段 3：批次提示編碼與遮罩解碼 (Prompt Encoding & Mask Decoding) ---
         for i, image_record in enumerate(batched_input):
@@ -166,16 +124,15 @@ class WeatherSAM(nn.Module):
             elif sparse_embeddings.dim() == 3 and sparse_embeddings.shape[0] == 1: # (1, K, 256)
                 sparse_embeddings = sparse_embeddings.squeeze(0).unsqueeze(1)
 
-            # B. 位置/條件編碼
-            # condition_id >= 0：ACDC 模式，使用 ConditionEncoder（fog/rain/snow embedding）
-            # condition_id == -1：Cityscapes 模式，退回 GPS LocationEncoder（行為與原本完全一致）
-            condition_id = image_record.get("condition_id", torch.tensor(-1))
-            if condition_id.item() >= 0:
-                cid = condition_id.to(self.device).unsqueeze(0)   # (1,)
-                loc_feats = self.condition_encoder(cid)            # (1, 256)
-            else:
-                location_coords = image_record["location"].unsqueeze(0)  # (1, 2)
-                loc_feats = self.location_encoder(location_coords)        # (1, 256)
+            # B. 條件編碼（固定使用 ConditionEncoder：fog=0, rain=1, snow=2）
+            condition_id = image_record.get("condition_id", None)
+            if condition_id is None:
+                import warnings
+                warnings.warn("condition_id not found in input, defaulting to 0 (fog). "
+                              "Ensure ACDC CSV has condition_id column.", stacklevel=2)
+                condition_id = torch.tensor(0)
+            cid = condition_id.to(self.device).unsqueeze(0)  # (1,)
+            loc_feats = self.condition_encoder(cid)           # (1, 256)
             loc_feats = F.normalize(loc_feats, p=2, dim=-1)
             
             # 3. 調整維度以匹配 Text Prompts
@@ -191,7 +148,6 @@ class WeatherSAM(nn.Module):
             # C. 提示編碼 (Prompt Encoding) → sparse: (K, 2, 256)
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 text_embeddings=sparse_embeddings,
-                mask_inputs=None,
                 location_embeddings=location_embeddings,
             )
 
@@ -202,6 +158,15 @@ class WeatherSAM(nn.Module):
             class_ids = [self.CLASS_MAP[texts[k]] for k in valid_indices]
             if len(valid_indices) < len(texts):
                 sparse_embeddings = sparse_embeddings[valid_indices]  # 同步過濾 embeddings
+
+            if not class_ids:
+                h, w = image_record["original_size"]
+                outputs.append({
+                    "masks": torch.zeros(1, 0, h, w, device=self.device),
+                    "low_res_logits": torch.zeros(1, 0, 256, 256, device=self.device),
+                    "class_ids": [],
+                })
+                continue
 
             curr_fused_embed = fused_embeddings[i].unsqueeze(0)  # (1, 256, 64, 64)
             image_pe = self.get_image_pe()
@@ -217,6 +182,8 @@ class WeatherSAM(nn.Module):
             )
 
             # E. Post-processing: (1, K, 256, 256) → (1, K, H, W)
+            # context_fusion_head 在 trainer Stage 5 呼叫（含完整 loss pipeline），
+            # 此處不重複應用，直接將 raw decoder 輸出送入 postprocess。
             masks = self.postprocess_masks(
                 low_res_masks,
                 input_size=image_record["original_size"],
