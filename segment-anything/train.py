@@ -2,6 +2,8 @@
 import torch
 from torch.utils.data import DataLoader
 import os
+import random
+import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
@@ -12,6 +14,28 @@ import argparse
 from utils.weather_dataloader import WeatherSegmentationDataset
 from weather_trainer import WeatherSAMTrainer
 from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
+
+
+def set_seed(seed: int, deterministic: bool = True):
+    """
+    固定全域隨機源，確保 ablation 可重現。
+    deterministic=True 時關閉 cudnn.benchmark（犧牲 5~15% 速度）換取完全可重現的結果。
+    探索性實驗可傳 False 保留速度，但不能用於論文 ablation。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def seed_worker(worker_id):
+    """DataLoader worker 各自的 numpy / random 也綁定到主 seed 衍生值。"""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 # ==========================================
 # 📊 1. 繪製圖表功能
@@ -133,10 +157,10 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv2")
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv3_noabl",)
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=100, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--epochs", type=int, default=60, help="總共訓練的 Epoch 數量")
     parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.005, help="判定為進步的最小 Loss 差異")
     parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
@@ -152,9 +176,14 @@ def main():
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
     # --- Active Boundary Loss ---
-    parser.add_argument("--abl_weight", type=float, default=0.5, help="Active Boundary Loss 權重")
-    parser.add_argument("--abl_start_epoch", type=int, default=20, help="ABL 開始介入的 Epoch（Warmup）")
+    parser.add_argument("--abl_weight", type=float, default=0, help="Active Boundary Loss 權重")
+    parser.add_argument("--abl_start_epoch", type=int, default=10, help="ABL 開始介入的 Epoch（Warmup）")
     parser.add_argument("--warmup_epochs", type=int, default=5, help="LR Warmup 線性上升的 Epoch 數")
+
+    # --- 可重現性 ---
+    parser.add_argument("--seed", type=int, default=42, help="全域隨機種子（確保 ablation 可重現）")
+    parser.add_argument("--no_deterministic", action="store_true",
+                        help="關閉 cudnn deterministic 以換取訓練速度（探索性實驗用；論文 ablation 勿用）")
 
     # --- Decoder Transformer LR ---
     parser.add_argument("--decoder_lr_scale", type=float, default=0.1,
@@ -170,8 +199,12 @@ def main():
 
     # NOTE: --use_condition_embedding 已移除；模型現在固定使用 condition_encoder（ACDC 模式）
     args = parser.parse_args()
-    
+
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # ★ 必須在建立模型 / DataLoader 之前固定 seed，才能涵蓋權重初始化與 shuffle 順序
+    set_seed(args.seed, deterministic=not args.no_deterministic)
+    print(f"🎲 Seed fixed: {args.seed} (deterministic={not args.no_deterministic})")
 
     print_training_config(args, args.device)
 
@@ -200,24 +233,31 @@ def main():
         gps_noise=args.gps_noise
     )
 
+    # ★ DataLoader generator 綁定 seed，確保每個 epoch 的 shuffle 順序可重現
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(args.seed)
+
     train_loader = DataLoader(
-        train_ds, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
         num_workers=4,
         collate_fn=WeatherSegmentationDataset.collate_fn,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        worker_init_fn=seed_worker,
+        generator=loader_generator,
     )
-    
+
     val_loader = DataLoader(
-        val_ds, 
-        batch_size=args.batch_size, 
-        shuffle=False, 
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
         num_workers=4,
         collate_fn=WeatherSegmentationDataset.collate_fn,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        worker_init_fn=seed_worker,
     )
     
     # 3. 初始化 Trainer

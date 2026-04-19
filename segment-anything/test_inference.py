@@ -10,7 +10,9 @@ from torch.utils.data import DataLoader
 
 from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
 from utils.weather_dataloader import WeatherSegmentationDataset
-from segment_anything.weather_predictor import WeatherSamPredictor  # 👈 引入剛剛建立的 Predictor
+# [2026-04] 移除 WeatherSamPredictor 依賴：舊 predictor 仍呼叫已不存在的 mask_encoder
+# 且 API 未同步 condition_encoder / clear_embedding。改為直接呼叫 model.forward，
+# 與 weather_trainer.py 的 eval pipeline 完全對齊。
 
 CITYSCAPES_PALETTE = np.array([
     [128, 64, 128], [244, 35, 232], [70, 70, 70], [102, 102, 156],
@@ -21,8 +23,9 @@ CITYSCAPES_PALETTE = np.array([
 ], dtype=np.uint8)
 
 class InferenceRunner:
-    def __init__(self, predictor: WeatherSamPredictor, device, output_dir="inference_results"):
-        self.predictor = predictor
+    def __init__(self, model, device, output_dir="inference_results"):
+        # model: WeatherSAM 本體（build_weather_sam_vit_h 回傳物件）
+        self.model = model
         self.device = device
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -80,66 +83,65 @@ class InferenceRunner:
 
     @torch.no_grad()
     def predict_single_image(self, sample, active_prompts):
-        """透過自定義 Predictor 進行推論（與訓練一致的 Soft Selection）"""
-        
-        image_tensor = sample.get('image', None)
-        image_embedding = sample.get('image_embedding', None)
-        if image_tensor is not None: image_tensor = image_tensor.to(self.device)
-        if image_embedding is not None: image_embedding = image_embedding.to(self.device)
+        """
+        與 weather_trainer.py eval pipeline 對齊的推論流程：
+          1) 組 batched_input（符合 WeatherSAM.forward 介面）→ 取得 low_res_logits (1, K, 256, 256) 與 class_ids
+          2) 依 class_ids scatter 至 (1, 19, 256, 256)，未出現的 class 以 -10 填充
+          3) context_fusion_head 於 256² 執行 Mask2Former-style 後置精修
+          4) postprocess_masks 上採樣至 original_size
+          5) argmax 取得 (H, W) 預測；不再套 max_logits<0 過濾（與訓練一致）
+        """
+        # --- 1. 組 batched_input（單張；欄位名稱需與 WeatherSAM.forward 相符）---
+        input_record = {
+            "text_prompts": active_prompts,
+            "original_size": tuple(sample['original_size']),
+            "clear_embedding": sample['clear_embedding'].to(self.device),   # (256, 64, 64)
+            "condition_id": sample['condition_id'].to(self.device),         # scalar LongTensor
+        }
+        if 'image_embedding' in sample and sample['image_embedding'] is not None:
+            input_record["image_embedding"] = sample['image_embedding'].to(self.device)
+        elif 'image' in sample and sample['image'] is not None:
+            input_record["image"] = sample['image'].to(self.device)
+        else:
+            raise ValueError("Sample 需提供 'image' 或 'image_embedding'。")
 
-        # 1. 設定影像資料 (計算並快取特徵)
-        self.predictor.set_image_data(
-            image=image_tensor,
-            image_embedding=image_embedding,
-            reference_mask=sample['reference_mask'].to(self.device),
-            ref_void_mask=sample['ref_void_mask'].to(self.device),
-            original_size=sample['original_size']
-        )
-        
-        # 2. 進行預測 — 取得 low_res_masks (K, 3, 256, 256) 和 iou_preds (K, 3)
-        masks, iou_preds, low_res_masks = self.predictor.predict(
-            text_prompts=active_prompts,
-            location=sample['location'].to(self.device),
-            multimask_output=True
-        )
-        
-        # 3. Argmax 選取最佳 candidate（與訓練一致）
-        best_mask_indices = torch.argmax(iou_preds, dim=1)  # (K,)
-        selected_logits = low_res_masks[torch.arange(len(active_prompts)), best_mask_indices]  # (K, 256, 256)
-        
-        # 4. list + cat 組裝 19 class channels at 256²
-        class_channels = []
-        for cls_id in range(self.num_classes):
-            matched = False
-            for k, prompt in enumerate(active_prompts):
-                if self.classes.index(prompt) == cls_id:
-                    class_channels.append(selected_logits[k].unsqueeze(0))
-                    matched = True
-                    break
-            if not matched:
-                class_channels.append(torch.full((1, 256, 256), -10.0, device=self.device))
-        
-        full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)  # (1, 19, 256, 256)
-        
-        # 5. FusionHead at 256²
-        fused_logits = self.predictor.model.context_fusion_head(full_class_logits)
-        
-        # 6. postprocess_masks 上採樣到 original_size（正確處理 padding）
+        # --- 2. 呼叫 WeatherSAM.forward ---
+        outputs = self.model([input_record])
+        out = outputs[0]
+        low_res_logits = out["low_res_logits"]  # (1, K, 256, 256)
+        class_ids = out["class_ids"]            # List[int], len=K；與 active_prompts 順序一致（經過 CLASS_MAP 過濾）
+
+        # --- 3. Scatter 至 (1, 19, 256, 256)；未被 prompt 的 class 以極小值填入 ---
+        if low_res_logits.shape[1] == 0:
+            # 無有效 prompt：所有 class 皆填 -10，最終 argmax 會落在 class 0；維持與 trainer 一致的防呆
+            full_class_logits = torch.full(
+                (1, self.num_classes, 256, 256), -10.0, device=self.device
+            )
+        else:
+            selected_logits = low_res_logits[0]  # (K, 256, 256)
+            class_channels = []
+            cls_id_to_k = {cid: k for k, cid in enumerate(class_ids)}
+            for cls_id in range(self.num_classes):
+                if cls_id in cls_id_to_k:
+                    class_channels.append(selected_logits[cls_id_to_k[cls_id]].unsqueeze(0))
+                else:
+                    class_channels.append(torch.full((1, 256, 256), -10.0, device=self.device))
+            full_class_logits = torch.cat(class_channels, dim=0).unsqueeze(0)  # (1, 19, 256, 256)
+
+        # --- 4. ContextFusionHead @ 256² ---
+        fused_logits = self.model.context_fusion_head(full_class_logits)
+
+        # --- 5. 上採樣至 original_size（正確處理 padding）---
         orig_h, orig_w = sample['original_size']
-        fused_logits = self.predictor.model.postprocess_masks(
+        fused_logits = self.model.postprocess_masks(
             fused_logits,
             input_size=(1024, 1024),
             original_size=(orig_h, orig_w),
         )
-        
-        # 7. Argmax 決策
+
+        # --- 6. Argmax 決策（不再套 max_logits<0 過濾；trainer 亦未套用）---
         fused_logits = fused_logits.squeeze(0)  # (19, H, W)
         pred_mask = torch.argmax(fused_logits, dim=0)  # (H, W)
-        
-        # 濾波：如果所有 class logit 都極低，標記為 ignore (255)
-        max_logits, _ = torch.max(fused_logits, dim=0)
-        pred_mask[max_logits < 0.0] = 255 
-
         return pred_mask.cpu().numpy()
 
     def visualize(self, sample, pred_mask, gt_np, idx, miou=None):
@@ -234,25 +236,25 @@ class InferenceRunner:
         pbar = tqdm(test_loader, desc="Inference")
         
         for batch in pbar:
+            # dataloader 的 collate_fn 將 text_prompts 保留為 List[List[str]]、
+            # original_size 為 List[Tuple]；其餘為 batched tensor。
             sample = {
-                'reference_mask': batch['reference_mask'][0],
+                'reference_mask': batch['reference_mask'][0],      # 留作 visualize 使用
                 'ref_void_mask': batch['ref_void_mask'][0],
                 'location': batch['location'][0],
-                'original_size': batch['original_size'][0]
+                'original_size': batch['original_size'][0],
+                'clear_embedding': batch['clear_embedding'][0],    # [image-pair] f_ref 來源
+                'condition_id': batch['condition_id'][0],          # ACDC fog/rain/snow；Cityscapes = -1
+                'invalid_mask': batch['invalid_mask'][0],          # ACDC 固定盲區遮罩（True=無效）
             }
             if 'image' in batch:
                 sample['image'] = batch['image'][0]
             if 'image_embedding' in batch:
                 sample['image_embedding'] = batch['image_embedding'][0]
-            
-            gt_mask_for_prompt = batch['gt_mask'][0].numpy()
-            active_prompts = []
-            if gt_mask_for_prompt.max() > 0:
-                unique_classes = np.unique(gt_mask_for_prompt)
-                for cls_id in unique_classes:
-                    if cls_id < self.num_classes:
-                        active_prompts.append(self.classes[cls_id])
-            
+
+            # active_prompts：優先採用 dataloader 產出的 text_prompts（已做 GT→class name 推導）
+            # 若為空則 fallback 到 "road"。保留以 GT 決定 prompt 的 oracle 設定，與訓練/驗證一致。
+            active_prompts = batch['text_prompts'][0] if batch.get('text_prompts') else []
             if not active_prompts:
                 active_prompts = ["road"]
 
@@ -269,7 +271,16 @@ class InferenceRunner:
                 gt_resized_np = F.interpolate(
                     gt_tensor, size=(target_h, target_w), mode='nearest'
                 ).long().squeeze().cpu().numpy()
-                
+
+                # 與 trainer 一致：將 invalid_mask 標記的區域設為 255（ignore）
+                inv = sample['invalid_mask']  # bool Tensor (H_orig, W_orig)
+                if inv.any():
+                    inv_np = F.interpolate(
+                        inv.unsqueeze(0).unsqueeze(0).float(),
+                        size=(target_h, target_w), mode='nearest'
+                    ).squeeze().bool().cpu().numpy()
+                    gt_resized_np[inv_np] = 255
+
                 miou = self.calculate_miou(pred_mask, gt_resized_np)
                 all_mious.append(miou)
                 print(f"📊 Image {samples_processed:03d} | mIoU: {miou:.4f}")
@@ -298,23 +309,23 @@ class InferenceRunner:
             print(f"{'='*60}")
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_all_data_testv16/weather_sam_best_latest.pth"
-    TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/test_with_gps.csv" 
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_mask2former_testv3/weather_sam_best_latest.pth"
+    TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_val.csv" 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
     print("Loading Model...")
     model = build_weather_sam_vit_h(checkpoint=CHECKPOINT_PATH)
     model.to(DEVICE)
-    
-    # 實例化新的 Predictor
-    predictor = WeatherSamPredictor(model)
-    
-    test_ds = WeatherSegmentationDataset(csv_file=TEST_CSV_PATH, mode='val') 
+    model.eval()
+
+    test_ds = WeatherSegmentationDataset(csv_file=TEST_CSV_PATH, image_size=1024, mode='val')
+    # 保留原作法：關閉 feature cache 以確保跑原始影像路徑；
+    # 若測試 CSV 有 feature_path 且欲加速，可移除下一行。
     test_ds.has_cached_features = False
     test_loader = DataLoader(
         test_ds, batch_size=1, shuffle=False, num_workers=4,
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
-    
-    runner = InferenceRunner(predictor, DEVICE, output_dir="inference_viz_cityscapes_testv16")
-    runner.run_inference(test_loader, num_samples=None)  # num_samples=None → 跑完整個 test dataset
+
+    runner = InferenceRunner(model, DEVICE, output_dir="inference_viz_acdc_testv3")
+    runner.run_inference(test_loader, num_samples=None)

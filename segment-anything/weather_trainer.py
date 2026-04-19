@@ -360,7 +360,7 @@ class WeatherSAMTrainer:
                 abl=losses['abl'].avg
             )
 
-            if step_count % 1000 == 0 and first_batch_logits is not None:
+            if step_count > 0 and step_count % 500 == 0 and first_batch_logits is not None:
                 self._save_debug_snapshot(first_batch_logits, epoch_index, step_count)
         
         self.scheduler.step()

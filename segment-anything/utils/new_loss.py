@@ -336,25 +336,8 @@ class ContextLoss(nn.Module):
         super().__init__()
         self.ce_weight = ce_weight
 
-        # Cityscapes 類別倒數頻率權重（CLASS_MAP 順序）
-        # road=0, sidewalk=1, building=2, wall=3, fence=4, pole=5,
-        # traffic light=6, traffic sign=7, vegetation=8, terrain=9,
-        # sky=10, person=11, rider=12, car=13, truck=14, bus=15,
-        # train=16, motorcycle=17, bicycle=18
-        weights = torch.ones(num_classes)
-
-        # 小物件/稀有類別 → 加重懲罰（強迫模型不忽略它們）
-        # wall, fence, pole, traffic light, traffic sign,
-        # person, rider, truck, bus, train, motorcycle, bicycle
-        heavy_classes = [3, 4, 5, 6, 7, 11, 12, 14, 15, 16, 17, 18]
-        for c in heavy_classes:
-            weights[c] = 5.0
-
-        # register_buffer 確保 weights 跟模型一起搬到 GPU
-        self.register_buffer('class_weights', weights)
-        self.ce_loss_fn = nn.CrossEntropyLoss(
-            weight=self.class_weights, ignore_index=255
-        )
+        # 類別不平衡交由 MaskLoss 的 Focal Loss 調整，此處 CE 採用均勻權重
+        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255)
 
     def forward(self, fused_logits_hr: torch.Tensor, gt_mask: torch.Tensor):
         """
@@ -383,7 +366,7 @@ class MaskLoss(nn.Module):
     計算 SAM Mask Decoder 輸出的候選 Mask 的 Focal Loss 與 Dice Loss。
     支援同時計算 K 個候選 Mask，並用於後續選取 Minimum Loss。
     """
-    def __init__(self, focal_weight: float = 20.0, dice_weight: float = 1.0):
+    def __init__(self, focal_weight: float = 5.0, dice_weight: float = 1.0):
         super().__init__()
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
