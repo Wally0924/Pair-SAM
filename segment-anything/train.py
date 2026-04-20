@@ -157,7 +157,7 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv3_noabl",)
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv4_noabl",)
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=60, help="總共訓練的 Epoch 數量")
@@ -171,7 +171,7 @@ def main():
     
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=4.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--focal_weight", type=float, default=3.0, help="MaskLoss (Focal) 權重")
     parser.add_argument("--dice_weight", type=float, default=1.5, help="MaskLoss (Dice) 權重")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 

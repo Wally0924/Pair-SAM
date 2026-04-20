@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from .common import LayerNorm2d
 
 
 class CrossViewAlignment(nn.Module):
@@ -48,7 +49,11 @@ class CrossViewAlignment(nn.Module):
         # Pre-compute relative index table: shape (H*W, H*W) — registered as buffer (not trained)
         self._register_rel_index(feat_size)
 
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = LayerNorm2d(embed_dim)
+        # 初始化 gamma=0.1，使 f_align 輸出 norm 與 image_encoder neck LayerNorm2d 的輸出尺度一致
+        # image_encoder neck 訓練後 gamma ≈ 0.1（norm ~1.68 vs 原始 √256 ≈ 16）
+        nn.init.constant_(self.norm.weight, 0.1)
+        nn.init.constant_(self.norm.bias, 0.0)
 
     def _register_rel_index(self, S: int):
         """Pre-compute (N, N) index table into rel_bias for H=W=S."""
@@ -110,12 +115,13 @@ class CrossViewAlignment(nn.Module):
         out = (attn @ v).transpose(1, 2).reshape(b, N, c)    # (B, N, C)
         out = self.out_proj(out)
 
-        # 5. Residual + LayerNorm
-        q_orig = f_curr.flatten(2).transpose(1, 2)            # original f_curr tokens
-        f_align = self.norm(q_orig + out)
-
-        # 6. Reshape back to spatial
-        f_align = f_align.transpose(1, 2).view(b, c, h, w)
+        # 5. Reshape to spatial + LayerNorm2d（無 residual）
+        # 移除 f_curr residual：讓輸出純粹代表從 f_ref cross-attention 提取的對齊特徵。
+        # f_curr 與 f_align 的混合比例由下游 GatedFusion 的 alpha gate 決定，
+        # 避免 f_curr 在此處與 GatedFusion 被雙重疊加而壓制 reference 訊號。
+        # 使用 LayerNorm2d 與 image_encoder neck 保持一致的正規化方式（跨 channel，空間感知）。
+        f_align = out.transpose(1, 2).view(b, c, h, w)  # (B, C, H, W)
+        f_align = self.norm(f_align)
 
         return f_align
 
@@ -130,7 +136,7 @@ class GatedFusion(nn.Module):
             nn.Conv2d(embed_dim // 2, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = LayerNorm2d(embed_dim)
 
     def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor) -> torch.Tensor:
         # 1. 預測 Alpha
@@ -140,10 +146,7 @@ class GatedFusion(nn.Module):
         # 2. 加權融合
         f_fuse = (1 - alpha) * f_curr + alpha * f_align
 
-        # 3. LayerNorm
-        b, c, h, w = f_fuse.shape
-        f_fuse = f_fuse.permute(0, 2, 3, 1)  # (B, H, W, C)
+        # 3. LayerNorm2d（與 CrossViewAlignment 及 image_encoder neck 格式一致）
         f_fuse = self.norm(f_fuse)
-        f_fuse = f_fuse.permute(0, 3, 1, 2)  # (B, C, H, W)
 
         return f_fuse

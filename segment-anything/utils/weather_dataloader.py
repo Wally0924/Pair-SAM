@@ -99,6 +99,7 @@ class WeatherSegmentationDataset(Dataset):
                 ref_mask = cv2.imread(str(row[self.ref_col]))
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:
+                print(f"Reference not found for sample {idx} in cache mode. Using empty mask.")
                 ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
             ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
@@ -121,9 +122,11 @@ class WeatherSegmentationDataset(Dataset):
             
             # B. 讀取 Ref（支援 ref_mask_path / ref_image_path 兩種欄位名稱）
             if pd.notna(row.get(self.ref_col)) and os.path.exists(str(row[self.ref_col])):
+                print(f"Loading reference from: {row[self.ref_col]}")
                 ref_mask = cv2.imread(str(row[self.ref_col]))
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:
+                print(f"Reference not found for sample {idx}. Using empty mask.")
                 ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
             
             # C. 讀取 GT Mask
@@ -134,12 +137,16 @@ class WeatherSegmentationDataset(Dataset):
 
             # D. 先統一 Resize 到模型輸入尺寸 (例如 1024)
             image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
+            # clear_image 與 adverse image 使用相同的 LANCZOS4 resize，確保進入 image_encoder 前品質一致
+            clear_image = cv2.resize(ref_mask.copy(), (self.image_size, self.image_size), interpolation=cv2.INTER_LANCZOS4)
             ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
             gt_mask = cv2.resize(gt_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
             # E. 轉 Tensor
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
             output["image"] = image_tensor
+            # clear_image：供 predict_single_image 即時 encode，取得 clear_embedding
+            output["clear_image"] = torch.as_tensor(clear_image).permute(2, 0, 1).float()
 
         # ===========================================================
         # 3. 後續處理 (通用)
@@ -210,6 +217,12 @@ class WeatherSegmentationDataset(Dataset):
         else:
             output["condition_id"] = torch.tensor(-1, dtype=torch.long)
 
+        # 處理 condition 字串（供 per-condition mIoU 計算使用）
+        if 'condition' in row and pd.notna(row.get('condition')):
+            output["condition"] = str(row['condition'])
+        else:
+            output["condition"] = None
+
         return output
     
     @staticmethod
@@ -226,6 +239,7 @@ class WeatherSegmentationDataset(Dataset):
         original_sizes = [item['original_size'] for item in batch]
         locations = torch.stack([item['location'] for item in batch])
         condition_ids = torch.stack([item['condition_id'] for item in batch])
+        conditions = [item['condition'] for item in batch]  # List[str | None]
 
         batch_dict = {
             "reference_mask": ref_masks,
@@ -236,6 +250,7 @@ class WeatherSegmentationDataset(Dataset):
             "original_size": original_sizes,
             "location": locations,
             "condition_id": condition_ids,
+            "condition": conditions,
         }
 
         # [image-pair] clear-weather ViT-H embedding
@@ -246,5 +261,9 @@ class WeatherSegmentationDataset(Dataset):
             batch_dict['image_embedding'] = torch.stack([item['image_embedding'] for item in batch])
         elif 'image' in batch[0]:
             batch_dict['image'] = torch.stack([item['image'] for item in batch])
+
+        # 3. 即時 encode 用的晴天原圖（raw image mode 下才有）
+        if 'clear_image' in batch[0]:
+            batch_dict['clear_image'] = torch.stack([item['clear_image'] for item in batch])
 
         return batch_dict

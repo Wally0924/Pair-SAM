@@ -197,6 +197,7 @@ class WeatherSAMTrainer:
                 self.model.mask_decoder.class_mask_tokens,
                 self.model.mask_decoder.class_hypernetworks_mlps,
                 self.model.mask_decoder.output_upscaling,
+                self.model.mask_decoder.transformer,  # epoch 5 解除 detach 後 CE 梯度首次流入 transformer，重置動量避免 loss 跳升
             ]
             for module in modules_to_reset:
                 for param in module.parameters():
