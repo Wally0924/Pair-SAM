@@ -30,6 +30,74 @@ class AverageMeter:
         self.count += n
         self.avg = self.sum / self.count
 
+class AttentionMonitor:
+    """
+    監控 DeformableCrossViewAlignment 與 GatedFusion 的訓練狀態。
+
+    DeformableCrossViewAlignment 在 forward 結束時會自行將診斷指標寫入
+    self._last_offset_mag 與 self._last_attn_entropy，本類別透過
+    register_forward_hook 讀取這兩個屬性，不需要 monkey-patch forward。
+
+    指標說明：
+        last_offset_mag  : float [0, 0.5]
+            偏移量平均絕對值（在 [-1,1] 正規化座標中）。
+            接近 0 → 模型幾乎不移動採樣點（未學習空間對應）。
+            增大 → 模型開始主動查詢 f_ref 的其他位置。
+
+        last_attn_entropy : float [0, 1]
+            K 個採樣點上的 normalized entropy。
+            注意：與舊版 CrossViewAlignment 的語意不同：
+            此處 1.0 = 均勻使用所有 K 點（不一定是壞事）；
+            0.0 = 每次只用 1 個採樣點（過度集中）。
+            重要的診斷指標是 offset_mag，而非 entropy。
+
+        last_alpha : float [0, 1]
+            GatedFusion gate 的全局均值。
+            接近 0 → 模型忽略 f_align；接近 1 → 大量使用 f_align。
+    """
+
+    def __init__(self, fusion_module, gate_module):
+        self.last_offset_mag: float = 0.0
+        self.last_attn_entropy: float = 1.0
+        self.last_alpha: float = 0.0
+        self._fusion_handle = None
+        self._gate_handle = None
+        self._install(fusion_module, gate_module)
+
+    def _install(self, fusion_module, gate_module):
+        monitor = self
+
+        # Fusion hook: 讀取模組在 forward 結尾自存的診斷屬性
+        def fusion_out_hook(module, _inputs, _output):
+            monitor.last_offset_mag    = getattr(module, "_last_offset_mag",    0.0)
+            monitor.last_attn_entropy  = getattr(module, "_last_attn_entropy",  1.0)
+
+        self._fusion_handle = fusion_module.register_forward_hook(fusion_out_hook)
+
+        # Gate hook: 用 pre_hook 攔截 f_curr / f_align 計算 alpha
+        def gate_pre_hook(module, args, kwargs):
+            f_curr  = kwargs.get("f_curr",  args[0] if args else None)
+            f_align = kwargs.get("f_align", args[1] if len(args) > 1 else None)
+            if f_curr is not None and f_align is not None:
+                with torch.no_grad():
+                    cat   = torch.cat([f_curr.float().detach(), f_align.float().detach()], dim=1)
+                    alpha = module.gate_net(cat)
+                    monitor.last_alpha = float(alpha.mean().item())
+
+        self._gate_handle = gate_module.register_forward_pre_hook(
+            gate_pre_hook, with_kwargs=True
+        )
+
+    def remove(self, fusion_module=None):
+        """移除所有 hook。fusion_module 參數保留供呼叫端相容，實際無需使用。"""
+        if self._fusion_handle is not None:
+            self._fusion_handle.remove()
+            self._fusion_handle = None
+        if self._gate_handle is not None:
+            self._gate_handle.remove()
+            self._gate_handle = None
+
+
 class WeatherSAMTrainer:
     """
     負責訓練 WeatherSAM 的訓練器（Mask2Former-style），實作解耦式的多重 Loss 計算：
@@ -158,6 +226,9 @@ class WeatherSAMTrainer:
 
         os.makedirs("debug_viz", exist_ok=True)
 
+        # Attention 診斷監控器（CrossViewAlignment entropy + GatedFusion alpha）
+        self.attn_monitor = AttentionMonitor(self.model.fusion_module, self.model.gate_module)
+
     def _prepare_batch_input(self, batch, batch_size):
         batched_input = []
         use_cached_features = 'image_embedding' in batch
@@ -211,7 +282,11 @@ class WeatherSAMTrainer:
             "focal": AverageMeter(),
             "dice": AverageMeter(),
             # "iou": AverageMeter(),  # [Mask2Former] IoU MSE Loss 已移除，新架構每類別僅 1 mask，無候選選擇需求
-            "abl": AverageMeter()
+            "abl": AverageMeter(),
+            "offset_mag": AverageMeter(),    # Deformable offset magnitude [0, 0.5]
+            "attn_entropy": AverageMeter(), # Deformable K-point attention entropy [0, 1]
+            "alpha_mean": AverageMeter(),   # GatedFusion gate mean [0, 1]
+            "cos_sim": AverageMeter(),      # Cosine similarity between f_curr and f_ref [0, 1]
         }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
@@ -226,9 +301,18 @@ class WeatherSAMTrainer:
             batched_input = self._prepare_batch_input(batch, batch_size)
             gt_masks = batch['gt_mask'].to(self.device)
 
+            # f_curr vs f_ref cosine similarity（診斷：兩者特徵是否本來就很相似）
+            if 'image_embedding' in batch and 'clear_embedding' in batch:
+                img_emb = batch['image_embedding'].to(self.device).flatten(1).float()
+                ref_emb = batch['clear_embedding'].to(self.device).flatten(1).float()
+                cos_sim_val = F.cosine_similarity(img_emb, ref_emb, dim=1).mean().item()
+            else:
+                cos_sim_val = 0.0
+            losses['cos_sim'].update(cos_sim_val, batch_size)
+
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input)
-                
+
                 total_loss = torch.tensor(0.0, device=self.device)
                 sample_ce_sum = 0.0
                 sample_focal_sum = 0.0
@@ -351,14 +435,20 @@ class WeatherSAMTrainer:
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
             # losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)  # [Mask2Former] 已移除
             losses['abl'].update(float(sample_abl_sum) / float(batch_size), batch_size)
+            losses['offset_mag'].update(self.attn_monitor.last_offset_mag, batch_size)
+            losses['attn_entropy'].update(self.attn_monitor.last_attn_entropy, batch_size)
+            losses['alpha_mean'].update(self.attn_monitor.last_alpha, batch_size)
 
             pbar.set_postfix(
                 loss=losses['total'].avg,
                 ce=losses['ce'].avg,
                 focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
-                # iou=losses['iou'].avg,  # [Mask2Former] 已移除
-                abl=losses['abl'].avg
+                abl=losses['abl'].avg,
+                off=f"{losses['offset_mag'].avg:.3f}",
+                ent=f"{losses['attn_entropy'].avg:.3f}",
+                alpha=f"{losses['alpha_mean'].avg:.3f}",
+                cos=f"{losses['cos_sim'].avg:.4f}",
             )
 
             if step_count > 0 and step_count % 500 == 0 and first_batch_logits is not None:
@@ -429,7 +519,11 @@ class WeatherSAMTrainer:
             "focal": AverageMeter(),
             "dice": AverageMeter(),
             # "iou": AverageMeter(),  # [Mask2Former] IoU MSE Loss 已移除
-            "abl": AverageMeter()
+            "abl": AverageMeter(),
+            "offset_mag": AverageMeter(),
+            "attn_entropy": AverageMeter(),
+            "alpha_mean": AverageMeter(),
+            "cos_sim": AverageMeter(),      # Cosine similarity between f_curr and f_ref [0, 1]
         }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
@@ -439,9 +533,18 @@ class WeatherSAMTrainer:
             batched_input = self._prepare_batch_input(batch, batch_size)
             gt_masks = batch['gt_mask'].to(self.device)
 
+            # f_curr vs f_ref cosine similarity（診斷：兩者特徵是否本來就很相似）
+            if 'image_embedding' in batch and 'clear_embedding' in batch:
+                img_emb = batch['image_embedding'].to(self.device).flatten(1).float()
+                ref_emb = batch['clear_embedding'].to(self.device).flatten(1).float()
+                cos_sim_val = F.cosine_similarity(img_emb, ref_emb, dim=1).mean().item()
+            else:
+                cos_sim_val = 0.0
+            losses['cos_sim'].update(cos_sim_val, batch_size)
+
             with torch.amp.autocast('cuda'):
                 outputs = self.model(batched_input)
-                
+
                 sample_ce_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
@@ -538,16 +641,22 @@ class WeatherSAMTrainer:
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
             # losses['iou'].update(float(sample_iou_sum) / float(batch_size), batch_size)  # [Mask2Former] 已移除
             losses['abl'].update(float(sample_abl_sum) / float(batch_size), batch_size)
+            losses['offset_mag'].update(self.attn_monitor.last_offset_mag, batch_size)
+            losses['attn_entropy'].update(self.attn_monitor.last_attn_entropy, batch_size)
+            losses['alpha_mean'].update(self.attn_monitor.last_alpha, batch_size)
 
             pbar.set_postfix(
                 loss=losses['total'].avg,
                 ce=losses['ce'].avg,
                 focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
-                # iou=losses['iou'].avg,  # [Mask2Former] 已移除
-                abl=losses['abl'].avg
+                abl=losses['abl'].avg,
+                off=f"{losses['offset_mag'].avg:.3f}",
+                ent=f"{losses['attn_entropy'].avg:.3f}",
+                alpha=f"{losses['alpha_mean'].avg:.3f}",
+                cos=f"{losses['cos_sim'].avg:.4f}",
             )
-                
+
         avg_metrics = {k: v.avg for k, v in losses.items()}
         # self.scheduler.step(avg_metrics['total'])
         # self.scheduler.step()

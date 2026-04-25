@@ -330,7 +330,7 @@ def register_diagnostic_hooks(model):
 
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_mask2former_testv4_noabl/weather_sam_best_latest.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_mask2former_testv5_noabl/weather_sam_best_latest.pth"
     # raw image mode：使用有 ref_image_path 的 CSV，adverse 與 clear 圖都即時過 image_encoder
     # 若改用 acdc_val_with_embeddings.csv 並移除 has_cached_features=False，則改走預算 embedding 模式
     TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_val.csv"
@@ -353,7 +353,7 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
 
-    out_dir = "inference_viz_acdc_testv4_noabl_ref" if USE_REFERENCE else "inference_viz_acdc_testv4_noabl_noref"
+    out_dir = "inference_viz_acdc_testv5_noabl_ref" if USE_REFERENCE else "inference_viz_acdc_testv5_noabl_noref"
     print(f"Reference ablation: use_reference={USE_REFERENCE}  →  output: {out_dir}")
     print(f"Diagnostic hooks registered on fusion_module & gate_module\n")
 

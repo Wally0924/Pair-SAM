@@ -6,7 +6,7 @@
 
 from .image_encoder import ImageEncoderViT
 from .transformer import TwoWayTransformer
-from .fusion import CrossViewAlignment, GatedFusion
+from .fusion import CrossViewAlignment, DeformableCrossViewAlignment, GatedFusion
 from .mask_encoder import MaskEncoder
 from .text_encoder import TextEncoder
 from .weather_prompt_encoder import WeatherPromptEncoder
@@ -20,6 +20,7 @@ __all__ = [
     "PromptEncoder",
     "TwoWayTransformer",
     "CrossViewAlignment",
+    "DeformableCrossViewAlignment",
     "GatedFusion",
     "MaskEncoder",
     "TextEncoder",

@@ -99,7 +99,7 @@ class WeatherSegmentationDataset(Dataset):
                 ref_mask = cv2.imread(str(row[self.ref_col]))
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:
-                print(f"Reference not found for sample {idx} in cache mode. Using empty mask.")
+                # print(f"Reference not found for sample {idx} in cache mode. Using empty mask.")
                 ref_mask = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
             ref_mask = cv2.resize(ref_mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
@@ -122,7 +122,7 @@ class WeatherSegmentationDataset(Dataset):
             
             # B. 讀取 Ref（支援 ref_mask_path / ref_image_path 兩種欄位名稱）
             if pd.notna(row.get(self.ref_col)) and os.path.exists(str(row[self.ref_col])):
-                print(f"Loading reference from: {row[self.ref_col]}")
+                # print(f"Loading reference from: {row[self.ref_col]}")
                 ref_mask = cv2.imread(str(row[self.ref_col]))
                 ref_mask = cv2.cvtColor(ref_mask, cv2.COLOR_BGR2RGB)
             else:

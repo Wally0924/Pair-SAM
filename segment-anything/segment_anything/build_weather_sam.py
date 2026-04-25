@@ -2,7 +2,7 @@
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
+from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, DeformableCrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
 
 def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
     return _build_weather_sam(
@@ -77,9 +77,10 @@ def _build_weather_sam(
         num_classes=num_classes,
     )
 
-    fusion_module = CrossViewAlignment(
+    fusion_module = DeformableCrossViewAlignment(
         embed_dim=prompt_embed_dim,
-        num_heads=8
+        num_heads=8,
+        num_points=4,
     )
 
     gate_module = GatedFusion(

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/rvl1421/miniconda3/envs/sam_env/bin/python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('visualize_attention.py'\\).read\\(\\)\\); print\\('✅ syntax OK'\\)\")"
+    ]
+  }
+}

@@ -48,12 +48,16 @@ def plot_history(history, output_dir):
 
     # 每個 loss 各自一個子圖，各有自己的 y 軸尺度
     components = [
-        ('total',  'Total Loss',   'k',  'Train Total', 'Val Total'),
-        ('ce',     'CE Loss',      'b',  'Train CE',    'Val CE'),
-        ('focal',  'Focal Loss',   'r',  'Train Focal', 'Val Focal'),
-        ('dice',   'Dice Loss',    'g',  'Train Dice',  'Val Dice'),
-        # ('iou',    'IoU MSE',      'm',  'Train IoU',   'Val IoU'),  # [Mask2Former] IoU MSE Loss 已移除
-        ('abl',    'ABL Loss',     'c',  'Train ABL',   'Val ABL'),
+        ('total',        'Total Loss',              'k',      'Train Total',   'Val Total'),
+        ('ce',           'CE Loss',                 'b',      'Train CE',      'Val CE'),
+        ('focal',        'Focal Loss',              'r',      'Train Focal',   'Val Focal'),
+        ('dice',         'Dice Loss',               'g',      'Train Dice',    'Val Dice'),
+        # ('iou',        'IoU MSE',                 'm',      'Train IoU',     'Val IoU'),  # [Mask2Former] 已移除
+        ('abl',          'ABL Loss',                'c',      'Train ABL',     'Val ABL'),
+        ('offset_mag',   'Deformable Offset Mag [0=no move]', 'purple', 'Train Offset', 'Val Offset'),
+        ('attn_entropy', 'Attn Entropy over K pts',           'm',      'Train Entropy','Val Entropy'),
+        ('alpha_mean',   'Gate Alpha [0=ref ignored]',        'orange', 'Train Alpha',  'Val Alpha'),
+        ('cos_sim',      'f_curr vs f_ref Cosine Sim',        'teal',   'Train CosSim', 'Val CosSim'),
     ]
 
     n_plots = len(components)
@@ -157,10 +161,10 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv4_noabl",)
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv5_noabl",)
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=60, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
     parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.005, help="判定為進步的最小 Loss 差異")
     parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
@@ -171,7 +175,7 @@ def main():
     
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=3.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--focal_weight", type=float, default=5.0, help="MaskLoss (Focal) 權重")
     parser.add_argument("--dice_weight", type=float, default=1.5, help="MaskLoss (Dice) 權重")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
@@ -305,12 +309,24 @@ def main():
             "val_dice": val_metrics["dice"],
             # "val_iou": val_metrics["iou"],  # [Mask2Former] IoU MSE Loss 已移除
             "train_abl": train_metrics["abl"],
-            "val_abl": val_metrics["abl"]
+            "val_abl": val_metrics["abl"],
+            "train_offset_mag": train_metrics.get("offset_mag", 0.0),
+            "val_offset_mag": val_metrics.get("offset_mag", 0.0),
+            "train_attn_entropy": train_metrics.get("attn_entropy", 1.0),
+            "val_attn_entropy": val_metrics.get("attn_entropy", 1.0),
+            "train_alpha_mean": train_metrics.get("alpha_mean", 0.0),
+            "val_alpha_mean": val_metrics.get("alpha_mean", 0.0),
+            "train_cos_sim": train_metrics.get("cos_sim", 0.0),
+            "val_cos_sim": val_metrics.get("cos_sim", 0.0),
         }
         history.append(log_entry)
 
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
         print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, ABL:{val_metrics['abl']:.4f})")
+        offset   = train_metrics.get('offset_mag', 0.0)
+        alpha    = train_metrics.get('alpha_mean', 0.0)
+        off_status = "learning" if offset > 0.05 else "near-identity (not moving yet)"
+        print(f"               [DeformAttn] offset={offset:.3f} [{off_status}] | alpha={alpha:.3f} ({'low: ref ignored' if alpha < 0.1 else 'ok'})")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)
