@@ -47,17 +47,28 @@ def plot_history(history, output_dir):
     epochs = df['epoch'].tolist()
 
     # 每個 loss 各自一個子圖，各有自己的 y 軸尺度
+    # train_col = f'train_{key}'，val_col = f'val_{key}'；缺失欄位自動跳過
     components = [
-        ('total',        'Total Loss',              'k',      'Train Total',   'Val Total'),
-        ('ce',           'CE Loss',                 'b',      'Train CE',      'Val CE'),
-        ('focal',        'Focal Loss',              'r',      'Train Focal',   'Val Focal'),
-        ('dice',         'Dice Loss',               'g',      'Train Dice',    'Val Dice'),
-        # ('iou',        'IoU MSE',                 'm',      'Train IoU',     'Val IoU'),  # [Mask2Former] 已移除
-        ('abl',          'ABL Loss',                'c',      'Train ABL',     'Val ABL'),
-        ('offset_mag',   'Deformable Offset Mag [0=no move]', 'purple', 'Train Offset', 'Val Offset'),
-        ('attn_entropy', 'Attn Entropy over K pts',           'm',      'Train Entropy','Val Entropy'),
-        ('alpha_mean',   'Gate Alpha [0=ref ignored]',        'orange', 'Train Alpha',  'Val Alpha'),
-        ('cos_sim',      'f_curr vs f_ref Cosine Sim',        'teal',   'Train CosSim', 'Val CosSim'),
+        ('total',           'Total Loss',                     'k',         'Train Total',      'Val Total'),
+        ('ce',              'CE Loss',                        'b',         'Train CE',         'Val CE'),
+        ('focal',           'Focal Loss',                     'r',         'Train Focal',      'Val Focal'),
+        ('dice',            'Dice Loss',                      'g',         'Train Dice',       'Val Dice'),
+        # ── 需求 1: mIoU（僅 val，train 欄位不存在會自動跳過）──
+        ('miou',            'Val mIoU ↑ [0→1]',              'darkgreen', 'Train mIoU',       'Val mIoU'),
+        ('conf_mean',       'UAWarpC Confidence Mean [0-1]',  'purple',    'Train Conf',       'Val Conf'),
+        ('valid_ratio',     'Warp Valid Ratio [0-1]',         'm',         'Train Valid',      'Val Valid'),
+        ('alpha_mean',      'Gate Alpha Mean [0→1]',          'teal',      'Train Alpha',      'Val Alpha'),
+        ('alpha_std',       'Gate Alpha Std ↑ spatial selectivity', 'darkcyan', 'Train Alpha Std', 'Val Alpha Std'),
+        ('alpha_high_ratio', 'Gate Alpha > 0.5 Ratio [0→1]',   'seagreen',  'Train Alpha High', 'Val Alpha High'),
+        ('fusion_cos_sim',   'Fusion Feature Cosine Similarity', 'olive',   'Train Cos Sim',    'Val Cos Sim'),
+        ('pred_conf_mean',  'Prediction Confidence ↑',         'navy',      'Train Pred Conf',  'Val Pred Conf'),
+        ('pred_entropy',    'Prediction Entropy ↓ decisive',   'crimson',   'Train Pred Ent',   'Val Pred Ent'),
+        ('logit_margin',    'Top1-Top2 Probability Margin ↑',  'sienna',    'Train Margin',     'Val Margin'),
+        # ── 需求 2: Per-group gradient norm（僅 train）──
+        ('grad_norm_main',    'Grad Norm — main group',       'coral',     'Train GN main',    'Val GN main'),
+        ('grad_norm_decoder', 'Grad Norm — decoder head',     'peru',      'Train GN decoder', 'Val GN decoder'),
+        # ── 需求 3: AMP scaler scale factor（僅 train；下降 → gradient underflow 警告）──
+        ('scaler_scale',    'AMP Scaler Scale ↑ stable',      'gray',      'Train Scale',      'Val Scale'),
     ]
 
     n_plots = len(components)
@@ -133,15 +144,9 @@ def print_training_config(args, device):
     print(f"   • Dice Weight:       {args.dice_weight}")
     # print(f"   • IoU Weight:        {args.iou_weight}")  # [Mask2Former] IoU MSE Loss 已移除
     
-    # 4. Active Boundary Loss
-    print(f"\n🎯  Active Boundary Loss:")
-    print(f"   • ABL Weight:        {args.abl_weight}")
-    print(f"   • ABL Start Epoch:   {args.abl_start_epoch}")
-    print(f"   • Warmup Epochs:     {args.warmup_epochs}")
-
-    # 5. Decoder Transformer LR
-    print(f"\n🔓  MaskDecoder Transformer:")
-    print(f"   • Decoder LR Scale:      {args.decoder_lr_scale}  (iou/mask tokens LR = {args.lr * args.decoder_lr_scale:.2e})")
+    # 4. Decoder LR
+    print(f"\n🔓  MaskDecoder LR Groups:")
+    print(f"   • Decoder LR Scale:      {args.decoder_lr_scale}  (mask head LR       = {args.lr * args.decoder_lr_scale:.2e})")
     print(f"   • Transformer LR Scale:  {args.transformer_lr_scale}  (transformer LR    = {args.lr * args.transformer_lr_scale:.2e})")
     
     # 4. 路徑資訊
@@ -161,39 +166,37 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv5_noabl",)
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv9",)
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--epochs", type=int, default=150, help="總共訓練的 Epoch 數量")
     parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
-    parser.add_argument("--min_delta", type=float, default=0.005, help="判定為進步的最小 Loss 差異")
+    parser.add_argument("--min_delta", type=float, default=0.0005,
+                        help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
     parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
     parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
     parser.add_argument("--max_norm", type=float, default=1.0, help="梯度裁剪的 Max norm。")
-    parser.add_argument("--gps_noise", type=float, default=0.01, help="訓練時添加到 GPS 座標的常態分布噪音標準差。")
-    
+
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=5.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--focal_weight", type=float, default=20.0, help="MaskLoss (Focal) 權重")
     parser.add_argument("--dice_weight", type=float, default=1.5, help="MaskLoss (Dice) 權重")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
-    # --- Active Boundary Loss ---
-    parser.add_argument("--abl_weight", type=float, default=0, help="Active Boundary Loss 權重")
-    parser.add_argument("--abl_start_epoch", type=int, default=10, help="ABL 開始介入的 Epoch（Warmup）")
-    parser.add_argument("--warmup_epochs", type=int, default=5, help="LR Warmup 線性上升的 Epoch 數")
+    # --- LR Warmup ---
+    parser.add_argument("--warmup_epochs", type=int, default=10, help="LR Warmup 線性上升的 Epoch 數")
 
     # --- 可重現性 ---
     parser.add_argument("--seed", type=int, default=42, help="全域隨機種子（確保 ablation 可重現）")
     parser.add_argument("--no_deterministic", action="store_true",
                         help="關閉 cudnn deterministic 以換取訓練速度（探索性實驗用；論文 ablation 勿用）")
 
-    # --- Decoder Transformer LR ---
-    parser.add_argument("--decoder_lr_scale", type=float, default=0.1,
+    # --- Decoder LR ---
+    parser.add_argument("--decoder_lr_scale", type=float, default=0.5,
                         help="MaskDecoder mask_tokens 相對主幹 LR 的縮放比例 (預設 0.1 = 1/10 LR)")
-    parser.add_argument("--transformer_lr_scale", type=float, default=0.01,
-                        help="MaskDecoder Transformer weights 相對主幹 LR 的縮放比例 (預設 0.01 = 1/100 LR)")
+    parser.add_argument("--transformer_lr_scale", type=float, default=0.05,
+                        help="MaskDecoder Transformer weights 相對主幹 LR 的縮放比例 (0.05 = 1/20 LR，讓 transformer 適應 weather-fused feature 分布)")
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_train_with_embeddings.csv",
@@ -226,15 +229,13 @@ def main():
     train_ds = WeatherSegmentationDataset(
         csv_file=args.train_csv,
         image_size=1024,
-        mode='train', 
-        gps_noise=args.gps_noise
+        mode='train',
     )
-    
+
     val_ds = WeatherSegmentationDataset(
-        csv_file=args.val_csv, 
-        image_size=1024, 
-        mode='val', 
-        gps_noise=args.gps_noise
+        csv_file=args.val_csv,
+        image_size=1024,
+        mode='val',
     )
 
     # ★ DataLoader generator 綁定 seed，確保每個 epoch 的 shuffle 順序可重現
@@ -273,9 +274,16 @@ def main():
         args=args
     )
 
+    # Cityscapes 19 類縮寫（per-class IoU 列印用）
+    _CLS_NAMES = [
+        'road', 'sidewalk', 'building', 'wall', 'fence', 'pole',
+        'light', 'sign', 'vegetation', 'terrain', 'sky',
+        'person', 'rider', 'car', 'truck', 'bus', 'train', 'motorcycle', 'bicycle',
+    ]
+
     # 4. 訓練迴圈
     start_epoch = 0
-    best_val_loss = float('inf')
+    best_val_miou = 0.0   # 以 mIoU 為準（越高越好），取代舊的 loss-based 判斷
     early_stop_counter = 0
     history = []
 
@@ -286,8 +294,8 @@ def main():
         trainer.optimizer.load_state_dict(resume_ckpt['optimizer_state_dict'])
         trainer.scheduler.load_state_dict(resume_ckpt['scheduler_state_dict'])
         start_epoch = resume_ckpt.get('epoch', 0)
-        best_val_loss = resume_ckpt.get('best_score', float('inf'))
-        print(f"   ✅ Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.4f}")
+        best_val_miou = resume_ckpt.get('best_score', 0.0)
+        print(f"   ✅ Resumed from epoch {start_epoch}, best_val_miou={best_val_miou*100:.2f}%")
 
     print(f"🔥 Start training loop for epochs {start_epoch + 1} ~ {args.epochs}")
 
@@ -298,83 +306,111 @@ def main():
         
         log_entry = {
             "epoch": epoch + 1,
-            "train_total": train_metrics["total"],
-            "train_ce": train_metrics["ce"],
-            "train_focal": train_metrics["focal"],
-            "train_dice": train_metrics["dice"],
-            # "train_iou": train_metrics["iou"],  # [Mask2Former] IoU MSE Loss 已移除
-            "val_total": val_metrics["total"],
-            "val_ce": val_metrics["ce"],
-            "val_focal": val_metrics["focal"],
-            "val_dice": val_metrics["dice"],
-            # "val_iou": val_metrics["iou"],  # [Mask2Former] IoU MSE Loss 已移除
-            "train_abl": train_metrics["abl"],
-            "val_abl": val_metrics["abl"],
-            "train_offset_mag": train_metrics.get("offset_mag", 0.0),
-            "val_offset_mag": val_metrics.get("offset_mag", 0.0),
-            "train_attn_entropy": train_metrics.get("attn_entropy", 1.0),
-            "val_attn_entropy": val_metrics.get("attn_entropy", 1.0),
-            "train_alpha_mean": train_metrics.get("alpha_mean", 0.0),
-            "val_alpha_mean": val_metrics.get("alpha_mean", 0.0),
-            "train_cos_sim": train_metrics.get("cos_sim", 0.0),
-            "val_cos_sim": val_metrics.get("cos_sim", 0.0),
+            "train_total":           train_metrics["total"],
+            "train_ce":              train_metrics["ce"],
+            "train_focal":           train_metrics["focal"],
+            "train_dice":            train_metrics["dice"],
+            "val_total":             val_metrics["total"],
+            "val_ce":                val_metrics["ce"],
+            "val_focal":             val_metrics["focal"],
+            "val_dice":              val_metrics["dice"],
+            # ── 需求 1 ──
+            "val_miou":              val_metrics.get("miou", 0.0),
+            # ── 需求 2 ──
+            "train_grad_norm_main":    train_metrics.get("grad_norm_main",    0.0),
+            "train_grad_norm_decoder": train_metrics.get("grad_norm_decoder", 0.0),
+            # ── 需求 3 ──
+            "train_scaler_scale":    train_metrics.get("scaler_scale", 65536.0),
+            # CMA 對齊診斷
+            "train_conf_mean":       train_metrics.get("conf_mean",    0.0),
+            "val_conf_mean":         val_metrics.get("conf_mean",      0.0),
+            "train_valid_ratio":     train_metrics.get("valid_ratio",  0.0),
+            "val_valid_ratio":       val_metrics.get("valid_ratio",    0.0),
+            "train_alpha_mean":      train_metrics.get("alpha_mean",   0.0),
+            "val_alpha_mean":        val_metrics.get("alpha_mean",     0.0),
+            "train_alpha_std":       train_metrics.get("alpha_std",        0.0),
+            "val_alpha_std":         val_metrics.get("alpha_std",          0.0),
+            "train_alpha_high_ratio": train_metrics.get("alpha_high_ratio", 0.0),
+            "val_alpha_high_ratio":   val_metrics.get("alpha_high_ratio",   0.0),
+            "train_fusion_cos_sim":  train_metrics.get("fusion_cos_sim",   0.0),
+            "val_fusion_cos_sim":    val_metrics.get("fusion_cos_sim",     0.0),
+            # dense prediction 診斷：破碎/猶豫通常會反映在 entropy 高、margin 低
+            "train_pred_conf_mean":  train_metrics.get("pred_conf_mean", 0.0),
+            "val_pred_conf_mean":    val_metrics.get("pred_conf_mean",   0.0),
+            "train_pred_entropy":    train_metrics.get("pred_entropy",   0.0),
+            "val_pred_entropy":      val_metrics.get("pred_entropy",     0.0),
+            "train_logit_margin":    train_metrics.get("logit_margin",   0.0),
+            "val_logit_margin":      val_metrics.get("logit_margin",     0.0),
         }
+        per_cls_iou = val_metrics.get("per_class_iou", [])
+        for cls_name, cls_iou in zip(_CLS_NAMES, per_cls_iou):
+            log_entry[f"val_iou_{cls_name}"] = cls_iou
         history.append(log_entry)
 
+        val_miou    = val_metrics.get('miou', 0.0)
+        conf_mean   = train_metrics.get('conf_mean', 0.0)
+        valid_ratio = train_metrics.get('valid_ratio', 0.0)
+        gn_m        = train_metrics.get('grad_norm_main', 0.0)
+        gn_d        = train_metrics.get('grad_norm_decoder', 0.0)
+        scale       = train_metrics.get('scaler_scale', 0.0)
+        pred_ent    = val_metrics.get('pred_entropy', 0.0)
+        pred_margin = val_metrics.get('logit_margin', 0.0)
+        pred_conf   = val_metrics.get('pred_conf_mean', 0.0)
+        alpha_mean  = val_metrics.get('alpha_mean', 0.0)
+        alpha_std   = val_metrics.get('alpha_std', 0.0)
+        alpha_high  = val_metrics.get('alpha_high_ratio', 0.0)
+        fusion_cos  = val_metrics.get('fusion_cos_sim', 0.0)
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f}, ABL:{val_metrics['abl']:.4f})")
-        offset   = train_metrics.get('offset_mag', 0.0)
-        alpha    = train_metrics.get('alpha_mean', 0.0)
-        off_status = "learning" if offset > 0.05 else "near-identity (not moving yet)"
-        print(f"               [DeformAttn] offset={offset:.3f} [{off_status}] | alpha={alpha:.3f} ({'low: ref ignored' if alpha < 0.1 else 'ok'})")
+        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f})")
+        print(f"               [Val mIoU] {val_miou*100:.2f}%")
+        # Per-class IoU（縮寫格式，每類別顯示至小數點後一位）
+        per_cls = val_metrics.get('per_class_iou', [])
+        if per_cls:
+            short = [f"{n[:5]}:{v*100:.1f}" for n, v in zip(_CLS_NAMES, per_cls)]
+            print(f"               [per-cls] {' '.join(short)}")
+        print(f"               [CMA] conf={conf_mean:.3f} | valid={valid_ratio:.3f}")
+        print(f"               [pred] conf={pred_conf:.3f} | entropy={pred_ent:.3f} | margin={pred_margin:.3f}")
+        print(f"               [fusion] alpha={alpha_mean:.3f}±{alpha_std:.3f} | high={alpha_high:.3f} | cos={fusion_cos:.3f}")
+        print(f"               [grad] GN_main={gn_m:.3f}  GN_decoder={gn_d:.3f} | AMP scale={scale:.0f}")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
         plot_history(history, args.output_dir)
         
-        # 儲存最佳模型與 Early Stopping 邏輯
-        current_val_loss = val_metrics['total']
-        
-        # ABL 啟動時重置計數器，避免 loss 跳升誤觸發 early stop
-        if epoch + 1 == args.abl_start_epoch:
-            early_stop_counter = 0
-            best_val_loss = current_val_loss
-            print(f"   🔄 ABL activated at epoch {epoch+1}. Early stop counter & best loss reset (new baseline: {current_val_loss:.4f})")
-        
-        # 判斷是否進步 (打破最佳紀錄)
-        if current_val_loss < (best_val_loss - args.min_delta):
-            # 顯著進步，重置耐心值計數器並更新最佳紀錄
-            best_val_loss = current_val_loss
+        # ── 需求 1: 以 Val mIoU 作為 best model 與 early stopping 判斷基準（越高越好）──
+        current_val_miou = val_metrics.get('miou', 0.0)
+
+        miou_improvement = current_val_miou - best_val_miou
+
+        if miou_improvement > 0:
+            # 只要 mIoU 創新高就重置 patience；避免穩定小幅進步被 min_delta 誤殺。
+            is_significant = miou_improvement >= args.min_delta
+            best_val_miou = current_val_miou
             early_stop_counter = 0
             is_best = True
-        elif current_val_loss < best_val_loss:
-            # 雖然打破紀錄，但進步幅度小於 min_delta，更新紀錄，但不重置計數器
-            best_val_loss = current_val_loss
-            early_stop_counter += 1
-            is_best = True
-            print(f"   ⚠️ Progress but < min_delta. Early Stopping Counter: {early_stop_counter} / {args.patience}")
+            if is_significant:
+                print(f"   ✅ mIoU improved by {miou_improvement*100:.3f} pp (>= min_delta). Patience reset.")
+            else:
+                print(f"   ✅ mIoU improved by {miou_improvement*100:.3f} pp (< min_delta, still reset patience).")
         else:
             # 沒有進步
             early_stop_counter += 1
             is_best = False
-            print(f"   ⚠️ No progress. Early Stopping Counter: {early_stop_counter} / {args.patience} (min_delta={args.min_delta})")
-            
+            print(f"   ⚠️ No mIoU progress ({current_val_miou*100:.2f}% vs best {best_val_miou*100:.2f}%). "
+                  f"Counter: {early_stop_counter} / {args.patience}")
+
         # 只要打破最佳紀錄就存檔
         if is_best:
-            
             current_lr = trainer.optimizer.param_groups[0]['lr']
-            
-            save_filename = f"best_E{epoch+1}_TotalLoss{best_val_loss:.4f}_LR{current_lr:.1e}.pth"
+            save_filename = f"best_E{epoch+1}_mIoU{best_val_miou*100:.2f}_LR{current_lr:.1e}.pth"
             save_path = os.path.join(args.output_dir, save_filename)
-            
-            trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=best_val_loss)
+            trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=best_val_miou)
             print(f"   🏆 New best model saved: {save_filename}")
-            
             fixed_path = os.path.join(args.output_dir, "weather_sam_best_latest.pth")
-            trainer.save_checkpoint(fixed_path, epoch=epoch+1, best_score=best_val_loss)
-            
+            trainer.save_checkpoint(fixed_path, epoch=epoch+1, best_score=best_val_miou)
+
         # 觸發 Early Stopping
         if early_stop_counter >= args.patience:
-            print(f"\n🛑 Early stopping triggered! Validation loss hasn't improved by {args.min_delta} for {args.patience} epochs.")
+            print(f"\n🛑 Early stopping triggered! Val mIoU hasn't improved by {args.min_delta} for {args.patience} epochs.")
             break
 
     print("\n✅ Fine-Tuning completed!")

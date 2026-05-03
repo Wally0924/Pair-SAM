@@ -207,7 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 segment-anything/data/
-segment-anything/debug_viz
+segment-anything/debug_viz*
 segment-anything/outputs_weather_sam*
 segment-anything/inference_viz_cityscapes*/
 *.pt

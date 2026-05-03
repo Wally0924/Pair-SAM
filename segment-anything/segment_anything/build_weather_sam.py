@@ -2,7 +2,7 @@
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, DeformableCrossViewAlignment, GatedFusion, TextEncoder, WeatherSAM, LocationEncoder, MaskDecoder
+from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CMAAlignment, FlowGuidedSemanticAlignment, TextEncoder, WeatherSAM, MaskDecoder
 
 def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
     return _build_weather_sam(
@@ -77,37 +77,31 @@ def _build_weather_sam(
         num_classes=num_classes,
     )
 
-    fusion_module = DeformableCrossViewAlignment(
+    fusion_module = CMAAlignment(
         embed_dim=prompt_embed_dim,
-        num_heads=8,
-        num_points=4,
+        pretrained_path="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/cma_alignment_weights.pth",
+        confidence_threshold=0.2,
     )
 
-    gate_module = GatedFusion(
-        embed_dim=prompt_embed_dim
+    gated_fusion = FlowGuidedSemanticAlignment(
+        embed_dim=prompt_embed_dim,
+        confidence_threshold=0.2,
     )
-    
+
     text_encoder = TextEncoder(
         model_name="ViT-B/32", # CLIP model
         output_dim=prompt_embed_dim,
         freeze=True
     )
 
-    location_encoder = LocationEncoder(
-            sigma=[2**0, 2**4, 2**8],
-            output_dim=prompt_embed_dim,
-            pretrained_path="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/location_encoder_weights.pth"
-    )
-    
     # 2. 組合 WeatherSAM
     sam = WeatherSAM(
         image_encoder=image_encoder,
         prompt_encoder=prompt_encoder,
         mask_decoder=mask_decoder,
         fusion_module=fusion_module,
-        gate_module=gate_module,
+        gated_fusion=gated_fusion,
         text_encoder=text_encoder,
-        location_encoder=location_encoder,
         num_classes=num_classes,
     )
 
@@ -115,7 +109,7 @@ def _build_weather_sam(
     if checkpoint is not None:
         print(f"Loading weights from {checkpoint}...")
         with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f)
+            state_dict = torch.load(f, weights_only=False)
             
         # 🌟 【關鍵修復】檢查這是否是由 Trainer 儲存的 checkpoint 字典
         if 'model_state_dict' in state_dict:

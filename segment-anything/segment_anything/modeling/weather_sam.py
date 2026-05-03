@@ -7,16 +7,16 @@ from typing import Any, Dict, List, Tuple
 from .image_encoder import ImageEncoderViT
 from .weather_prompt_encoder import WeatherPromptEncoder
 from .weather_mask_decoder import MaskDecoder
-from .fusion import CrossViewAlignment, GatedFusion
+from .fusion import CMAAlignment, FlowGuidedSemanticAlignment
+from .common import LayerNorm2d
 from .text_encoder import TextEncoder
-from .location_encoder import LocationEncoder  # 保留供 build 時傳入，forward 已不使用
 from .fusion_head import ResidualDWConvFusion
 
 class WeatherSAM(nn.Module):
     """
     基於 Segment Anything Model (SAM) 改良的天氣語意分割模型 (WeatherSAM)。
     整合了 Image Encoder, Prompt Encoder, Mask Decoder，並額外加入了：
-    1. CrossViewAlignment 與 GatedFusion：用於參考畫面 (Reference Frame) 的特徵對齊與融合。
+    1. CMAAlignment：UAWarpC 稠密匹配對齊晴天參考特徵，以 UAWarpC confidence 直接加權融合。
     2. ResidualDWConvFusion：Mask2Former-style 後置精修，補足 pixel 空間的局部空間一致性。
     """
     mask_threshold: float = 0.0
@@ -27,10 +27,9 @@ class WeatherSAM(nn.Module):
         image_encoder: ImageEncoderViT,
         prompt_encoder: WeatherPromptEncoder,
         mask_decoder: MaskDecoder,
-        fusion_module: CrossViewAlignment,
-        gate_module: GatedFusion,
+        fusion_module: CMAAlignment,
+        gated_fusion: FlowGuidedSemanticAlignment,
         text_encoder: TextEncoder,
-        location_encoder: LocationEncoder,
         num_classes: int = 19,
         pixel_mean: List[float] = [123.675, 116.28, 103.53],
         pixel_std: List[float] = [58.395, 57.12, 57.375],
@@ -40,9 +39,8 @@ class WeatherSAM(nn.Module):
         self.prompt_encoder = prompt_encoder
         self.mask_decoder = mask_decoder
         self.fusion_module = fusion_module
-        self.gate_module = gate_module
+        self.gated_fusion = gated_fusion
         self.text_encoder = text_encoder
-        self.location_encoder = location_encoder
 
         # ConditionEncoder：天氣條件 Embedding（fog=0, rain=1, snow=2）
         self.condition_encoder = nn.Embedding(3, 256)
@@ -107,8 +105,24 @@ class WeatherSAM(nn.Module):
         ref_embeddings = ref_embeddings.to(image_embeddings.device)
 
         # 2. 融合 (Fusion) -> (B_img, 256, 64, 64)
-        aligned_embeddings = self.fusion_module(f_curr=image_embeddings, f_ref=ref_embeddings)
-        fused_embeddings = self.gate_module(f_curr=image_embeddings, f_align=aligned_embeddings)
+        # 若 batched_input 含原始影像（cache 模式補充後），傳入 CMAAlignment 供 VGG 使用
+        img_curr_list = [x.get('image') for x in batched_input]
+        img_ref_list  = [x.get('clear_image') for x in batched_input]
+        if all(t is not None for t in img_curr_list):
+            img_curr_batch = torch.stack(img_curr_list, dim=0)
+            img_ref_batch  = torch.stack(img_ref_list,  dim=0)
+        else:
+            img_curr_batch = img_ref_batch = None
+
+        f_ref_warped, _ = self.fusion_module(
+            f_curr=image_embeddings,
+            f_ref=ref_embeddings,
+            img_curr=img_curr_batch,
+            img_ref=img_ref_batch,
+        )
+        # CMAAlignment：VGG flow → warp(f_ref) → hard confidence mask → f_ref_warped
+        # GatedFusion：f_curr + alpha * f_ref_warped（加法注入，f_curr 完整保留）
+        fused_embeddings = self.gated_fusion(image_embeddings, f_ref_warped)
 
         # --- 階段 3：批次提示編碼與遮罩解碼 (Prompt Encoding & Mask Decoding) ---
         for i, image_record in enumerate(batched_input):

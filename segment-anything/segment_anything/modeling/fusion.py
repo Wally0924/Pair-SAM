@@ -1,328 +1,317 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
+import torchvision.models as tvm
 from .common import LayerNorm2d
+from .uawarpc_head import UAWarpCHead
+from .cma_utils import warp, estimate_probability_of_confidence_interval
+
+try:
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    from utils.viz_warp import save_warp_comparison
+    _VIZ_AVAILABLE = True
+except Exception:
+    _VIZ_AVAILABLE = False
 
 
 # =============================================================================
-# [DEPRECATED] CrossViewAlignment — 標準 Cross-Attention 版本
+# VGG16AlignmentBackbone
 #
-# 實驗結果（28 epoch）顯示此模組無法自主學習空間對應：
-#   - attention entropy ≈ 0.993（所有 head 全部均勻分布）
-#   - 等價於對 f_ref 做全局平均，空間先驗完全失效
+# 為 UAWarpCHead 提供多尺度 VGG16 特徵，回傳 4 個尺度的特徵列表：
+#   [stride2(64ch), stride4(128ch), stride8(256ch), stride16(512ch)]
 #
-# 根本原因：softmax over N=4096 個位置，梯度量級 ~1/4096，
-# 分割 loss 的間接監督不足以驅動 attention 從均勻分布收斂到有意義的對應。
-#
-# 保留原始程式碼供對照，實際訓練請改用 DeformableCrossViewAlignment。
+# UAWarpCHead 使用 in_index=[2,3]，即取 stride8 與 stride16 兩個尺度：
+#   - stride8  → 對 256×256 輸入為 32×32（UAWarpC level-3 constraint）
+#   - stride16 → 對 256×256 輸入為 16×16（UAWarpC level-4 constraint）
 # =============================================================================
-class CrossViewAlignment(nn.Module):
-    """
-    Cross-attention between degraded (f_curr) and clear (f_ref) ViT-H embeddings.
+class VGG16AlignmentBackbone(nn.Module):
+    """Multi-scale VGG16 feature extractor matching CMA's alignment_backbone."""
 
-    Relative Distance Bias (Liu et al., Swin Transformer, ICCV 2021):
-        score(i, j) = Q_i · K_j / sqrt(d) + B(Δrow, Δcol)
-    B is a learnable (2H-1, 2W-1, num_heads) table indexed by relative offset.
-    This gives soft spatial locality preference without enforcing exact alignment,
-    which is appropriate for ACDC image pairs with slight viewpoint shift.
+    def __init__(self):
+        super().__init__()
+        vgg = tvm.vgg16(weights=None)
+        feats = list(vgg.features)
+        self.level0 = nn.Sequential(*feats[:5])    # stride 2,  64ch
+        self.level1 = nn.Sequential(*feats[5:10])  # stride 4, 128ch
+        self.level2 = nn.Sequential(*feats[10:17]) # stride 8, 256ch  ← in_index[0]=2
+        self.level3 = nn.Sequential(*feats[17:24]) # stride 16, 512ch ← in_index[1]=3
+
+    def forward(self, x: torch.Tensor):
+        f0 = self.level0(x)
+        f1 = self.level1(f0)
+        f2 = self.level2(f1)
+        f3 = self.level3(f2)
+        return [f0, f1, f2, f3]
+
+    def load_cma_weights(self, vgg_state_dict: dict):
+        """載入從 CMA checkpoint 抽取的 alignment_backbone 權重。
+
+        CMA checkpoint 儲存的是完整 VGG module 的 state_dict，
+        key 格式為 'features.0.weight'。
+        torchvision VGG.features.state_dict() 的 key 格式為 '0.weight'（無前綴）。
+        因此需要先剝除 'features.' 前綴才能正確比對。
+        """
+        # 剝除 'features.' 前綴，使 key 格式與 torchvision features.state_dict() 一致
+        stripped = {
+            (k[len('features.'):] if k.startswith('features.') else k): v
+            for k, v in vgg_state_dict.items()
+        }
+
+        tmp_vgg = tvm.vgg16(weights=None)
+        tmp_state = tmp_vgg.features.state_dict()
+        matched = {k: v for k, v in stripped.items()
+                   if k in tmp_state and v.shape == tmp_state[k].shape}
+        print(f'[VGG16AlignmentBackbone] Loading {len(matched)}/{len(stripped)} VGG keys.')
+        tmp_vgg.features.load_state_dict(matched, strict=False)
+
+        feats = list(tmp_vgg.features)
+        self.level0.load_state_dict(nn.Sequential(*feats[:5]).state_dict(), strict=False)
+        self.level1.load_state_dict(nn.Sequential(*feats[5:10]).state_dict(), strict=False)
+        self.level2.load_state_dict(nn.Sequential(*feats[10:17]).state_dict(), strict=False)
+        self.level3.load_state_dict(nn.Sequential(*feats[17:24]).state_dict(), strict=False)
+        print('[VGG16AlignmentBackbone] ✅ Loaded CMA alignment_backbone weights.')
+
+
+# =============================================================================
+# CMAAlignment
+#
+# 以 CMA 的 UAWarpC 稠密匹配執行跨條件影像特徵對齊。
+#
+# 設計：
+#   1. VGG16AlignmentBackbone（凍結）：從原始影像提取幾何特徵
+#   2. UAWarpCHead（凍結）：計算 flow field + uncertainty map
+#   3. warp()：將 f_ref（ViT-H embedding）扭曲到 f_curr 視角
+#   4. confidence：exp(-uncertainty) × boundary validity mask
+# =============================================================================
+class CMAAlignment(nn.Module):
     """
+    UAWarpC-based dense feature alignment (CMA, Bruggemann et al., ICCV 2023).
+
+    VGG16 backbone and UAWarpCHead are both frozen after loading CMA pretrained
+    weights. Only ConfidenceGatedFusion's gate_net is trainable.
+    """
+
+    _IMG_MEAN = [0.485, 0.456, 0.406]
+    _IMG_STD  = [0.229, 0.224, 0.225]
 
     def __init__(
         self,
         embed_dim: int = 256,
-        num_heads: int = 8,
-        dropout: float = 0.2,
-        feat_size: int = 64,
+        pretrained_path: str = None,
+        confidence_threshold: float = 0.2,
     ):
         super().__init__()
-
         self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        self.scale = math.sqrt(self.head_dim)
-        self.feat_size = feat_size  # H = W = 64
+        self.conf_threshold = confidence_threshold
 
-        # Q, K, V projections (replaces nn.MultiheadAttention)
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.vgg_backbone = VGG16AlignmentBackbone()
+        for p in self.vgg_backbone.parameters():
+            p.requires_grad_(False)
 
-        self.attn_drop = nn.Dropout(dropout)
-
-        # Relative Distance Bias table: shape (2H-1, 2W-1, num_heads)
-        # Indexed by (Δrow + H - 1, Δcol + W - 1)
-        self.rel_bias = nn.Parameter(
-            torch.zeros(2 * feat_size - 1, 2 * feat_size - 1, num_heads)
+        # in_index=[2,3] 選取 stride8（256ch）與 stride16（512ch）兩個尺度
+        self.warp_head = UAWarpCHead(
+            in_index=[2, 3],
+            input_transform='multiple_select',
+            estimate_uncertainty=True,
         )
-        nn.init.trunc_normal_(self.rel_bias, std=0.02)
+        for p in self.warp_head.parameters():
+            p.requires_grad_(False)
 
-        # Pre-compute relative index table: shape (H*W, H*W) — registered as buffer (not trained)
-        self._register_rel_index(feat_size)
+        if pretrained_path is not None:
+            self._load_pretrained(pretrained_path)
 
-        self.norm = LayerNorm2d(embed_dim)
-        nn.init.constant_(self.norm.weight, 0.1)
-        nn.init.constant_(self.norm.bias, 0.0)
+        self._last_conf_mean: float = 0.0
+        self._last_valid_ratio: float = 0.0
 
-    def _register_rel_index(self, S: int):
-        """Pre-compute (N, N) index table into rel_bias for H=W=S."""
-        coords = torch.stack(torch.meshgrid(
-            torch.arange(S), torch.arange(S), indexing="ij"
-        ))  # (2, S, S)
-        coords_flat = coords.flatten(1)  # (2, N)
+    def _load_pretrained(self, path: str):
+        weights = torch.load(path, map_location='cpu')
+        print(f'[CMAAlignment] checkpoint keys: {list(weights.keys())}')
+        if 'vgg' in weights:
+            self.vgg_backbone.load_cma_weights(weights['vgg'])
+        if 'uawarpc' in weights:
+            missing, unexpected = self.warp_head.load_state_dict(
+                weights['uawarpc'], strict=False)
+            print(f'[UAWarpCHead] Missing: {len(missing)}, Unexpected: {len(unexpected)}')
+            if missing:
+                print(f'[UAWarpCHead] Missing keys (first 5): {missing[:5]}')
+            if len(missing) == 0:
+                print('[CMAAlignment] ✅ Loaded UAWarpCHead weights from CMA checkpoint.')
+            else:
+                print('[CMAAlignment] ⚠️  UAWarpCHead partially loaded — check missing keys above.')
+        else:
+            print('[CMAAlignment] ⚠️  No "uawarpc" key in checkpoint — UAWarpCHead uses random init!')
 
-        # Relative offsets: (2, N, N)
-        rel = coords_flat[:, :, None] - coords_flat[:, None, :]
-        rel[0] += S - 1  # shift to [0, 2S-2]
-        rel[1] += S - 1
+    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        """ImageNet 正規化，img 值域假設為 [0, 255]。"""
+        mean = torch.tensor(self._IMG_MEAN, device=img.device, dtype=img.dtype).view(1, 3, 1, 1)
+        std  = torch.tensor(self._IMG_STD,  device=img.device, dtype=img.dtype).view(1, 3, 1, 1)
+        return (img / 255.0 - mean) / std
 
-        # Flatten to single index: row * (2S-1) + col
-        rel_index = rel[0] * (2 * S - 1) + rel[1]  # (N, N)
-        self.register_buffer("rel_index", rel_index)  # (N, N), long
-
-    def _get_rel_bias(self) -> torch.Tensor:
-        """Look up bias for all (i, j) pairs. Returns (num_heads, N, N)."""
-        L = (2 * self.feat_size - 1) ** 2
-        bias_flat = self.rel_bias.view(L, self.num_heads)  # (L, num_heads)
-
-        N = self.feat_size ** 2
-        idx = self.rel_index.view(-1)  # (N*N,)
-        bias = bias_flat[idx].view(N, N, self.num_heads)  # (N, N, num_heads)
-        return bias.permute(2, 0, 1)  # (num_heads, N, N)
-
-    def forward(self, f_curr: torch.Tensor, f_ref: torch.Tensor) -> torch.Tensor:
+    @torch.no_grad()
+    def _extract_vgg_features(self, img: torch.Tensor):
         """
-        Args:
-            f_curr (Tensor): (B, C, H, W) — degraded image features
-            f_ref  (Tensor): (B, C, H, W) — clear image features
-        Returns:
-            f_align (Tensor): (B, C, H, W)
+        從原始影像提取兩組 VGG 特徵供 UAWarpCHead 使用：
+          - feats     : 完整解析度（1024×1024），用於 level-1/2
+          - feats_256 : 縮放至 256×256，level-3/4 需要 32×32 和 16×16
         """
-        b, c, h, w = f_curr.shape
-        N = h * w
+        img_norm = self._normalize_image(img)
+        feats = self.vgg_backbone(img_norm)
 
-        # 1. Flatten spatial dims: (B, N, C)
-        q = f_curr.flatten(2).transpose(1, 2)
-        k = f_ref.flatten(2).transpose(1, 2)
-        v = f_ref.flatten(2).transpose(1, 2)
+        img_256 = F.interpolate(img_norm, size=(256, 256), mode='bilinear', align_corners=False)
+        feats_256 = self.vgg_backbone(img_256)
+        return feats, feats_256
 
-        # 2. Project to multi-head Q, K, V
-        q = self.q_proj(q).view(b, N, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(k).view(b, N, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(v).view(b, N, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # 3. Attention scores + Relative Distance Bias
-        attn = (q @ k.transpose(-2, -1)) / self.scale        # (B, num_heads, N, N)
-        attn = attn + self._get_rel_bias().unsqueeze(0)
-        attn = torch.softmax(attn, dim=-1)
-        attn = self.attn_drop(attn)
-
-        # 4. Weighted sum of values
-        out = (attn @ v).transpose(1, 2).reshape(b, N, c)    # (B, N, C)
-        out = self.out_proj(out)
-
-        # 5. Reshape + LayerNorm2d
-        f_align = out.transpose(1, 2).view(b, c, h, w)
-        f_align = self.norm(f_align)
-
-        return f_align
-
-
-# =============================================================================
-# DeformableCrossViewAlignment — 可形變採樣版本（取代上方的 CrossViewAlignment）
-#
-# 設計動機：
-#   標準 cross-attention 對 N=4096 個位置做 softmax，梯度量級 ~1/4096，
-#   分割 loss 的間接監督無法驅動 attention 從均勻分布收斂。
-#
-#   Deformable attention（Zhu et al., Deformable DETR, ICLR 2021）：
-#   每個 query 只預測 K 個採樣點的位置（K=4），softmax 只在 K 個點上做，
-#   梯度量級 ~1/K → 比標準版本強 4096/4 = 1024 倍。
-#
-# 空間先驗初始化：
-#   offset_net 初始化為全零，訓練起點為每個 query 採樣自身對應的 f_ref 位置。
-#   由分割 loss 驅動偏移量逐漸調整到真正有意義的對應位置。
-#
-# 監控指標（由 AttentionMonitor 讀取）：
-#   _last_offset_mag : float — 偏移量平均絕對值，0=未學習移動，0.5=最大偏移
-#   _last_attn_entropy : float [0,1] — K 點上的 normalized entropy，
-#                         0=集中在單一採樣點，1=均勻分配到所有 K 點
-# =============================================================================
-class DeformableCrossViewAlignment(nn.Module):
-    """
-    Deformable cross-attention between degraded (f_curr) and clear (f_ref) features.
-
-    Each query at spatial position p_i predicts K offset vectors {Δp_k},
-    then samples f_ref only at {p_i + Δp_k} via bilinear interpolation.
-    Attention weights are applied over K points (softmax over K, not N).
-
-    Reference: Deformable DETR (Zhu et al., ICLR 2021)
-    """
-
-    def __init__(
+    def forward(
         self,
-        embed_dim: int = 256,
-        num_heads: int = 8,
-        num_points: int = 4,    # K: sampling points per query per head
-        feat_size: int = 64,
+        f_curr:   torch.Tensor,        # [B, 256, 64, 64]  ViT-H embedding（惡劣天氣）
+        f_ref:    torch.Tensor,        # [B, 256, 64, 64]  ViT-H embedding（晴天參考）
+        img_curr: torch.Tensor = None, # [B, 3, 1024, 1024] 原始影像（值域 0-255）
+        img_ref:  torch.Tensor = None, # [B, 3, 1024, 1024] 原始影像（值域 0-255）
     ):
-        super().__init__()
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+        _, _, H, W = f_curr.shape
 
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.num_points = num_points
-        self.head_dim = embed_dim // num_heads
-        self.feat_size = feat_size
+        if img_curr is not None and img_ref is not None:
+            feats_curr, feats_curr_256 = self._extract_vgg_features(img_curr)
+            feats_ref,  feats_ref_256  = self._extract_vgg_features(img_ref)
+        else:
+            # Fallback：ViT 特徵複製為 4 個尺度（精度較低但不崩潰）
+            feats_curr = feats_curr_256 = [f_curr] * 4
+            feats_ref  = feats_ref_256  = [f_ref]  * 4
 
-        # Query projection from f_curr
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        # 取最細的 level（index 3）flow 與 uncertainty
+        results = self.warp_head(
+            trg=feats_curr,
+            src=feats_ref,
+            trg_256=feats_curr_256,
+            src_256=feats_ref_256,
+            out_size=(H, W),
+        )
+        flow1, uncertainty1 = results[3]
 
-        # Offset network: predicts (num_heads * num_points * 2) offsets per spatial position
-        # Init to zeros so training starts with identity sampling (p_i + 0 = p_i)
-        self.offset_net = nn.Linear(embed_dim, num_heads * num_points * 2)
-        nn.init.zeros_(self.offset_net.weight)
-        nn.init.zeros_(self.offset_net.bias)
+        if flow1.shape[-2:] != (H, W):
+            flow1 = F.interpolate(flow1, size=(H, W), mode='bilinear', align_corners=False)
+            uncertainty1 = F.interpolate(uncertainty1, size=(H, W), mode='bilinear', align_corners=False)
 
-        # Attention weight network: predicts softmax weights over K points
-        self.attn_weight_net = nn.Linear(embed_dim, num_heads * num_points)
+        f_ref_warped, validity_mask = warp(f_ref, flow1, return_mask=True)
 
-        # Value projection from f_ref
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        confidence = estimate_probability_of_confidence_interval(uncertainty1)  # [B,1,H,W]
+        confidence = confidence * validity_mask.unsqueeze(1).float()
 
-        # Output projection
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        # Step 2 驗證：warp 前後 cos_sim 對比（每 200 次 forward 印一次，避免 log 爆炸）
+        if not hasattr(self, '_fwd_count'):
+            self._fwd_count = 0
+        self._fwd_count += 1
+        if self._fwd_count % 200 == 1:
+            with torch.no_grad():
+                _cos_before = F.cosine_similarity(f_curr, f_ref, dim=1).mean().item()
+                _cos_after  = F.cosine_similarity(f_curr, f_ref_warped, dim=1).mean().item()
+                _flow_mag   = (flow1[:, 0]**2 + flow1[:, 1]**2).sqrt().mean().item()
+                print(f'[CMAAlignment #{self._fwd_count}] '
+                      f'cos_before={_cos_before:.4f}  cos_after={_cos_after:.4f}  '
+                      f'delta={_cos_after - _cos_before:+.4f}  '
+                      f'flow_mag={_flow_mag:.3f}feat_px  '
+                      f'conf_mean={confidence.mean().item():.4f}')
 
-        # LayerNorm2d: gamma init 0.1 to match image_encoder neck output scale
-        self.norm = LayerNorm2d(embed_dim)
-        nn.init.constant_(self.norm.weight, 0.1)
-        nn.init.constant_(self.norm.bias, 0.0)
+                # 可視化：存 warp 對比圖（需要有原始影像輸入）
+                if _VIZ_AVAILABLE and img_curr is not None and img_ref is not None:
+                    save_warp_comparison(
+                        img_curr=img_curr,
+                        img_ref=img_ref,
+                        flow=flow1,
+                        confidence=confidence,
+                        step=self._fwd_count,
+                        out_dir='debug_viz/warp',
+                    )
 
-        # Monitoring attributes (populated during forward, read by AttentionMonitor)
-        self._last_offset_mag: float = 0.0
-        self._last_attn_entropy: float = 1.0
+        # Hard confidence threshold: discard positions where confidence < threshold
+        # confidence only serves as a binary spatial filter (keep/discard), nothing else
+        hard_mask = (confidence >= self.conf_threshold).float()  # [B, 1, H, W]
+        f_ref_warped = f_ref_warped * hard_mask
 
-    def _build_ref_grid(self, H: int, W: int, device: torch.device) -> torch.Tensor:
-        """
-        Build normalized reference grid for identity sampling.
-        Returns: (1, H*W, 1, 1, 2) — each query's own position in [-1, 1].
-        Note: grid_sample convention uses (x, y) = (col, row).
-        """
-        ys = torch.linspace(-1.0, 1.0, H, device=device)
-        xs = torch.linspace(-1.0, 1.0, W, device=device)
-        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")   # (H, W)
-        grid = torch.stack([grid_x, grid_y], dim=-1)              # (H, W, 2) — (x, y)
-        return grid.view(1, H * W, 1, 1, 2)                       # (1, N, 1, 1, 2)
-
-    def forward(self, f_curr: torch.Tensor, f_ref: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            f_curr : (B, C, H, W) — degraded image features (source of queries)
-            f_ref  : (B, C, H, W) — clear reference features (source of values)
-        Returns:
-            f_align: (B, C, H, W) — aligned features for GatedFusion
-        """
-        B, C, H, W = f_curr.shape
-        N = H * W
-
-        # ── 1. Query projection ───────────────────────────────────────────────
-        q_flat = f_curr.flatten(2).transpose(1, 2)   # (B, N, C)
-        q = self.q_proj(q_flat)                       # (B, N, C)
-
-        # ── 2. Predict spatial offsets ────────────────────────────────────────
-        # Raw offsets: (B, N, num_heads * num_points * 2)
-        offsets_raw = self.offset_net(q)
-        offsets = offsets_raw.view(B, N, self.num_heads, self.num_points, 2)
-        # tanh → [-1, 1], scale by 0.5 → sampling range ±0.5 in normalized coords
-        offsets = offsets.tanh() * 0.5
-
-        # ── 3. Sampling locations = identity position + learned offset ────────
-        # ref_grid: (1, N, 1, 1, 2) — each query's own position in [-1, 1]
-        ref_grid = self._build_ref_grid(H, W, f_curr.device)
-        # sampling_locs: (B, N, num_heads, num_points, 2)
-        sampling_locs = (ref_grid + offsets).clamp(-1.0, 1.0)
-
-        # ── 4. Value projection from f_ref ────────────────────────────────────
-        v_flat = self.v_proj(f_ref.flatten(2).transpose(1, 2))   # (B, N, C)
-        v_spatial = v_flat.transpose(1, 2).view(B, C, H, W)      # (B, C, H, W)
-
-        # ── 5. Attention weights (softmax over K points, not N) ───────────────
-        # attn_weights: (B, N, num_heads, num_points)
-        attn_weights = self.attn_weight_net(q)
-        attn_weights = attn_weights.view(B, N, self.num_heads, self.num_points)
-        attn_weights = attn_weights.softmax(dim=-1)
-
-        # ── 6. Bilinear sampling + per-head weighted aggregation ──────────────
-        head_outputs = []
-        for h_idx in range(self.num_heads):
-            # Value channels for this head: (B, head_dim, H, W)
-            v_h = v_spatial[:, h_idx * self.head_dim:(h_idx + 1) * self.head_dim]
-
-            # Sampling locations for this head: (B, N, num_points, 2)
-            locs_h = sampling_locs[:, :, h_idx, :, :]              # (B, N, K, 2)
-            locs_h = locs_h.reshape(B, N * self.num_points, 1, 2)  # (B, N*K, 1, 2)
-
-            # grid_sample: (B, head_dim, N*K, 1)
-            sampled = F.grid_sample(
-                v_h, locs_h,
-                mode="bilinear",
-                padding_mode="border",
-                align_corners=True,
-            )
-            # (B, head_dim, N*K) → (B, N*K, head_dim) → (B, N, K, head_dim)
-            sampled = sampled.squeeze(-1).permute(0, 2, 1)
-            sampled = sampled.view(B, N, self.num_points, self.head_dim)
-
-            # Attention weights for this head: (B, N, K, 1)
-            w_h = attn_weights[:, :, h_idx, :].unsqueeze(-1)
-
-            # Weighted sum over K → (B, N, head_dim)
-            head_outputs.append((w_h * sampled).sum(dim=2))
-
-        # ── 7. Concat heads + output projection ───────────────────────────────
-        out = torch.cat(head_outputs, dim=-1)   # (B, N, C)
-        out = self.out_proj(out)
-
-        # ── 8. Reshape + LayerNorm2d ──────────────────────────────────────────
-        f_align = out.transpose(1, 2).view(B, C, H, W)
-        f_align = self.norm(f_align)
-
-        # ── 9. 更新監控指標（detached，不影響梯度）────────────────────────────
         with torch.no_grad():
-            self._last_offset_mag = float(offsets.detach().abs().mean().item())
+            self._last_conf_mean      = float(confidence.mean().item())
+            self._last_valid_ratio    = float(validity_mask.float().mean().item())
+            # Stored for alignment visualization (CPU tensors; detached to avoid holding grad graph)
+            self._last_flow           = flow1.detach().cpu()           # (B, 2, H, W) pixel displacement
+            self._last_confidence_map = confidence.detach().cpu()      # (B, 1, H, W)
 
-            # Entropy over K points (normalized by log(K))
-            # attn_weights: (B, N, num_heads, K) — already softmax, sum=1
-            a = attn_weights.float().mean(dim=[0, 1])       # (num_heads, K)
-            ent = -(a * (a + 1e-12).log()).sum(dim=-1)      # (num_heads,)
-            max_ent = math.log(self.num_points)
-            self._last_attn_entropy = float((ent / max_ent).mean().item())
-
-        return f_align
+        return f_ref_warped, confidence
 
 
-class GatedFusion(nn.Module):
-    def __init__(self, embed_dim: int = 256):
+# =============================================================================
+# FlowGuidedSemanticAlignment
+#
+# 設計：幾何對齊（CMAAlignment）→ Confidence Gate（本模組）
+#
+# Step 1 (CMAAlignment 完成)：VGG flow → warp(f_ref) → f_ref_warped
+#   幾何粗對齊：解決相機視角差異、場景位移等大範圍幾何偏差
+#
+# Step 2 (本模組)：Feature-content Gate
+#   gate_net 接收 concat(f_curr, f_ref_warped)，學習每個像素注入多少晴天特徵。
+#   低信心區（動態物件、遮蔽）→ alpha→0，保留 f_curr 不受噪聲污染。
+# =============================================================================
+class FlowGuidedSemanticAlignment(nn.Module):
+    """
+    Geometric-then-gate alignment for ViT embeddings.
+
+    CMAAlignment (upstream) handles geometric warp + confidence pooling.
+    This module gates how much of the warped clear-weather feature is
+    injected into f_curr via a learned per-pixel alpha map.
+    """
+
+    def __init__(self, embed_dim: int = 256, confidence_threshold: float = 0.2):
         super().__init__()
+        self.conf_threshold = confidence_threshold
 
+        # Gate: concat(f_curr, f_ref_warped) → per-pixel blend ratio α ∈ [0,1]
+        self.gate_net = nn.Sequential(
+            nn.Conv2d(embed_dim * 2, embed_dim // 4, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(embed_dim // 4, 1, kernel_size=1),
+            nn.Sigmoid(),
+        )
+        self.norm = LayerNorm2d(embed_dim)
+
+    def forward(
+        self,
+        f_curr:       torch.Tensor,  # [B, C, H, W]  ViT embedding（惡劣天氣）
+        f_ref_warped: torch.Tensor,  # [B, C, H, W]  幾何對齊後的 f_ref（CMAAlignment 輸出）
+    ) -> torch.Tensor:
+        # Gate: learn per-pixel injection ratio from feature content
+        alpha = self.gate_net(torch.cat([f_curr, f_ref_warped], dim=1))
+
+        f_fuse = f_curr + alpha * f_ref_warped  # additive injection; f_curr fully preserved
+
+        with torch.no_grad():
+            self._last_alpha   = alpha.detach().cpu()                         # [B, 1, H, W]
+            cos_sim = F.cosine_similarity(f_curr, f_ref_warped, dim=1, eps=1e-8)
+            self._last_cos_sim = cos_sim.detach().cpu()                       # [B, H, W]
+
+        return self.norm(f_fuse)
+
+
+# 保留供消融實驗對比（無 cross-attention 的純幾何 gate 版本）
+class ConfidenceGatedFusion(nn.Module):
+    """Ablation baseline: geometric gate only, no semantic cross-attention."""
+
+    def __init__(self, embed_dim: int = 256, confidence_threshold: float = 0.2):
+        super().__init__()
+        self.conf_threshold = confidence_threshold
         self.gate_net = nn.Sequential(
             nn.Conv2d(embed_dim * 2, embed_dim // 2, kernel_size=1),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv2d(embed_dim // 2, 1, kernel_size=1),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
         self.norm = LayerNorm2d(embed_dim)
 
-    def forward(self, f_curr: torch.Tensor, f_align: torch.Tensor) -> torch.Tensor:
-        # 1. 預測 Alpha
-        cat_feat = torch.cat([f_curr, f_align], dim=1)
-        alpha = self.gate_net(cat_feat)
-
-        # 2. 加權融合
-        f_fuse = (1 - alpha) * f_curr + alpha * f_align
-
-        # 3. LayerNorm2d
-        f_fuse = self.norm(f_fuse)
-
-        return f_fuse
+    def forward(self, f_curr, f_aligned, confidence):
+        conf_patch = F.adaptive_avg_pool2d(confidence, 7)
+        conf_hard  = F.interpolate((conf_patch >= self.conf_threshold).float(),
+                                   size=f_curr.shape[-2:], mode='nearest')
+        conf_soft  = F.interpolate(conf_patch.clamp(0.0, 1.0),
+                                   size=f_curr.shape[-2:], mode='bilinear', align_corners=False)
+        alpha = self.gate_net(torch.cat([f_curr, f_aligned], dim=1))
+        alpha = alpha * conf_hard * conf_soft
+        return self.norm((1.0 - alpha) * f_curr + alpha * f_aligned)

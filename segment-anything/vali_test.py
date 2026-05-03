@@ -95,7 +95,7 @@ def inspect_model_freeze(model):
         ("prompt_encoder", model.prompt_encoder),
         ("mask_decoder", model.mask_decoder),
         ("fusion_module", model.fusion_module),
-        ("gate_module", model.gate_module),
+        ("gated_fusion", model.gated_fusion),
         ("text_encoder (CLIP)", model.text_encoder),
         ("pe_layer (Positional)", model.pe_layer)
     ]

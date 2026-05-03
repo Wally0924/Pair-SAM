@@ -47,7 +47,7 @@ class TextEncoder(nn.Module):
         """
         # 1. Tokenization (將文字轉為 ID)
         # clip.tokenize 會自動處理 padding 和 truncation
-        text_tokens = clip.tokenize(text_list).to(self.device)
+        text_tokens = clip.tokenize(text_list).to(next(self.clip_model.parameters()).device)
         
         # 2. CLIP Encoding
         # encode_text 會輸出經過正規化的特徵

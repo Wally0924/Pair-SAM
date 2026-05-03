@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(/home/rvl1421/miniconda3/envs/sam_env/bin/python -c ' *)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('visualize_attention.py'\\).read\\(\\)\\); print\\('✅ syntax OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('visualize_attention.py'\\).read\\(\\)\\); print\\('✅ syntax OK'\\)\")",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(python3 -c ' *)",
+      "Bash(git clone *)",
+      "Read(//tmp/cma_repo/models/heads/**)",
+      "Read(//tmp/cma_repo/models/**)",
+      "Bash(cp /tmp/cma_repo/models/heads/uawarpc.py /home/rvl1421/SAM_research-1/segment-anything/segment_anything/modeling/uawarpc_head.py)",
+      "Bash(cp /tmp/cma_repo/models/utils.py /home/rvl1421/SAM_research-1/segment-anything/segment_anything/modeling/cma_utils.py)",
+      "Bash(/home/rvl1421/miniconda3/envs/sam_env/bin/pip install *)",
+      "Bash(/home/rvl1421/miniconda3/envs/sam_env/bin/python -c \"from spatial_correlation_sampler import spatial_correlation_sample; print\\('✅ 安裝成功'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('train.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

@@ -272,7 +272,7 @@ class InferenceRunner:
 
 def register_diagnostic_hooks(model):
     """
-    在 fusion_module（CrossViewAlignment）與 gate_module（GatedFusion）上掛 forward hook，
+    在 fusion_module（CMAAlignment）與 gated_fusion（FlowGuidedSemanticAlignment）上掛 forward hook，
     擷取每次推論的中間特徵統計，以驗證模組確實在運作。
 
     回傳 diag dict（每次 forward 後會被更新）與 hook handle list（呼叫 remove() 可清除）。
@@ -291,41 +291,38 @@ def register_diagnostic_hooks(model):
             diag['_f_curr_for_diff'] = f_curr  # 暫存供 output hook 計算 diff
 
     def out_hook_fusion(_, __, output):
-        f_align = output                        # (B, C, H, W)
-        diag['f_align_norm'] = f_align.norm(dim=1).mean().item()
+        # CMAAlignment.forward() 回傳 (f_ref_warped, confidence) tuple
+        f_ref_warped, confidence = output
+        diag['f_align_norm']   = f_ref_warped.norm(dim=1).mean().item()
+        diag['conf_mean']      = confidence.mean().item()
         f_curr = diag.pop('_f_curr_for_diff', None)
         if f_curr is not None:
-            diag['align_diff_from_curr'] = (f_align - f_curr).abs().mean().item()
+            diag['align_diff_from_curr'] = (f_ref_warped - f_curr).abs().mean().item()
             cos = torch.nn.functional.cosine_similarity(
-                f_align.flatten(1), f_curr.flatten(1), dim=1
+                f_ref_warped.flatten(1), f_curr.flatten(1), dim=1
             ).mean().item()
             diag['align_cosine_sim'] = cos
 
-    # gate_module 也以 kwargs 呼叫（f_curr=, f_align=），同樣需要 pre_hook + with_kwargs
-    def pre_hook_gate(_, args, kwargs):
-        f_curr  = kwargs.get('f_curr',  args[0] if args else None)
-        f_align = kwargs.get('f_align', args[1] if len(args) > 1 else None)
-        if f_curr is not None and f_align is not None:
-            diag['_gate_f_curr']  = f_curr
-            diag['_gate_f_align'] = f_align
-
+    # gated_fusion（FlowGuidedSemanticAlignment）以 positional args 呼叫，
+    # alpha 已存於 module._last_alpha；直接在 output hook 讀取，無需 pre_hook 暫存。
     def out_hook_gate(module, __, output):
-        f_curr  = diag.pop('_gate_f_curr',  None)
-        f_align = diag.pop('_gate_f_align', None)
-        if f_curr is not None and f_align is not None:
-            cat = torch.cat([f_curr, f_align], dim=1)
-            with torch.no_grad():
-                alpha = module.gate_net(cat)    # (B, 1, H, W)
-            diag['alpha_mean']   = alpha.mean().item()
-            diag['alpha_std']    = alpha.std().item()
-            diag['alpha_min']    = alpha.min().item()
-            diag['alpha_max']    = alpha.max().item()
         diag['f_fused_norm'] = output.norm(dim=1).mean().item()
+        # _last_alpha 由 FlowGuidedSemanticAlignment.forward() 於每次呼叫後更新
+        alpha = getattr(module, '_last_alpha', None)
+        if alpha is not None:
+            diag['alpha_mean'] = alpha.mean().item()
+            diag['alpha_std']  = alpha.std().item()
+            diag['alpha_min']  = alpha.min().item()
+            diag['alpha_max']  = alpha.max().item()
+        # cross-attn entropy（_last_attn_w 已存於 module）
+        attn_w = getattr(module, '_last_attn_w', None)
+        if attn_w is not None:
+            aw = attn_w.float().clamp(min=1e-9)
+            diag['attn_entropy'] = (-(aw * aw.log()).sum(dim=-1)).mean().item()
 
     handles.append(model.fusion_module.register_forward_pre_hook(pre_hook_fusion, with_kwargs=True))
     handles.append(model.fusion_module.register_forward_hook(out_hook_fusion))
-    handles.append(model.gate_module.register_forward_pre_hook(pre_hook_gate, with_kwargs=True))
-    handles.append(model.gate_module.register_forward_hook(out_hook_gate))
+    handles.append(model.gated_fusion.register_forward_hook(out_hook_gate))
     return diag, handles
 
 
@@ -355,7 +352,7 @@ if __name__ == "__main__":
 
     out_dir = "inference_viz_acdc_testv5_noabl_ref" if USE_REFERENCE else "inference_viz_acdc_testv5_noabl_noref"
     print(f"Reference ablation: use_reference={USE_REFERENCE}  →  output: {out_dir}")
-    print(f"Diagnostic hooks registered on fusion_module & gate_module\n")
+    print(f"Diagnostic hooks registered on fusion_module (CMAAlignment) & gated_fusion (FlowGuidedSemanticAlignment)\n")
 
     runner = InferenceRunner(model, DEVICE, output_dir=out_dir, use_reference=USE_REFERENCE)
 
@@ -369,10 +366,12 @@ if __name__ == "__main__":
             f"f_curr_norm={diag.get('f_curr_norm',0):.3f}  "
             f"f_ref_norm={diag.get('f_ref_norm',0):.3f}  "
             f"f_align_norm={diag.get('f_align_norm',0):.3f}  "
+            f"conf={diag.get('conf_mean',0):.3f}  "
             f"align_diff={diag.get('align_diff_from_curr',0):.4f}  "
             f"cosine_sim={diag.get('align_cosine_sim',0):.4f}  "
             f"alpha={diag.get('alpha_mean',0):.3f}±{diag.get('alpha_std',0):.3f}"
-            f"[{diag.get('alpha_min',0):.2f}~{diag.get('alpha_max',0):.2f}]"
+            f"[{diag.get('alpha_min',0):.2f}~{diag.get('alpha_max',0):.2f}]  "
+            f"attn_ent={diag.get('attn_entropy',0):.3f}"
         )
         return result
     runner.predict_single_image = predict_with_diag

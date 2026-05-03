@@ -228,9 +228,12 @@ class Attention(nn.Module):
 
         # Attention
         _, _, _, c_per_head = q.shape
-        attn = q @ k.permute(0, 1, 3, 2)  # B x N_heads x N_tokens x N_tokens
+        attn = q @ k.permute(0, 1, 3, 2)  # B x N_heads x N_q x N_k
         attn = attn / math.sqrt(c_per_head)
         attn = torch.softmax(attn, dim=-1)
+
+        # Store for visualization (CPU, no grad); averaged across heads
+        self._last_attn = attn.detach().mean(dim=1).cpu()  # [B, N_q, N_k]
 
         # Get output
         out = attn @ v

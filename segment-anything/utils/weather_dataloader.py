@@ -4,21 +4,18 @@ from torch.utils.data import Dataset
 import numpy as np
 import cv2
 import os
-import random
 import pandas as pd
 
 class WeatherSegmentationDataset(Dataset):
-    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train', gps_noise: float = 0.0):
+    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train'):
         """
         Args:
             csv_file (str): CSV 路徑
             image_size (int): 統一縮放尺寸 (預設 1024)
             mode (str): 'train', 'val', 或 'test'
-            gps_noise (float): GPS 座標的高斯噪聲標準差 (預設 0.0，表示不添加噪聲)
         """
         self.image_size = image_size
         self.mode = mode
-        self.gps_noise = gps_noise
         
         # 1. 檢查並讀取 CSV
         if not os.path.exists(csv_file):
@@ -93,7 +90,25 @@ class WeatherSegmentationDataset(Dataset):
             image_embedding = torch.load(row['feature_path'], weights_only=True)
             output["image_embedding"] = image_embedding
             original_size = (self.image_size, self.image_size) # 假設 cache 都是 1024
-            
+
+            # [CMAAlignment] 即使使用 cache，也需要原始影像供 VGG16 幾何對齊使用
+            if pd.notna(row.get('image_path')) and os.path.exists(str(row.get('image_path', ''))):
+                img_raw = cv2.imread(str(row['image_path']))
+                if img_raw is not None:
+                    img_raw = cv2.cvtColor(img_raw, cv2.COLOR_BGR2RGB)
+                    img_raw = cv2.resize(img_raw, (self.image_size, self.image_size),
+                                         interpolation=cv2.INTER_LANCZOS4)
+                    output["image"] = torch.as_tensor(img_raw).permute(2, 0, 1).float()
+
+            ref_col_path = row.get(self.ref_col)
+            if pd.notna(ref_col_path) and os.path.exists(str(ref_col_path)):
+                ref_raw = cv2.imread(str(ref_col_path))
+                if ref_raw is not None:
+                    ref_raw = cv2.cvtColor(ref_raw, cv2.COLOR_BGR2RGB)
+                    ref_raw = cv2.resize(ref_raw, (self.image_size, self.image_size),
+                                          interpolation=cv2.INTER_LANCZOS4)
+                    output["clear_image"] = torch.as_tensor(ref_raw).permute(2, 0, 1).float()
+
             # Ref Mask 讀取 (Cache 模式通常不做增強，直接 resize)
             if pd.notna(row.get(self.ref_col)) and os.path.exists(str(row[self.ref_col])):
                 ref_mask = cv2.imread(str(row[self.ref_col]))
@@ -181,41 +196,23 @@ class WeatherSegmentationDataset(Dataset):
         else:
             output["invalid_mask"] = torch.zeros(self.image_size, self.image_size, dtype=torch.bool)
 
-        # 處理 Text Prompts
-        active_prompts = []
-        # 注意: 這裡判斷 GT 是否全是 0 (背景)
-        if gt_mask.max() > 0: 
-            unique_classes = np.unique(gt_mask)
-            for cls_id in unique_classes:
-                if cls_id in self.ID_TO_NAME:
-                    active_prompts.append(self.ID_TO_NAME[cls_id])
-        
-        if not active_prompts:
-            active_prompts = ["road"]
-
-        if self.mode == 'train':
-            random.shuffle(active_prompts)
-
-        output["text_prompts"] = active_prompts
-
-        # 處理 Location (GPS Noise)
-        if 'lat' in row and 'lon' in row:
-            lat = float(row['lat'])
-            lon = float(row['lon'])
-            if self.mode == 'train':
-                lat += random.gauss(0, self.gps_noise)
-                lon += random.gauss(0, self.gps_noise)
-        else:
-            lat, lon = 0.0, 0.0
-
-        output["location"] = torch.tensor([lat, lon], dtype=torch.float32)
+        # 固定使用全部 19 個類別（與推論時保持一致，消除 oracle gap）
+        output["text_prompts"] = [self.ID_TO_NAME[i] for i in range(len(self.ID_TO_NAME))]
 
         # 處理 condition_id（天氣條件索引，ACDC 專用：fog=0, rain=1, snow=2）
-        # Cityscapes 等無此欄位的資料集會輸出 -1，模型 forward 中以 -1 作為退回 GPS 路徑的信號
-        if 'condition_id' in row and pd.notna(row.get('condition_id')):
-            output["condition_id"] = torch.tensor(int(row['condition_id']), dtype=torch.long)
-        else:
-            output["condition_id"] = torch.tensor(-1, dtype=torch.long)
+        # Strict mode：CSV 必須有合法 condition_id (0/1/2)，缺失或越界直接 raise
+        cid_raw = row.get('condition_id')
+        if 'condition_id' not in row or pd.isna(cid_raw):
+            raise ValueError(
+                f"Sample {idx} 缺少 condition_id 欄位。"
+                f"請確認 CSV 為 ACDC 格式且 condition_id ∈ {{0,1,2}}（fog/rain/snow）。"
+            )
+        cid_int = int(cid_raw)
+        if cid_int not in (0, 1, 2):
+            raise ValueError(
+                f"Sample {idx} 的 condition_id={cid_int} 越界，必須為 0(fog)/1(rain)/2(snow)。"
+            )
+        output["condition_id"] = torch.tensor(cid_int, dtype=torch.long)
 
         # 處理 condition 字串（供 per-condition mIoU 計算使用）
         if 'condition' in row and pd.notna(row.get('condition')):
@@ -237,7 +234,6 @@ class WeatherSegmentationDataset(Dataset):
 
         text_prompts = [item['text_prompts'] for item in batch]
         original_sizes = [item['original_size'] for item in batch]
-        locations = torch.stack([item['location'] for item in batch])
         condition_ids = torch.stack([item['condition_id'] for item in batch])
         conditions = [item['condition'] for item in batch]  # List[str | None]
 
@@ -248,7 +244,6 @@ class WeatherSegmentationDataset(Dataset):
             "invalid_mask": invalid_masks,
             "text_prompts": text_prompts,
             "original_size": original_sizes,
-            "location": locations,
             "condition_id": condition_ids,
             "condition": conditions,
         }
@@ -259,11 +254,12 @@ class WeatherSegmentationDataset(Dataset):
         # 2. 動態處理影像輸入
         if 'image_embedding' in batch[0]:
             batch_dict['image_embedding'] = torch.stack([item['image_embedding'] for item in batch])
-        elif 'image' in batch[0]:
-            batch_dict['image'] = torch.stack([item['image'] for item in batch])
 
-        # 3. 即時 encode 用的晴天原圖（raw image mode 下才有）
-        if 'clear_image' in batch[0]:
+        # 原始影像與晴天參考圖：CMAAlignment 的 VGG16 backbone 必須使用，
+        # 即使是 cache 模式也需要提供。使用 all() 確保 batch 內全部樣本都有才堆疊。
+        if all('image' in item for item in batch):
+            batch_dict['image'] = torch.stack([item['image'] for item in batch])
+        if all('clear_image' in item for item in batch):
             batch_dict['clear_image'] = torch.stack([item['clear_image'] for item in batch])
 
         return batch_dict
