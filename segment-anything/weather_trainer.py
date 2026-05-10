@@ -11,7 +11,7 @@ import math
 import random
 
 from segment_anything.modeling import WeatherSAM 
-from utils.new_loss import ContextLoss, MaskLoss
+from utils.new_loss import ContextLoss, MaskLoss, ACDC_CLASS_WEIGHTS
 
 class AverageMeter:
     """計算並儲存當前值與平均值。"""
@@ -102,25 +102,28 @@ class WeatherSAMTrainer:
         print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}])")
         print(f"🔓 MaskDecoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
         print(f"🔓 MaskDecoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
-        self.context_loss_fn = ContextLoss(ce_weight=ce_w).to(self.device)
+        label_smooth  = getattr(args, 'label_smoothing', 0.0)
+        lovasz_w      = getattr(args, 'lovasz_weight',   0.0)
+        self.context_loss_fn = ContextLoss(
+            ce_weight=ce_w, label_smoothing=label_smooth, lovasz_weight=lovasz_w,
+        ).to(self.device)
         self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
+        # MaskLoss 加權平均用：稀少類（rider/motorcycle/bicycle）獲得更高梯度權重
+        self._mask_cls_w = ACDC_CLASS_WEIGHTS.to(self.device)
         
         self.scaler = torch.amp.GradScaler('cuda', init_scale=8192)
         
         # 凍結與解凍策略
         for param in self.model.parameters():
             param.requires_grad = False
-            
+
         # ── 主幹適配模組 (main LR) ──
-        # 注意：self.model.fusion_module (CMAAlignment) 已在其 __init__ 中將 vgg_backbone
-        # 與 warp_head 全部凍結（CMA pretrained UAWarpC），且本身無可訓練參數，故不列入。
-        # gated_fusion (FlowGuidedSemanticAlignment) 的 cross_attn + gate_net + norm
-        # 屬於核心可訓練模組，列入 main LR group。
+        # [testv14] ref_to_dense / dense_gate 已移除，跨條件補償改由 WarpedVGG Adapter
+        # 在 ViT Encoder 內部完成（獨立 param group，見下方）。
         main_lr_modules = [
             self.model.condition_encoder,
             self.model.text_encoder.projection,
             self.model.context_fusion_head,
-            self.model.gated_fusion,
         ]
 
         # ── MaskDecoder 新增/重訓模組 (decoder LR) ──
@@ -156,6 +159,33 @@ class WeatherSAMTrainer:
 
         self.model.pe_layer.requires_grad = True
 
+        # ── [可選] 解凍 ViT-H Image Encoder 最後 N 個 Block ──
+        # 目的：讓 encoder 的高階語意嵌入層（Block 30-31）學會區分
+        #       「霧灰色建築 vs 天空」、「雪白路面 vs 牆面」等在天氣降質下色系相近的類別。
+        # Block 0 ~ (depth-N-1) 保持凍結 → 低階邊緣/紋理特徵不被破壞，SAM 通用分割能力保留。
+        # 使用極低 LR (encoder_lr_scale * main_lr，預設 = 1/200 LR)，緩慢調適避免 catastrophic forgetting。
+        unfreeze_n = getattr(args, 'unfreeze_encoder_blocks', 0)
+        encoder_lr_scale = getattr(args, 'encoder_lr_scale', 0.005)
+        encoder_block_params = []
+        if unfreeze_n > 0:
+            total_blocks = len(self.model.image_encoder.blocks)
+            start_block = max(0, total_blocks - unfreeze_n)
+            unfreeze_blocks = list(self.model.image_encoder.blocks[start_block:])
+            for blk in unfreeze_blocks:
+                for param in blk.parameters():
+                    param.requires_grad = True
+            encoder_block_params = [p for blk in unfreeze_blocks for p in blk.parameters() if p.requires_grad]
+            n_enc = sum(p.numel() for p in encoder_block_params)
+            print(f"🔓 Unfreeze ViT-H Encoder Blocks [{start_block}~{total_blocks-1}] "
+                  f"({n_enc:,} params / {len(encoder_block_params)} tensors, LR={lr * encoder_lr_scale:.2e})")
+        else:
+            print("🔒 ViT-H Image Encoder: fully frozen (unfreeze_encoder_blocks=0)")
+
+        # [testv14] WarpedVGG Adapter：啟用時整個 vgg_injector 設為可訓練
+        if getattr(self.model, 'use_vgg_adapter', False):
+            for param in self.model.vgg_injector.parameters():
+                param.requires_grad = True
+
         # ── 建立分離 LR 的 parameter groups ──
         main_params       = [p for m in main_lr_modules             for p in m.parameters() if p.requires_grad]
         decoder_params    = [p for m in decoder_lr_modules          for p in m.parameters() if p.requires_grad]
@@ -163,11 +193,25 @@ class WeatherSAMTrainer:
         pe_params         = [self.model.pe_layer] if self.model.pe_layer.requires_grad else []
 
         param_groups = [
-            {'params': main_params,       'lr': lr,                        'name': 'main'},
-            {'params': decoder_params,    'lr': lr * decoder_lr_scale,      'name': 'decoder'},
-            {'params': decoder_tf_params, 'lr': lr * transformer_lr_scale, 'name': 'decoder_transformer'},
-            {'params': pe_params,         'lr': lr,                        'name': 'pe_layer'},
+            {'params': main_params,         'lr': lr,                          'name': 'main'},
+            {'params': decoder_params,      'lr': lr * decoder_lr_scale,       'name': 'decoder'},
+            {'params': decoder_tf_params,   'lr': lr * transformer_lr_scale,  'name': 'decoder_transformer'},
+            {'params': pe_params,           'lr': lr,                          'name': 'pe_layer'},
         ]
+        if encoder_block_params:
+            param_groups.append({'params': encoder_block_params, 'lr': lr * encoder_lr_scale, 'name': 'encoder_blocks'})
+
+        # [testv14] WarpedVGG Adapter：獨立 param group，使用 adapter_lr_scale（預設 5×）
+        if getattr(self.model, 'use_vgg_adapter', False):
+            adapter_params = [p for p in self.model.vgg_injector.parameters() if p.requires_grad]
+            if adapter_params:
+                adapter_lr_scale = getattr(args, 'adapter_lr_scale', 5.0)
+                param_groups.append({
+                    'params': adapter_params,
+                    'lr': lr * adapter_lr_scale,
+                    'name': 'vgg_adapter',
+                })
+
         # 過濾掉空的 group
         param_groups = [g for g in param_groups if len(g['params']) > 0]
 
@@ -226,8 +270,6 @@ class WeatherSAMTrainer:
                 input_dict['image'] = batch['image'][i].to(self.device)
             if 'clear_image' in batch:
                 input_dict['clear_image'] = batch['clear_image'][i].to(self.device)
-            # [image-pair] clear-weather ViT-H embedding for CMAAlignment
-            input_dict['clear_embedding'] = batch['clear_embedding'][i].to(self.device)
             batched_input.append(input_dict)
         return batched_input
 
@@ -258,13 +300,11 @@ class WeatherSAMTrainer:
         losses = {
             "total": AverageMeter(),
             "ce": AverageMeter(),
+            "lovasz":           AverageMeter(),  # Lovász-Softmax（0=停用）
             "focal": AverageMeter(),
             "dice": AverageMeter(),
             "conf_mean":        AverageMeter(),  # UAWarpC 置信度全局均值 [0, 1]
             "valid_ratio":      AverageMeter(),  # warp 邊界內有效像素比例 [0, 1]
-            "alpha_mean":       AverageMeter(),  # gated_fusion alpha gate 均值（實際融合強度）
-            "alpha_std":        AverageMeter(),  # alpha 空間變異，低=整張圖幾乎同一融合比例
-            "alpha_high_ratio": AverageMeter(),  # alpha > 0.5 的像素比例
             "fusion_cos_sim":   AverageMeter(),  # f_curr vs f_ref_warped cosine similarity
             "pred_conf_mean":   AverageMeter(),  # 19-class softmax max probability
             "pred_entropy":     AverageMeter(),  # 19-class normalized entropy，低=分類更果斷
@@ -272,6 +312,11 @@ class WeatherSAMTrainer:
             "grad_norm_main":   AverageMeter(),  # main param group L2 gradient norm（unscale 後）
             "grad_norm_decoder":AverageMeter(),  # decoder head gradient norm
             "scaler_scale":     AverageMeter(),  # AMP GradScaler 當前 scale factor
+            "head_delta_norm":  AverageMeter(),  # context_fusion_head 輸出與輸入之差的 L2 norm
+                                                  # ≈0 → fusion head 輸出接近 identity（未學習）
+                                                  # 持續增大 → cross_class_mixer 在學習有效轉換
+            "inject_cos_sim":   AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
+            "inject_gate":      AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
         }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
@@ -291,6 +336,7 @@ class WeatherSAMTrainer:
 
                 total_loss = torch.tensor(0.0, device=self.device)
                 sample_ce_sum = 0.0
+                sample_lovasz_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
                 sample_pred_conf_sum = 0.0
@@ -337,7 +383,9 @@ class WeatherSAMTrainer:
                             low_res_logits_upscaled, target_masks_k, valid_mask_k
                         )
                         min_mask_loss = mask_total_loss.squeeze(1)   # (K,)
-                        sample_total_loss += min_mask_loss.mean()
+                        # 加權平均：稀少類（rider/motorcycle/bicycle）獲得更高梯度貢獻
+                        cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
+                        sample_total_loss += (min_mask_loss * cls_w).sum() / cls_w.sum()
                         acc_focal = focal.squeeze(1).mean().item()
                         acc_dice  = dice.squeeze(1).mean().item()
 
@@ -357,6 +405,12 @@ class WeatherSAMTrainer:
                     fused_logits = self.model.context_fusion_head(full_class_logits)
 
                     with torch.no_grad():
+                        # head_delta_norm：fusion head 的輸出與輸入之差的 L2 norm
+                        # 反映 cross_class_mixer 實際改變了多少 logit 分布
+                        # 初期接近 0（small-init），有效學習後應持續增大
+                        _head_delta = (fused_logits - full_class_logits).norm(dim=1).mean().item()
+                        losses['head_delta_norm'].update(_head_delta, 1)
+
                         probs_lr = torch.softmax(fused_logits.float(), dim=1)
                         top2 = torch.topk(probs_lr, k=2, dim=1).values
                         pred_conf = top2[:, 0].mean().item()
@@ -373,7 +427,7 @@ class WeatherSAMTrainer:
                         original_size=(1024, 1024),
                     )
                     
-                    context_loss, ce_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
+                    context_loss, ce_val, lov_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
                     sample_total_loss += context_loss
 
                     if i == 0:
@@ -383,9 +437,10 @@ class WeatherSAMTrainer:
                         first_batch_class_ids = list(class_ids_out)
                         if 'image' in batch:
                             first_batch_image = batch['image'][0].detach()
-                    
+
                     total_loss = total_loss + sample_total_loss
                     sample_ce_sum += ce_val
+                    sample_lovasz_sum += lov_val
                     sample_focal_sum += float(acc_focal)
                     sample_dice_sum += float(acc_dice)
 
@@ -427,19 +482,31 @@ class WeatherSAMTrainer:
             
             losses['total'].update(float(total_loss.item()), batch_size)
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
+            losses['lovasz'].update(float(sample_lovasz_sum) / float(batch_size), batch_size)
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
-            losses['conf_mean'].update(self.attn_monitor.last_conf_mean, batch_size)
-            losses['valid_ratio'].update(self.attn_monitor.last_valid_ratio, batch_size)
-            _last_alpha = getattr(self.model.gated_fusion, '_last_alpha', None)
-            alpha_mean_val = float(_last_alpha.mean().item()) if _last_alpha is not None else 0.0
-            losses['alpha_mean'].update(alpha_mean_val, batch_size)
-            if _last_alpha is not None:
-                losses['alpha_std'].update(float(_last_alpha.std().item()), batch_size)
-                losses['alpha_high_ratio'].update(float((_last_alpha > 0.5).float().mean().item()), batch_size)
-            _last_cos = getattr(self.model.gated_fusion, '_last_cos_sim', None)
+            # CMA 診斷：直接從 fusion_module 屬性讀取（pre_align 是自定義方法，
+            # register_forward_hook 不攔截，attn_monitor 的 hook 永遠不觸發）
+            _fm = self.model.fusion_module
+            losses['conf_mean'].update(getattr(_fm, '_last_conf_mean', 0.0), batch_size)
+            losses['valid_ratio'].update(getattr(_fm, '_last_valid_ratio', 0.0), batch_size)
+            _last_cos = getattr(self.model, '_last_cos_sim', None)
             if _last_cos is not None:
                 losses['fusion_cos_sim'].update(float(_last_cos.mean().item()), batch_size)
+            # [multi-stage] WarpedVGG Adapter 診斷：注入前後 cos_sim 與 gate 值
+            if getattr(self.model, 'use_vgg_adapter', False):
+                _injector = getattr(self.model, 'vgg_injector', None)
+                if _injector is not None:
+                    losses['inject_cos_sim'].update(float(_injector._last_inject_cos_sim), batch_size)
+                    losses['inject_gate'].update(float(_injector._last_gate_val), batch_size)
+                    # 早期訓練穩定性監控：inject_delta_norm / vit_token_norm
+                    # 若比值 > 0.1，代表注入量偏大，可調低 gate_init 或增大 weight decay
+                    if (hasattr(_injector, '_last_delta_norm_ratio')
+                            and getattr(_injector, '_global_step', 101) < 100):
+                        ratio = _injector._last_delta_norm_ratio
+                        print(f"[VGG Adapter] step {_injector._global_step:03d} "
+                              f"delta_norm_ratio={ratio:.4f} "
+                              f"(target < 0.1; if > 0.1 reduce gate_init from -5.0 to -7.0)")
             losses['pred_conf_mean'].update(float(sample_pred_conf_sum) / float(batch_size), batch_size)
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
@@ -453,7 +520,9 @@ class WeatherSAMTrainer:
                 margin=f"{losses['logit_margin'].avg:.3f}",
                 conf=f"{losses['conf_mean'].avg:.3f}",
                 valid=f"{losses['valid_ratio'].avg:.3f}",
-                alpha=f"{losses['alpha_mean'].avg:.4f}",
+                head=f"{losses['head_delta_norm'].avg:.4f}",
+                inj_cos=f"{losses['inject_cos_sim'].avg:.4f}",
+                gate=f"{losses['inject_gate'].avg:.4f}",
                 gn_m=f"{losses['grad_norm_main'].avg:.3f}",
                 gn_d=f"{losses['grad_norm_decoder'].avg:.3f}",
                 scale=f"{losses['scaler_scale'].avg:.0f}",
@@ -654,20 +723,20 @@ class WeatherSAMTrainer:
 
     def _save_fusion_quality_viz(self, batch, epoch, step, sample_idx=0):
         """
-        Fusion 品質評估可視化（4 欄）。
+        CMAAlignment 品質評估可視化（4 欄）。
 
-        [惡劣天氣原圖] [Cosine Sim f_curr vs f_ref_warped] [Alpha Gate] [晴天參考圖]
+        架構說明：[testv14] CMAAlignment 不再注入 decoder（dense_ref 路徑已下架），
+        但保留作為 CMA warp 品質的監控與 Phase-2 warped VGG 注入的預備。
+        跨條件補償改由 WarpedVGGInjector 在 ViT Block 31 完成。
+
+        [惡劣天氣原圖] [Cosine Sim f_curr vs f_ref_warped] [UAWarpC Confidence] [晴天參考圖]
 
         設計意義：
-          Cosine Sim → 幾何對齊後語意相似度，高 = warp 準確，負 = 對齊方向錯誤
-          Alpha Gate → 高 = 大量注入晴天特徵；低 = 依賴自身特徵（信心不足位置為 0）
+          Cosine Sim    → warp 後語意相似度，高 = 幾何對齊準確，負 = 對齊方向錯誤
+          Confidence    → UAWarpC 逐像素信心，反映 warp 在各區域的可靠程度
         """
-        gf = self.model.gated_fusion
-
-        cos_sim   = getattr(gf, '_last_cos_sim',  None)  # [B, H, W]
-        alpha_map = getattr(gf, '_last_alpha',     None)  # [B, 1, H, W]
-
-        if any(x is None for x in [cos_sim, alpha_map]):
+        cos_sim = getattr(self.model, '_last_cos_sim', None)   # (B, H, W) cpu
+        if cos_sim is None:
             return
 
         img_curr = batch.get('image')
@@ -678,38 +747,39 @@ class WeatherSAMTrainer:
         b_idx = min(sample_idx, cos_sim.shape[0] - 1)
         VIZ   = 320
 
-        # ── 1. 原始影像 ──
         def to_np(t):
             return F.interpolate(t[b_idx].float().unsqueeze(0) / 255.0,
                                  (VIZ, VIZ), mode='bilinear', align_corners=False
-                                 ).squeeze(0).permute(1, 2, 0).numpy().clip(0, 1)
+                                 ).squeeze(0).permute(1, 2, 0).cpu().numpy().clip(0, 1)
 
         curr_np = to_np(img_curr)
         ref_np  = to_np(img_ref)
 
-        # ── 2. Cosine Similarity [H, W] → VIZ ──
         cos_np = F.interpolate(
             cos_sim[b_idx].unsqueeze(0).unsqueeze(0),
             (VIZ, VIZ), mode='bilinear', align_corners=False,
         ).squeeze().numpy()
 
-        # ── 3. Alpha Gate [1, H, W] → VIZ ──
-        alpha_np = F.interpolate(
-            alpha_map[b_idx].unsqueeze(0),
-            (VIZ, VIZ), mode='bilinear', align_corners=False,
-        ).squeeze().numpy()
+        # UAWarpC confidence map（空間分布）
+        conf_map = getattr(self.model.fusion_module, '_last_confidence_map', None)
+        if conf_map is not None:
+            conf_np = F.interpolate(
+                conf_map[b_idx].unsqueeze(0).cpu().float(),
+                (VIZ, VIZ), mode='bilinear', align_corners=False,
+            ).squeeze().numpy()
+        else:
+            conf_np = cos_np * 0
 
-        # ── 4. 繪圖 ──
         panels = [
-            (curr_np,   None,      'adverse weather',                      'gray'),
-            (cos_np,    (-1, 1),   'cosine sim\n(f_curr vs f_ref_warped)', 'RdYlGn'),
-            (alpha_np,  (0, 1),    'alpha gate\n(high=use clear ref)',      'hot'),
-            (ref_np,    None,      'clear reference',                       'gray'),
+            (curr_np,  None,      'adverse weather',                      'gray'),
+            (cos_np,   (-1, 1),   'cosine sim\n(f_curr vs f_ref_warped)', 'RdYlGn'),
+            (conf_np,  (0, 1),    'UAWarpC confidence\n(high=reliable warp)', 'hot'),
+            (ref_np,   None,      'clear reference',                       'gray'),
         ]
 
         fig, axes = plt.subplots(1, 4, figsize=(18, 4.5))
         for ax, (data, vrange, title, cmap) in zip(axes, panels):
-            if data.ndim == 3:          # RGB 影像
+            if data.ndim == 3:
                 ax.imshow(data)
             else:
                 vmin, vmax = vrange if vrange else (data.min(), data.max())
@@ -720,8 +790,7 @@ class WeatherSAMTrainer:
 
         plt.suptitle(
             f'Fusion Quality  |  Epoch {epoch+1}  Step {step}  |  '
-            f'cos_sim_mean={cos_np.mean():.3f}  '
-            f'alpha_mean={alpha_np.mean():.3f}',
+            f'cos_sim_mean={cos_np.mean():.3f}',
             fontsize=9,
         )
         plt.tight_layout()
@@ -741,17 +810,18 @@ class WeatherSAMTrainer:
         losses = {
             "total": AverageMeter(),
             "ce": AverageMeter(),
+            "lovasz":           AverageMeter(),
             "focal": AverageMeter(),
             "dice": AverageMeter(),
             "conf_mean": AverageMeter(),
             "valid_ratio": AverageMeter(),
-            "alpha_mean": AverageMeter(),
-            "alpha_std": AverageMeter(),
-            "alpha_high_ratio": AverageMeter(),
             "fusion_cos_sim": AverageMeter(),
             "pred_conf_mean": AverageMeter(),
             "pred_entropy": AverageMeter(),
             "logit_margin": AverageMeter(),
+            "head_delta_norm": AverageMeter(),
+            "inject_cos_sim":  AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
+            "inject_gate":     AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
         }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
@@ -769,6 +839,7 @@ class WeatherSAMTrainer:
                 outputs = self.model(batched_input)
 
                 sample_ce_sum = 0.0
+                sample_lovasz_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
                 sample_pred_conf_sum = 0.0
@@ -810,7 +881,8 @@ class WeatherSAMTrainer:
                             low_res_logits_upscaled, target_masks_k, valid_mask_k
                         )
                         min_mask_loss = mask_total_loss.squeeze(1)
-                        sample_total_loss = sample_total_loss + min_mask_loss.mean()
+                        cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
+                        sample_total_loss = sample_total_loss + (min_mask_loss * cls_w).sum() / cls_w.sum()
                         acc_focal = float(focal.squeeze(1).mean().item())
                         acc_dice  = float(dice.squeeze(1).mean().item())
 
@@ -826,6 +898,9 @@ class WeatherSAMTrainer:
                     fused_logits = self.model.context_fusion_head(full_class_logits)
 
                     with torch.no_grad():
+                        _head_delta = (fused_logits - full_class_logits).norm(dim=1).mean().item()
+                        losses['head_delta_norm'].update(_head_delta, 1)
+
                         probs_lr = torch.softmax(fused_logits.float(), dim=1)
                         top2 = torch.topk(probs_lr, k=2, dim=1).values
                         pred_conf = top2[:, 0].mean().item()
@@ -835,14 +910,14 @@ class WeatherSAMTrainer:
                     sample_pred_conf_sum += pred_conf
                     sample_margin_sum += margin
                     sample_pred_entropy_sum += entropy
-                    
+
                     fused_logits_hr = self.model.postprocess_masks(
                         fused_logits,
                         input_size=(1024, 1024),
                         original_size=(1024, 1024),
                     )
                     
-                    context_loss, ce_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
+                    context_loss, ce_val, lov_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
 
                     # ── 需求 1: 混淆矩陣更新（argmax 預測 vs GT，排除 ignore_index=255）──
                     pred_cls = fused_logits_hr.argmax(dim=1).squeeze(0)  # (H, W)
@@ -859,6 +934,7 @@ class WeatherSAMTrainer:
 
                     total_loss = total_loss + sample_total_loss
                     sample_ce_sum += float(ce_val)
+                    sample_lovasz_sum += float(lov_val)
                     sample_focal_sum += acc_focal
                     sample_dice_sum += acc_dice
 
@@ -867,19 +943,29 @@ class WeatherSAMTrainer:
             total_loss_avg = float(total_loss.item()) / float(batch_size)
             losses['total'].update(total_loss_avg, batch_size)
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
+            losses['lovasz'].update(float(sample_lovasz_sum) / float(batch_size), batch_size)
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
-            losses['conf_mean'].update(self.attn_monitor.last_conf_mean, batch_size)
-            losses['valid_ratio'].update(self.attn_monitor.last_valid_ratio, batch_size)
-            _last_alpha = getattr(self.model.gated_fusion, '_last_alpha', None)
-            alpha_mean_val = float(_last_alpha.mean().item()) if _last_alpha is not None else 0.0
-            losses['alpha_mean'].update(alpha_mean_val, batch_size)
-            if _last_alpha is not None:
-                losses['alpha_std'].update(float(_last_alpha.std().item()), batch_size)
-                losses['alpha_high_ratio'].update(float((_last_alpha > 0.5).float().mean().item()), batch_size)
-            _last_cos = getattr(self.model.gated_fusion, '_last_cos_sim', None)
+            _fm = self.model.fusion_module
+            losses['conf_mean'].update(getattr(_fm, '_last_conf_mean', 0.0), batch_size)
+            losses['valid_ratio'].update(getattr(_fm, '_last_valid_ratio', 0.0), batch_size)
+            _last_cos = getattr(self.model, '_last_cos_sim', None)
             if _last_cos is not None:
                 losses['fusion_cos_sim'].update(float(_last_cos.mean().item()), batch_size)
+            # [multi-stage] WarpedVGG Adapter 診斷
+            if getattr(self.model, 'use_vgg_adapter', False):
+                _injector = getattr(self.model, 'vgg_injector', None)
+                if _injector is not None:
+                    losses['inject_cos_sim'].update(float(_injector._last_inject_cos_sim), batch_size)
+                    losses['inject_gate'].update(float(_injector._last_gate_val), batch_size)
+                    # 早期訓練穩定性監控：inject_delta_norm / vit_token_norm
+                    # 若比值 > 0.1，代表注入量偏大，可調低 gate_init 或增大 weight decay
+                    if (hasattr(_injector, '_last_delta_norm_ratio')
+                            and getattr(_injector, '_global_step', 101) < 100):
+                        ratio = _injector._last_delta_norm_ratio
+                        print(f"[VGG Adapter] step {_injector._global_step:03d} "
+                              f"delta_norm_ratio={ratio:.4f} "
+                              f"(target < 0.1; if > 0.1 reduce gate_init from -5.0 to -7.0)")
             losses['pred_conf_mean'].update(float(sample_pred_conf_sum) / float(batch_size), batch_size)
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
@@ -893,7 +979,6 @@ class WeatherSAMTrainer:
                 margin=f"{losses['logit_margin'].avg:.3f}",
                 conf=f"{losses['conf_mean'].avg:.3f}",
                 valid=f"{losses['valid_ratio'].avg:.3f}",
-                alpha=f"{losses['alpha_mean'].avg:.4f}",
             )
 
         avg_metrics = {k: v.avg for k, v in losses.items()}
@@ -903,10 +988,21 @@ class WeatherSAMTrainer:
         fp   = (confusion.sum(0) - confusion.diag()).float()
         fn   = (confusion.sum(1) - confusion.diag()).float()
         iou_per_class = tp / (tp + fp + fn + 1e-6)          # (19,) [0, 1]
-        valid_cls_mask = confusion.sum(1) > 0                # 只計算 GT 出現過的類別
-        miou = float(iou_per_class[valid_cls_mask].mean()) if valid_cls_mask.any() else 0.0
+        # ACDC 官方協議：固定 19 類分母，與 test server 及論文一致
+        # GT 未出現的類別 IoU≈0（epsilon 極小），不從分母排除
+        miou = float(iou_per_class.mean())
         avg_metrics['miou']          = miou
         avg_metrics['per_class_iou'] = iou_per_class.tolist()
+        # 診斷用：記錄 val set 中未出現的類別（IoU 被強制為 0）
+        missing_cls = (confusion.sum(1) == 0).nonzero(as_tuple=True)[0].tolist()
+        if missing_cls:
+            _CLASS_NAMES = [
+                "road","sidewalk","building","wall","fence","pole","traffic light",
+                "traffic sign","vegetation","terrain","sky","person","rider","car",
+                "truck","bus","train","motorcycle","bicycle",
+            ]
+            missing_names = [_CLASS_NAMES[c] for c in missing_cls]
+            print(f"   [mIoU] Val set 中缺失類別（IoU=0）: {missing_names}")
 
         return avg_metrics
 
