@@ -123,6 +123,8 @@ class CMAAlignment(nn.Module):
 
         self._last_conf_mean: float = 0.0
         self._last_valid_ratio: float = 0.0
+        self._last_flow = None
+        self._last_confidence_map = None
 
     def _load_pretrained(self, path: str):
         weights = torch.load(path, map_location='cpu')
@@ -162,131 +164,150 @@ class CMAAlignment(nn.Module):
         feats_256 = self.vgg_backbone(img_256)
         return feats, feats_256
 
-    def forward(
+    @torch.no_grad()
+    def pre_align(
         self,
-        f_curr:   torch.Tensor,        # [B, 256, 64, 64]  ViT-H embedding（惡劣天氣）
-        f_ref:    torch.Tensor,        # [B, 256, 64, 64]  ViT-H embedding（晴天參考）
-        img_curr: torch.Tensor = None, # [B, 3, 1024, 1024] 原始影像（值域 0-255）
-        img_ref:  torch.Tensor = None, # [B, 3, 1024, 1024] 原始影像（值域 0-255）
-    ):
-        _, _, H, W = f_curr.shape
+        img_curr: torch.Tensor,          # (B, 3, H, W) adverse weather image, values in [0, 255]
+        img_ref: torch.Tensor,           # (B, 3, H, W) clear reference image, values in [0, 255]
+        out_size: tuple = (64, 64),      # target feature map spatial size
+        conf_threshold: float = 0.2,     # hard mask threshold (matches CMA paper Sec 3.3)
+    ) -> dict:
+        """
+        Run VGG feature extraction + UAWarpC alignment BEFORE the ViT encoder.
 
-        if img_curr is not None and img_ref is not None:
-            feats_curr, feats_curr_256 = self._extract_vgg_features(img_curr)
-            feats_ref,  feats_ref_256  = self._extract_vgg_features(img_ref)
-        else:
-            # Fallback：ViT 特徵複製為 4 個尺度（精度較低但不崩潰）
-            feats_curr = feats_curr_256 = [f_curr] * 4
-            feats_ref  = feats_ref_256  = [f_ref]  * 4
+        UAWarpC operates purely on VGG features of raw images, so there is no
+        circular dependency with ViT embeddings. This method can be called once
+        per forward pass before the SAM image encoder runs.
 
-        # 取最細的 level（index 3）flow 與 uncertainty
+        Returns:
+            dict with keys:
+                'l2': (B, 256, out_H, out_W)
+                    Warped VGG level-2 (256ch, stride-8) features from the clear
+                    reference image, aligned to the adverse-weather image viewpoint.
+                'l3': (B, 512, out_H, out_W)
+                    Warped VGG level-3 (512ch, stride-16) features from the clear
+                    reference image, aligned to the adverse-weather image viewpoint.
+            Positions where confidence < conf_threshold are zeroed out (hard mask).
+        """
+        out_H, out_W = out_size
+
+        # Step 1: Extract VGG features from both images
+        feats_curr, feats_curr_256 = self._extract_vgg_features(img_curr)
+        feats_ref,  feats_ref_256  = self._extract_vgg_features(img_ref)
+
+        # Step 2: Run UAWarpCHead → get flow and uncertainty at finest level (index 3)
         results = self.warp_head(
             trg=feats_curr,
             src=feats_ref,
             trg_256=feats_curr_256,
             src_256=feats_ref_256,
-            out_size=(H, W),
+            out_size=out_size,
         )
         flow1, uncertainty1 = results[3]
 
-        if flow1.shape[-2:] != (H, W):
-            flow1 = F.interpolate(flow1, size=(H, W), mode='bilinear', align_corners=False)
-            uncertainty1 = F.interpolate(uncertainty1, size=(H, W), mode='bilinear', align_corners=False)
+        # Step 3: Resize flow / uncertainty to out_size if needed
+        if flow1.shape[-2:] != (out_H, out_W):
+            flow1 = F.interpolate(flow1, size=(out_H, out_W), mode='bilinear', align_corners=False)
+            uncertainty1 = F.interpolate(uncertainty1, size=(out_H, out_W), mode='bilinear', align_corners=False)
 
-        f_ref_warped, validity_mask = warp(f_ref, flow1, return_mask=True)
+        # Step 4: Resize VGG level-3 (index 3 = stride-16 = 512ch) ref features to out_size
+        f_vgg_ref_l3 = feats_ref[3]  # (B, 512, H_vgg, W_vgg)
+        if f_vgg_ref_l3.shape[-2:] != (out_H, out_W):
+            f_vgg_ref_l3 = F.interpolate(f_vgg_ref_l3, size=(out_H, out_W),
+                                          mode='bilinear', align_corners=False)
 
-        confidence = estimate_probability_of_confidence_interval(uncertainty1)  # [B,1,H,W]
+        # Step 4b: Resize VGG level-2 (index 2 = stride-8 = 256ch) ref features to out_size
+        f_vgg_ref_l2 = feats_ref[2]  # (B, 256, H_vgg, W_vgg) — stride8, 2× spatial res
+        if f_vgg_ref_l2.shape[-2:] != (out_H, out_W):
+            f_vgg_ref_l2 = F.interpolate(f_vgg_ref_l2, size=(out_H, out_W),
+                                          mode='bilinear', align_corners=False)
+
+        # Step 5: Warp both VGG scales to adverse viewpoint using the same flow field
+        f_ref_warped_l3, validity_mask = warp(f_vgg_ref_l3, flow1, return_mask=True)
+        f_ref_warped_l2, _ = warp(f_vgg_ref_l2, flow1, return_mask=True)
+
+        # Step 6: Confidence = UAWarpC uncertainty → probability × boundary validity
+        confidence = estimate_probability_of_confidence_interval(uncertainty1)  # (B, 1, out_H, out_W)
         confidence = confidence * validity_mask.unsqueeze(1).float()
 
-        # Step 2 驗證：warp 前後 cos_sim 對比（每 200 次 forward 印一次，避免 log 爆炸）
-        if not hasattr(self, '_fwd_count'):
-            self._fwd_count = 0
-        self._fwd_count += 1
-        if self._fwd_count % 200 == 1:
-            with torch.no_grad():
-                _cos_before = F.cosine_similarity(f_curr, f_ref, dim=1).mean().item()
-                _cos_after  = F.cosine_similarity(f_curr, f_ref_warped, dim=1).mean().item()
-                _flow_mag   = (flow1[:, 0]**2 + flow1[:, 1]**2).sqrt().mean().item()
-                print(f'[CMAAlignment #{self._fwd_count}] '
-                      f'cos_before={_cos_before:.4f}  cos_after={_cos_after:.4f}  '
-                      f'delta={_cos_after - _cos_before:+.4f}  '
-                      f'flow_mag={_flow_mag:.3f}feat_px  '
-                      f'conf_mean={confidence.mean().item():.4f}')
+        # Step 7: Hard mask — matches CMA paper Sec 3.3 (conf < 0.2 → zero out)
+        hard_mask = (confidence >= conf_threshold).float()  # (B, 1, out_H, out_W)
+        f_ref_warped_l3_masked = f_ref_warped_l3 * hard_mask  # (B, 512, out_H, out_W)
+        f_ref_warped_l2_masked = f_ref_warped_l2 * hard_mask  # (B, 256, out_H, out_W)
 
-                # 可視化：存 warp 對比圖（需要有原始影像輸入）
-                if _VIZ_AVAILABLE and img_curr is not None and img_ref is not None:
-                    save_warp_comparison(
-                        img_curr=img_curr,
-                        img_ref=img_ref,
-                        flow=flow1,
-                        confidence=confidence,
-                        step=self._fwd_count,
-                        out_dir='debug_viz/warp',
-                    )
+        # Step 8: Update diagnostic attributes
+        self._last_conf_mean      = float(confidence.mean().item())
+        self._last_valid_ratio    = float(validity_mask.float().mean().item())
+        self._last_flow           = flow1.cpu()           # (B, 2, out_H, out_W)
+        self._last_confidence_map = confidence.cpu()      # (B, 1, out_H, out_W)
 
-        # Hard confidence threshold: discard positions where confidence < threshold
-        # confidence only serves as a binary spatial filter (keep/discard), nothing else
-        hard_mask = (confidence >= self.conf_threshold).float()  # [B, 1, H, W]
-        f_ref_warped = f_ref_warped * hard_mask
-
-        with torch.no_grad():
-            self._last_conf_mean      = float(confidence.mean().item())
-            self._last_valid_ratio    = float(validity_mask.float().mean().item())
-            # Stored for alignment visualization (CPU tensors; detached to avoid holding grad graph)
-            self._last_flow           = flow1.detach().cpu()           # (B, 2, H, W) pixel displacement
-            self._last_confidence_map = confidence.detach().cpu()      # (B, 1, H, W)
-
-        return f_ref_warped, confidence
+        return {
+            'l2': f_ref_warped_l2_masked,   # (B, 256, out_H, out_W)
+            'l3': f_ref_warped_l3_masked,   # (B, 512, out_H, out_W)
+        }
 
 
 # =============================================================================
 # FlowGuidedSemanticAlignment
 #
-# 設計：幾何對齊（CMAAlignment）→ Confidence Gate（本模組）
+# 設計：幾何對齊（CMAAlignment）→ Reference Conditioning Module（本模組）
 #
-# Step 1 (CMAAlignment 完成)：VGG flow → warp(f_ref) → f_ref_warped
-#   幾何粗對齊：解決相機視角差異、場景位移等大範圍幾何偏差
+# Step 1 (CMAAlignment 完成)：VGG flow → warp(f_ref) → f_ref_warped + confidence
 #
-# Step 2 (本模組)：Feature-content Gate
-#   gate_net 接收 concat(f_curr, f_ref_warped)，學習每個像素注入多少晴天特徵。
-#   低信心區（動態物件、遮蔽）→ alpha→0，保留 f_curr 不受噪聲污染。
+# Step 2 (本模組)：Multi-channel delta conditioning
+#   delta = Conv2layer(concat(f_curr, f_ref_warped))   # 256-channel，每維度獨立學習補償量
+#   delta = delta * conf_map                            # confidence soft gate 作用在輸出端
+#   conditioned = f_curr + delta                        # residual，f_curr 語意完整保留
+#
+# 與舊版 scalar alpha 的差異：
+#   舊版：alpha[1ch] * f_ref_warped → 所有 256 channel 被同一個值縮放
+#   新版：delta[256ch] → 每個 channel 獨立決定修正方向與幅度
 # =============================================================================
 class FlowGuidedSemanticAlignment(nn.Module):
     """
-    Geometric-then-gate alignment for ViT embeddings.
+    Reference Conditioning Module for ViT embeddings.
 
-    CMAAlignment (upstream) handles geometric warp + confidence pooling.
-    This module gates how much of the warped clear-weather feature is
-    injected into f_curr via a learned per-pixel alpha map.
+    Computes a 256-channel residual delta from (f_curr, f_ref_warped),
+    soft-gates it with the UAWarpC confidence map, and adds it to f_curr.
     """
 
     def __init__(self, embed_dim: int = 256, confidence_threshold: float = 0.2):
         super().__init__()
         self.conf_threshold = confidence_threshold
 
-        # Gate: concat(f_curr, f_ref_warped) → per-pixel blend ratio α ∈ [0,1]
-        self.gate_net = nn.Sequential(
-            nn.Conv2d(embed_dim * 2, embed_dim // 4, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dim // 4, 1, kernel_size=1),
-            nn.Sigmoid(),
+        # 2-layer 1×1 Conv：學習 f_curr 與 f_ref_warped 的跨域關係 → 256-ch delta
+        # 初始化接近零輸出，訓練初期不干擾 f_curr
+        self.delta_net = nn.Sequential(
+            nn.Conv2d(embed_dim * 2, embed_dim, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(embed_dim, embed_dim, kernel_size=1),
         )
+        nn.init.zeros_(self.delta_net[2].weight)
+        nn.init.zeros_(self.delta_net[2].bias)
+
         self.norm = LayerNorm2d(embed_dim)
 
     def forward(
         self,
         f_curr:       torch.Tensor,  # [B, C, H, W]  ViT embedding（惡劣天氣）
         f_ref_warped: torch.Tensor,  # [B, C, H, W]  幾何對齊後的 f_ref（CMAAlignment 輸出）
+        confidence:   torch.Tensor,  # [B, 1, H, W]  UAWarpC confidence map（來自 CMAAlignment）
     ) -> torch.Tensor:
-        # Gate: learn per-pixel injection ratio from feature content
-        alpha = self.gate_net(torch.cat([f_curr, f_ref_warped], dim=1))
+        # 256-channel delta，表達能力遠高於 scalar alpha
+        delta = self.delta_net(torch.cat([f_curr, f_ref_warped], dim=1))
 
-        f_fuse = f_curr + alpha * f_ref_warped  # additive injection; f_curr fully preserved
+        # Soft confidence gate 作用在輸出端：梯度可流過低信心區，但貢獻被壓低
+        # 比 hard mask 更好：grad 不斷，低信心區的 delta 學習趨近於零即可
+        delta = delta * confidence.clamp(0.0, 1.0)
+
+        # Residual injection：f_curr 語意完整保留，delta 只做補償
+        f_fuse = f_curr + delta
 
         with torch.no_grad():
-            self._last_alpha   = alpha.detach().cpu()                         # [B, 1, H, W]
+            self._last_delta_norm = float(delta.detach().norm(dim=1).mean().item())
+            self._last_conf_mean  = float(confidence.mean().item())
             cos_sim = F.cosine_similarity(f_curr, f_ref_warped, dim=1, eps=1e-8)
-            self._last_cos_sim = cos_sim.detach().cpu()                       # [B, H, W]
+            self._last_cos_sim    = cos_sim.detach().cpu()
 
         return self.norm(f_fuse)
 
