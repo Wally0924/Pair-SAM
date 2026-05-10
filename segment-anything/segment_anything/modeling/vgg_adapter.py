@@ -130,13 +130,6 @@ class MultiScaleCrossAttnInjector(nn.Module):
         f_l2 = self._multi_scale_feats['l2'].to(output.device, dtype=output.dtype)
         f_l3 = self._multi_scale_feats['l3'].to(output.device, dtype=output.dtype)
 
-        if f_l3.abs().sum().item() == 0.0 and f_l2.abs().sum().item() == 0.0:
-            self._stages_fired += 1
-            if self._stages_fired >= self._num_stages:
-                self._multi_scale_feats = None
-                self._stages_fired = 0
-            return output
-
         B, H, W, C = output.shape  # H=W=64, C=1280
 
         # ── Q：ViT tokens reshape + 瓶頸壓縮 ──

@@ -1,4 +1,5 @@
 
+import warnings
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -99,7 +100,15 @@ class WeatherSAM(nn.Module):
             handle.remove()
         self._adapter_hook_handles = []
 
-        inject_blocks = self.vgg_injector.INJECT_BLOCKS  # [7, 15, 23, 31]
+        all_inject_blocks = self.vgg_injector.INJECT_BLOCKS
+        n_blocks = len(self.image_encoder.blocks)
+        inject_blocks = [b for b in all_inject_blocks if b < n_blocks]
+        if len(inject_blocks) != len(all_inject_blocks):
+            warnings.warn(
+                f"[WeatherSAM] Some INJECT_BLOCKS out of range for {n_blocks}-block encoder; "
+                f"using {inject_blocks} instead of {all_inject_blocks}.",
+                stacklevel=2,
+            )
         for stage_idx, block_idx in enumerate(inject_blocks):
             target_block = self.image_encoder.blocks[block_idx]
             handle = target_block.register_forward_hook(
@@ -108,7 +117,14 @@ class WeatherSAM(nn.Module):
             self._adapter_hook_handles.append(handle)
 
         self.use_vgg_adapter = True
-        print(f'[WeatherSAM] MultiScaleCrossAttnInjector enabled at ViT Blocks {inject_blocks}.')
+        print(f'[WeatherSAM] MultiStage WarpedVGG Adapter enabled at ViT Blocks {inject_blocks}.')
+
+    def disable_vgg_adapter(self):
+        """停用 MultiScale WarpedVGG Adapter，移除所有已注冊的 hook。"""
+        for handle in self._adapter_hook_handles:
+            handle.remove()
+        self._adapter_hook_handles = []
+        self.use_vgg_adapter = False
 
     def forward(
         self,
@@ -152,7 +168,7 @@ class WeatherSAM(nn.Module):
                 self.vgg_injector.set_features(_vgg_ref_aligned)
             image_embeddings = self.image_encoder(input_images)
 
-        # --- 階段 3：批次提示編碼與遮罩解碼 (Prompt Encoding & Mask Decoding) ---
+        # --- 階段 2：批次提示編碼與遮罩解碼 (Prompt Encoding & Mask Decoding) ---
         for i, image_record in enumerate(batched_input):
             # A. 文字編碼 (Text Encoding)
             texts = image_record["text_prompts"]
@@ -167,7 +183,6 @@ class WeatherSAM(nn.Module):
             # B. 條件編碼（fog=0, rain=1, snow=2, night=3）
             condition_id = image_record.get("condition_id", None)
             if condition_id is None:
-                import warnings
                 warnings.warn("condition_id not found in input, defaulting to 0 (fog). "
                               "Ensure ACDC CSV has condition_id column.", stacklevel=2)
                 condition_id = torch.tensor(0)
