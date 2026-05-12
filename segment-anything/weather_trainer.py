@@ -211,11 +211,11 @@ class WeatherSAMTrainer:
         if encoder_block_params:
             param_groups.append({'params': encoder_block_params, 'lr': lr * encoder_lr_scale, 'name': 'encoder_blocks'})
 
-        # [testv14] WarpedVGG Adapter：獨立 param group，使用 adapter_lr_scale（預設 5×）
+        # [testv14] WarpedVGG Adapter：獨立 param group，使用 adapter_lr_scale（預設 3×，v4 已降）
         if getattr(self.model, 'use_vgg_adapter', False):
             adapter_params = [p for p in self.model.vgg_injector.parameters() if p.requires_grad]
             if adapter_params:
-                adapter_lr_scale = getattr(args, 'adapter_lr_scale', 5.0)
+                adapter_lr_scale = getattr(args, 'adapter_lr_scale', 3.0)
                 param_groups.append({
                     'params': adapter_params,
                     'lr': lr * adapter_lr_scale,
@@ -579,7 +579,7 @@ class WeatherSAMTrainer:
             _ratio = losses['inject_delta_norm'].avg
             if _ratio > 0.1:
                 tqdm.write(f"   ⚠️  [VGG Adapter] delta_norm_ratio={_ratio:.4f} > 0.1 — "
-                           f"consider reducing gate_init from -5.0 to -7.0")
+                           f"consider reducing adapter_lr_scale or checking MLP_up init")
 
         return avg_metrics
 
