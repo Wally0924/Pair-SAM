@@ -77,8 +77,9 @@ class WeatherSAM(nn.Module):
         # 分段注入對齊後的晴天參考 VGG 特徵，讓 early/mid/late 各層都能感知補償信號。
         # use_vgg_adapter=False 時完全跳過，hook 未註冊，不影響現有 forward 行為。
         self.use_vgg_adapter: bool = False
+        _vit_dim = image_encoder.patch_embed.proj.out_channels
         self.vgg_injector = MultiScaleCrossAttnInjector(
-            vit_dim=1280, l2_channels=256, l3_channels=512,
+            vit_dim=_vit_dim, l2_channels=256, l3_channels=512,
             d_hidden=256, pool_size=32,
         )
         self._adapter_hook_handles: list = []
