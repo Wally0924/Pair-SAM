@@ -1,7 +1,10 @@
 # train.py
+import os
+# ViT-H global attention (64×64 token grid, 16 heads) 需要 ~1 GiB 連續記憶體，
+# expandable_segments 讓 CUDA allocator 以延伸段取代重新分配，大幅降低碎片化 OOM 機率
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
 from torch.utils.data import DataLoader
-import os
 import random
 import numpy as np
 import pandas as pd
@@ -51,16 +54,14 @@ def plot_history(history, output_dir):
     components = [
         ('total',           'Total Loss',                     'k',         'Train Total',      'Val Total'),
         ('ce',              'CE Loss',                        'b',         'Train CE',         'Val CE'),
+        ('lovasz',          'Lovász-Softmax Loss ↓',          'darkorange','Train Lovász',     'Val Lovász'),
         ('focal',           'Focal Loss',                     'r',         'Train Focal',      'Val Focal'),
         ('dice',            'Dice Loss',                      'g',         'Train Dice',       'Val Dice'),
         # ── 需求 1: mIoU（僅 val，train 欄位不存在會自動跳過）──
         ('miou',            'Val mIoU ↑ [0→1]',              'darkgreen', 'Train mIoU',       'Val mIoU'),
         ('conf_mean',       'UAWarpC Confidence Mean [0-1]',  'purple',    'Train Conf',       'Val Conf'),
         ('valid_ratio',     'Warp Valid Ratio [0-1]',         'm',         'Train Valid',      'Val Valid'),
-        ('alpha_mean',      'Gate Alpha Mean [0→1]',          'teal',      'Train Alpha',      'Val Alpha'),
-        ('alpha_std',       'Gate Alpha Std ↑ spatial selectivity', 'darkcyan', 'Train Alpha Std', 'Val Alpha Std'),
-        ('alpha_high_ratio', 'Gate Alpha > 0.5 Ratio [0→1]',   'seagreen',  'Train Alpha High', 'Val Alpha High'),
-        ('fusion_cos_sim',   'Fusion Feature Cosine Similarity', 'olive',   'Train Cos Sim',    'Val Cos Sim'),
+        ('fusion_cos_sim',   'CMA Cos Similarity (f_curr vs warped)', 'olive', 'Train Cos Sim', 'Val Cos Sim'),
         ('pred_conf_mean',  'Prediction Confidence ↑',         'navy',      'Train Pred Conf',  'Val Pred Conf'),
         ('pred_entropy',    'Prediction Entropy ↓ decisive',   'crimson',   'Train Pred Ent',   'Val Pred Ent'),
         ('logit_margin',    'Top1-Top2 Probability Margin ↑',  'sienna',    'Train Margin',     'Val Margin'),
@@ -69,6 +70,9 @@ def plot_history(history, output_dir):
         ('grad_norm_decoder', 'Grad Norm — decoder head',     'peru',      'Train GN decoder', 'Val GN decoder'),
         # ── 需求 3: AMP scaler scale factor（僅 train；下降 → gradient underflow 警告）──
         ('scaler_scale',    'AMP Scaler Scale ↑ stable',      'gray',      'Train Scale',      'Val Scale'),
+        # [testv14] WarpedVGG Adapter 診斷
+        ('inject_cos_sim',  'WarpedVGG Inject CosSim ↑ stable','purple',   'Train Inj CosSim', 'Val Inj CosSim'),
+        ('inject_gate',     'WarpedVGG sigmoid(gate) ↑ learning','brown',  'Train Gate',       'Val Gate'),
     ]
 
     n_plots = len(components)
@@ -142,6 +146,8 @@ def print_training_config(args, device):
     print(f"   • CE Weight:         {args.ce_weight}")
     print(f"   • Focal Weight:      {args.focal_weight}")
     print(f"   • Dice Weight:       {args.dice_weight}")
+    lovasz_w = getattr(args, 'lovasz_weight', 0.0)
+    print(f"   • Lovász Weight:     {lovasz_w}{'  (disabled)' if lovasz_w == 0.0 else '  ← mIoU-aligned'}")
     # print(f"   • IoU Weight:        {args.iou_weight}")  # [Mask2Former] IoU MSE Loss 已移除
     
     # 4. Decoder LR
@@ -166,26 +172,33 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv9",)
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv14",)
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=150, help="總共訓練的 Epoch 數量")
-    parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--patience", type=int, default=15, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
-    parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size")
-    parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps)")
+    parser.add_argument("--batch_size", type=int, default=1, help="每次前向傳播的 Batch size（ViT-H global attention 需大量 VRAM，建議 1）")
+    parser.add_argument("--accumulate_steps", type=int, default=8, help="梯度累積步數 (等效 batch_size = batch_size * steps，預設 1×8=8)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
     parser.add_argument("--max_norm", type=float, default=1.0, help="梯度裁剪的 Max norm。")
 
     # --- Decoupled Loss 權重 ---
-    parser.add_argument("--ce_weight", type=float, default=1.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=20.0, help="MaskLoss (Focal) 權重")
-    parser.add_argument("--dice_weight", type=float, default=1.5, help="MaskLoss (Dice) 權重")
+    parser.add_argument("--ce_weight", type=float, default=2.0, help="ContextLoss (CrossEntropy) 權重")
+    parser.add_argument("--focal_weight", type=float, default=5.0, help="MaskLoss (Focal) 權重")
+    parser.add_argument("--dice_weight", type=float, default=0.5, help="MaskLoss (Dice) 權重")
+    parser.add_argument("--label_smoothing", type=float, default=0.05, help="CE label smoothing（建議 0.05）")
+    parser.add_argument("--lovasz_weight", type=float, default=1.0,
+                        help="Lovász-Softmax Loss 權重（0.0=停用，退化為純 CE；建議從 0.5 開始實驗）。"
+                             "Lovász 直接優化 mIoU 的可微近似，梯度方向與評估指標完全對齊。")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
+    # --- Dense Gate LR ---
+    # [testv14] gate_lr_scale 已移除（dense_gate 已隨 dense_ref 路徑下架）
+
     # --- LR Warmup ---
-    parser.add_argument("--warmup_epochs", type=int, default=10, help="LR Warmup 線性上升的 Epoch 數")
+    parser.add_argument("--warmup_epochs", type=int, default=5, help="LR Warmup 線性上升的 Epoch 數")
 
     # --- 可重現性 ---
     parser.add_argument("--seed", type=int, default=42, help="全域隨機種子（確保 ablation 可重現）")
@@ -198,11 +211,26 @@ def main():
     parser.add_argument("--transformer_lr_scale", type=float, default=0.05,
                         help="MaskDecoder Transformer weights 相對主幹 LR 的縮放比例 (0.05 = 1/20 LR，讓 transformer 適應 weather-fused feature 分布)")
 
+    # --- Image Encoder 部分解凍 ---
+    parser.add_argument("--unfreeze_encoder_blocks", type=int, default=0,
+                        help="解凍 ViT-H Image Encoder 最後 N 個 Block（預設 0=全凍結）。"
+                             "建議從 2 開始：解凍 Block 30-31 讓語意嵌入層適應天氣域，"
+                             "Block 0-29 繼續凍結以保留 SAM 通用分割能力。")
+    parser.add_argument("--encoder_lr_scale", type=float, default=0.005,
+                        help="解凍的 Image Encoder Block 相對主幹 LR 的縮放比例（預設 0.005 = 1/200 LR）。"
+                             "極低 LR 確保語意嵌入緩慢調適，不破壞預訓練通用特徵。")
+
     # --- 資料路徑 ---
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_train_with_embeddings.csv",
+    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv",
                         help="訓練資料集 CSV 路徑")
-    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_val_with_embeddings.csv",
+    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_val.csv",
                         help="驗證資料集 CSV 路徑")
+
+    # [testv14] WarpedVGG Adapter 注入 SAM ViT-H Encoder（預設啟用，--no-use_vgg_adapter 關閉）
+    parser.add_argument("--use_vgg_adapter", action=argparse.BooleanOptionalAction, default=True,
+                        help="啟用 MultiStage WarpedVGG Adapter（在 ViT-H Block 7/15/23/31 各注入對齊 VGG 特徵）")
+    parser.add_argument("--adapter_lr_scale", type=float, default=3.0,
+                        help="WarpedVGG Adapter 參數的 LR 倍率（相對 main lr）")
 
     # NOTE: --use_condition_embedding 已移除；模型現在固定使用 condition_encoder（ACDC 模式）
     args = parser.parse_args()
@@ -222,20 +250,45 @@ def main():
         model = build_weather_sam_vit_h(checkpoint=model_checkpoint)
     else:
         model = build_weather_sam_vit_b(checkpoint=model_checkpoint)
-    
+
+    # [testv14] WarpedVGG Adapter：在 ViT Block 後註冊 forward hook
+    # 啟用後 trainer 會自動為 vgg_injector 建立獨立 param group（高 LR）
+    if args.use_vgg_adapter:
+        model.enable_vgg_adapter()
+        print(f"[Config] MultiStage WarpedVGG Adapter @ Blocks [7, 15, 23, 31], "
+              f"lr_scale={args.adapter_lr_scale}")
+
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
+
+    # 當 Image Encoder 解凍訓練時，必須強制使用原始影像（不能 bypass encoder 走 cache）
+    # 否則 encoder blocks 永遠不被呼叫，梯度無法回傳，解凍形同虛設
+    # [testv14] WarpedVGG Adapter 啟用時同樣需要 force_raw：hook 註冊在 Block 31 上，
+    # 若走 cache 模式 image_encoder 整個被略過，hook 永遠不會觸發，adapter 形同未啟用
+    force_raw = (
+        getattr(args, 'unfreeze_encoder_blocks', 0) > 0
+        or getattr(args, 'use_vgg_adapter', False)
+    )
+    if force_raw:
+        reason = []
+        if getattr(args, 'unfreeze_encoder_blocks', 0) > 0:
+            reason.append("unfreeze_encoder_blocks>0")
+        if getattr(args, 'use_vgg_adapter', False):
+            reason.append("use_vgg_adapter=True")
+        print(f"⚠️  force_raw_images=True ({' / '.join(reason)}) — cache bypassed for both train & val")
 
     train_ds = WeatherSegmentationDataset(
         csv_file=args.train_csv,
         image_size=1024,
         mode='train',
+        force_raw_images=force_raw,
     )
 
     val_ds = WeatherSegmentationDataset(
         csv_file=args.val_csv,
         image_size=1024,
         mode='val',
+        force_raw_images=force_raw,
     )
 
     # ★ DataLoader generator 綁定 seed，確保每個 epoch 的 shuffle 順序可重現
@@ -308,10 +361,12 @@ def main():
             "epoch": epoch + 1,
             "train_total":           train_metrics["total"],
             "train_ce":              train_metrics["ce"],
+            "train_lovasz":          train_metrics.get("lovasz", 0.0),
             "train_focal":           train_metrics["focal"],
             "train_dice":            train_metrics["dice"],
             "val_total":             val_metrics["total"],
             "val_ce":                val_metrics["ce"],
+            "val_lovasz":            val_metrics.get("lovasz", 0.0),
             "val_focal":             val_metrics["focal"],
             "val_dice":              val_metrics["dice"],
             # ── 需求 1 ──
@@ -326,12 +381,6 @@ def main():
             "val_conf_mean":         val_metrics.get("conf_mean",      0.0),
             "train_valid_ratio":     train_metrics.get("valid_ratio",  0.0),
             "val_valid_ratio":       val_metrics.get("valid_ratio",    0.0),
-            "train_alpha_mean":      train_metrics.get("alpha_mean",   0.0),
-            "val_alpha_mean":        val_metrics.get("alpha_mean",     0.0),
-            "train_alpha_std":       train_metrics.get("alpha_std",        0.0),
-            "val_alpha_std":         val_metrics.get("alpha_std",          0.0),
-            "train_alpha_high_ratio": train_metrics.get("alpha_high_ratio", 0.0),
-            "val_alpha_high_ratio":   val_metrics.get("alpha_high_ratio",   0.0),
             "train_fusion_cos_sim":  train_metrics.get("fusion_cos_sim",   0.0),
             "val_fusion_cos_sim":    val_metrics.get("fusion_cos_sim",     0.0),
             # dense prediction 診斷：破碎/猶豫通常會反映在 entropy 高、margin 低
@@ -341,6 +390,11 @@ def main():
             "val_pred_entropy":      val_metrics.get("pred_entropy",     0.0),
             "train_logit_margin":    train_metrics.get("logit_margin",   0.0),
             "val_logit_margin":      val_metrics.get("logit_margin",     0.0),
+            # [testv14] WarpedVGG Adapter 診斷
+            "train_inject_cos_sim":  train_metrics.get("inject_cos_sim", 1.0),
+            "val_inject_cos_sim":    val_metrics.get("inject_cos_sim",   1.0),
+            "train_inject_gate":     train_metrics.get("inject_gate",    0.0),
+            "val_inject_gate":       val_metrics.get("inject_gate",      0.0),
         }
         per_cls_iou = val_metrics.get("per_class_iou", [])
         for cls_name, cls_iou in zip(_CLS_NAMES, per_cls_iou):
@@ -356,12 +410,13 @@ def main():
         pred_ent    = val_metrics.get('pred_entropy', 0.0)
         pred_margin = val_metrics.get('logit_margin', 0.0)
         pred_conf   = val_metrics.get('pred_conf_mean', 0.0)
-        alpha_mean  = val_metrics.get('alpha_mean', 0.0)
-        alpha_std   = val_metrics.get('alpha_std', 0.0)
-        alpha_high  = val_metrics.get('alpha_high_ratio', 0.0)
         fusion_cos  = val_metrics.get('fusion_cos_sim', 0.0)
+        inj_cos     = val_metrics.get('inject_cos_sim', 1.0)
+        inj_gate    = val_metrics.get('inject_gate', 0.0)
+        lov_val = val_metrics.get('lovasz', 0.0)
+        lov_str = f", Lovász:{lov_val:.4f}" if lov_val > 0.0 else ""
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f})")
+        print(f"               (CE:{val_metrics['ce']:.4f}{lov_str}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f})")
         print(f"               [Val mIoU] {val_miou*100:.2f}%")
         # Per-class IoU（縮寫格式，每類別顯示至小數點後一位）
         per_cls = val_metrics.get('per_class_iou', [])
@@ -370,7 +425,7 @@ def main():
             print(f"               [per-cls] {' '.join(short)}")
         print(f"               [CMA] conf={conf_mean:.3f} | valid={valid_ratio:.3f}")
         print(f"               [pred] conf={pred_conf:.3f} | entropy={pred_ent:.3f} | margin={pred_margin:.3f}")
-        print(f"               [fusion] alpha={alpha_mean:.3f}±{alpha_std:.3f} | high={alpha_high:.3f} | cos={fusion_cos:.3f}")
+        print(f"               [CMA] cos={fusion_cos:.3f} | [Adapter] inject_cos={inj_cos:.4f} gate={inj_gate:.4f}")
         print(f"               [grad] GN_main={gn_m:.3f}  GN_decoder={gn_d:.3f} | AMP scale={scale:.0f}")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
