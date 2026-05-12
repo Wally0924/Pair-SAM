@@ -185,12 +185,16 @@ def main():
 
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=2.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=5.0, help="MaskLoss (Focal) 權重")
-    parser.add_argument("--dice_weight", type=float, default=0.5, help="MaskLoss (Dice) 權重")
+    parser.add_argument("--focal_weight", type=float, default=0.0,
+                        help="MaskLoss (Focal) 權重；0.0=停用（Focal γ=2 會壓制信心成長）")
+    parser.add_argument("--dice_weight",  type=float, default=1.0,
+                        help="MaskLoss (Dice) 權重；移除 Focal 後調高至 1.0")
     parser.add_argument("--label_smoothing", type=float, default=0.05, help="CE label smoothing（建議 0.05）")
     parser.add_argument("--lovasz_weight", type=float, default=1.0,
                         help="Lovász-Softmax Loss 權重（0.0=停用，退化為純 CE；建議從 0.5 開始實驗）。"
                              "Lovász 直接優化 mIoU 的可微近似，梯度方向與評估指標完全對齊。")
+    parser.add_argument("--warmup_gate_epochs", type=int, default=3,
+                        help="前 N epoch 凍結 vgg_injector.gates，讓 main decoder 先穩定")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
     # --- Dense Gate LR ---
@@ -392,6 +396,17 @@ def main():
             "val_inject_cos_sim":    val_metrics.get("inject_cos_sim",   1.0),
             "train_inject_gate":     train_metrics.get("inject_gate",    0.0),
             "val_inject_gate":       val_metrics.get("inject_gate",      0.0),
+            # Adapter 深度診斷
+            "train_inject_delta_norm": train_metrics.get("inject_delta_norm", 0.0),
+            "val_inject_delta_norm":   val_metrics.get("inject_delta_norm",   0.0),
+            "train_head_delta_norm":   train_metrics.get("head_delta_norm",   0.0),
+            "val_head_delta_norm":     val_metrics.get("head_delta_norm",     0.0),
+            # per-stage gate（s0–s3）
+            **{f"train_inject_gate_s{i}": train_metrics.get(f"inject_gate_s{i}", 0.0) for i in range(4)},
+            **{f"val_inject_gate_s{i}":   val_metrics.get(  f"inject_gate_s{i}", 0.0) for i in range(4)},
+            # per-stage cos_sim（s0–s3）
+            **{f"train_inject_cos_s{i}": train_metrics.get(f"inject_cos_s{i}", 1.0) for i in range(4)},
+            **{f"val_inject_cos_s{i}":   val_metrics.get(  f"inject_cos_s{i}", 1.0) for i in range(4)},
         }
         per_cls_iou = val_metrics.get("per_class_iou", [])
         for cls_name, cls_iou in zip(_CLS_NAMES, per_cls_iou):
