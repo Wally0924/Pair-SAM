@@ -156,13 +156,18 @@ class MultiScaleCrossAttnInjector(nn.Module):
         k = self.k_projs[stage_idx](f_flat)   # (B, 1024, 64)
         v = self.v_projs[stage_idx](f_flat)   # (B, 1024, 64)
 
-        # ── 瓶頸 Cross-Attention（在 d_attn=256 維度計算）──
-        attn_out, _ = self.cross_attns[stage_idx](
-            query=q_down,   # (B, 4096, 256)
-            key=k,          # (B, 1024, 64)
-            value=v,        # (B, 1024, 64)
-            need_weights=False,
-        )  # attn_out: (B, 4096, 256)
+        # ── 瓶頸 Cross-Attention（強制 fp32 避免 AMP fp16 overflow）──
+        # AMP autocast 下 MHA 的 Q@K^T 在 fp16 可能 overflow（>65504），
+        # 且 GradScaler init_scale=8192 時 actual_grad>8.0 即觸發 inf 鏈。
+        # 強制 fp32 後 attn_out 轉回原 dtype，梯度路徑不受影響。
+        with torch.amp.autocast('cuda', enabled=False):
+            attn_out, _ = self.cross_attns[stage_idx](
+                query=q_down.float(),   # (B, 4096, 256)
+                key=k.float(),          # (B, 1024, 64)
+                value=v.float(),        # (B, 1024, 64)
+                need_weights=False,
+            )  # attn_out: (B, 4096, 256) in fp32
+        attn_out = attn_out.to(q_down.dtype)  # 轉回 fp16（若 autocast 啟用）
 
         # ── Q 擴張 + gate + residual ──
         delta = self.q_up_projs[stage_idx](attn_out)   # (B, 4096, 1280)

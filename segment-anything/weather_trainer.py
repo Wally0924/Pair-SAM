@@ -111,7 +111,10 @@ class WeatherSAMTrainer:
         # MaskLoss 加權平均用：稀少類（rider/motorcycle/bicycle）獲得更高梯度權重
         self._mask_cls_w = ACDC_CLASS_WEIGHTS.to(self.device)
         
-        self.scaler = torch.amp.GradScaler('cuda', init_scale=8192)
+        # init_scale 從 8192 降至 2048：fp16 overflow 閾值從 8.0 提升至 32.0
+        # （threshold = fp16_max / init_scale = 65504 / 2048 ≈ 32）
+        # 搭配 cross_attns fp32 強制，大幅降低 gradient NaN 風險
+        self.scaler = torch.amp.GradScaler('cuda', init_scale=2048)
         
         # 凍結與解凍策略
         for param in self.model.parameters():
@@ -315,8 +318,9 @@ class WeatherSAMTrainer:
             "head_delta_norm":  AverageMeter(),  # context_fusion_head 輸出與輸入之差的 L2 norm
                                                   # ≈0 → fusion head 輸出接近 identity（未學習）
                                                   # 持續增大 → cross_class_mixer 在學習有效轉換
-            "inject_cos_sim":   AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
-            "inject_gate":      AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
+            "inject_cos_sim":    AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
+            "inject_gate":       AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
+            "inject_delta_norm": AverageMeter(),  # inject_delta_norm / vit_token_norm 早期監控
         }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
@@ -499,14 +503,8 @@ class WeatherSAMTrainer:
                 if _injector is not None:
                     losses['inject_cos_sim'].update(float(_injector._last_inject_cos_sim), batch_size)
                     losses['inject_gate'].update(float(_injector._last_gate_val), batch_size)
-                    # 早期訓練穩定性監控：inject_delta_norm / vit_token_norm
-                    # 若比值 > 0.1，代表注入量偏大，可調低 gate_init 或增大 weight decay
-                    if (hasattr(_injector, '_last_delta_norm_ratio')
-                            and getattr(_injector, '_global_step', 101) < 100):
-                        ratio = _injector._last_delta_norm_ratio
-                        print(f"[VGG Adapter] step {_injector._global_step:03d} "
-                              f"delta_norm_ratio={ratio:.4f} "
-                              f"(target < 0.1; if > 0.1 reduce gate_init from -5.0 to -7.0)")
+                    if hasattr(_injector, '_last_delta_norm_ratio'):
+                        losses['inject_delta_norm'].update(float(_injector._last_delta_norm_ratio), batch_size)
             losses['pred_conf_mean'].update(float(sample_pred_conf_sum) / float(batch_size), batch_size)
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
@@ -552,7 +550,18 @@ class WeatherSAMTrainer:
         avg_metrics = {k: v.avg for k, v in losses.items()}
         current_lr = self.optimizer.param_groups[0]['lr']
         print(f"   🔄 Learning Rate Updated: {current_lr:.2e}")
-        
+
+        # delta_norm 摘要：只在前 100 global steps 印，且僅在比值 > 0.1 時警告
+        _inj = getattr(self.model, 'vgg_injector', None)
+        if (_inj is not None
+                and getattr(self.model, 'use_vgg_adapter', False)
+                and losses['inject_delta_norm'].count > 0
+                and getattr(_inj, '_global_step', 101) <= 100):
+            _ratio = losses['inject_delta_norm'].avg
+            if _ratio > 0.1:
+                tqdm.write(f"   ⚠️  [VGG Adapter] delta_norm_ratio={_ratio:.4f} > 0.1 — "
+                           f"consider reducing gate_init from -5.0 to -7.0")
+
         return avg_metrics
 
     def _save_debug_snapshot(self, logits, epoch, step, gt_mask=None, image=None):
@@ -820,8 +829,9 @@ class WeatherSAMTrainer:
             "pred_entropy": AverageMeter(),
             "logit_margin": AverageMeter(),
             "head_delta_norm": AverageMeter(),
-            "inject_cos_sim":  AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
-            "inject_gate":     AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
+            "inject_cos_sim":    AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
+            "inject_gate":       AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
+            "inject_delta_norm": AverageMeter(),  # inject_delta_norm / vit_token_norm 早期監控
         }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
@@ -958,14 +968,8 @@ class WeatherSAMTrainer:
                 if _injector is not None:
                     losses['inject_cos_sim'].update(float(_injector._last_inject_cos_sim), batch_size)
                     losses['inject_gate'].update(float(_injector._last_gate_val), batch_size)
-                    # 早期訓練穩定性監控：inject_delta_norm / vit_token_norm
-                    # 若比值 > 0.1，代表注入量偏大，可調低 gate_init 或增大 weight decay
-                    if (hasattr(_injector, '_last_delta_norm_ratio')
-                            and getattr(_injector, '_global_step', 101) < 100):
-                        ratio = _injector._last_delta_norm_ratio
-                        print(f"[VGG Adapter] step {_injector._global_step:03d} "
-                              f"delta_norm_ratio={ratio:.4f} "
-                              f"(target < 0.1; if > 0.1 reduce gate_init from -5.0 to -7.0)")
+                    if hasattr(_injector, '_last_delta_norm_ratio'):
+                        losses['inject_delta_norm'].update(float(_injector._last_delta_norm_ratio), batch_size)
             losses['pred_conf_mean'].update(float(sample_pred_conf_sum) / float(batch_size), batch_size)
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
