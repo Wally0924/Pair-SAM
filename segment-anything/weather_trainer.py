@@ -99,11 +99,12 @@ class WeatherSAMTrainer:
         decoder_lr_scale = getattr(args, 'decoder_lr_scale', 0.1)
         transformer_lr_scale = getattr(args, 'transformer_lr_scale', 0.01)
         
-        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}])")
-        print(f"🔓 MaskDecoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
-        print(f"🔓 MaskDecoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
         label_smooth  = getattr(args, 'label_smoothing', 0.0)
         lovasz_w      = getattr(args, 'lovasz_weight',   0.0)
+        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], "
+              f"Lovász: {lovasz_w}, LabelSmooth: {label_smooth})")
+        print(f"🔓 MaskDecoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
+        print(f"🔓 MaskDecoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
         self.context_loss_fn = ContextLoss(
             ce_weight=ce_w, label_smoothing=label_smooth, lovasz_weight=lovasz_w,
         ).to(self.device)
