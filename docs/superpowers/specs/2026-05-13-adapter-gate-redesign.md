@@ -158,13 +158,37 @@ for p in self._gate_params:
 
 ---
 
+### 改動五：移除 Focal Loss，調整 MaskLoss 比例
+
+**變更範圍：** `train.py`（argparse 預設值）
+
+**決策依據：**
+
+| 損失項 | 權重 | 原始值（epoch 29）| 實際貢獻 |
+|--------|------|------------------|---------|
+| focal  | 5.0  | 0.011 | **0.055**（total 的 ~1%）|
+| dice   | 0.5  | 0.787 | 0.394 |
+
+Focal Loss（γ=2.0）主動對已確定像素（p>0.8）的梯度乘以 (1-p)²=0.04，使梯度縮減至 4%。這對 interactive segmentation（SAM 原始任務）有意義，但對密集語意分割造成：
+- 高信心像素學習速率被主動壓制 → `pred_conf_mean` 被動限制在 0.66
+- 實際貢獻僅 1%，移除後訓練曲線幾乎不受影響
+- `label_smoothing=0.05` + MFB class weights + Dice 已足夠處理類別不平衡與區域優化
+
+**改動：**
+```
+focal_weight: 5.0 → 0.0  （MaskLoss 移除 Focal）
+dice_weight:  0.5 → 1.0  （補回移除 focal 後的梯度量）
+```
+
+---
+
 ## 變更摘要
 
 | 檔案 | 改動性質 |
 |------|---------|
 | `segment_anything/modeling/vgg_adapter.py` | Gate: sigmoid→softplus；Q路徑: cross-attn→MLP |
 | `weather_trainer.py` | 新增 gate warmup；新增 per-stage AverageMeter 讀取 |
-| `train.py` | history dict 新增 8 個診斷欄位；移除 2 個死欄位 |
+| `train.py` | history dict 新增 8 個診斷欄位；移除 2 個死欄位；focal_weight→0、dice_weight→1.0 |
 
 ---
 
@@ -175,8 +199,9 @@ for p in self._gate_params:
 1. `val_inject_gate` 在 epoch 10 前應超過 0.05，epoch 20 前超過 0.1
 2. `val_inject_cos_sim` 應從 0.79 降至 0.5 以下（delta 與 q 解耦）
 3. `val_inject_delta_norm_ratio` 應從 < 0.01 升至 0.05–0.2 範圍
-4. `val_miou` 維持或超過 60.8%（確認改動不造成退步）
-5. 所有 per-stage gate/cos 欄位在 CSV 中正確記錄（非零）
+4. `val_pred_conf_mean` 在相同 epoch 數下應超過 0.70（移除 focal 後信心成長加速）
+5. `val_miou` 維持或超過 60.8%（確認改動不造成退步）
+6. 所有 per-stage gate/cos 欄位在 CSV 中正確記錄（非零）
 
 ---
 
