@@ -90,12 +90,19 @@ class WeatherSAM(nn.Module):
     def get_image_pe(self) -> torch.Tensor:
         return self.pe_layer
 
-    def enable_vgg_adapter(self):
+    def enable_vgg_adapter(self, mode: str = 'pre'):
         """啟用 MultiScaleCrossAttnInjector，在 ViT-H Block [7, 15, 23, 31] 各注冊一個 hook。
+
+        Args:
+            mode: 'pre'（預設）在 block 自注意力前注入，補償信號參與 Q/K/V 計算；
+                  'post' 在 block 自注意力後注入，保留原 post-hook 行為供消融實驗使用。
 
         4 個注入點對應 ViT-H 的 global attention blocks，使 encoder early/mid/late
         各段都能感知對齊後的晴天參考特徵。每次呼叫前先移除舊 hook 避免重複注入。
         """
+        if mode not in ('pre', 'post'):
+            raise ValueError(f"[WeatherSAM] mode must be 'pre' or 'post', got {mode!r}")
+
         for handle in self._adapter_hook_handles:
             handle.remove()
         self._adapter_hook_handles = []
@@ -111,13 +118,18 @@ class WeatherSAM(nn.Module):
             )
         for stage_idx, block_idx in enumerate(inject_blocks):
             target_block = self.image_encoder.blocks[block_idx]
-            handle = target_block.register_forward_hook(
-                self.vgg_injector._make_hook(stage_idx)
-            )
+            if mode == 'pre':
+                handle = target_block.register_forward_pre_hook(
+                    self.vgg_injector._make_pre_hook(stage_idx)
+                )
+            else:
+                handle = target_block.register_forward_hook(
+                    self.vgg_injector._make_hook(stage_idx)
+                )
             self._adapter_hook_handles.append(handle)
 
         self.use_vgg_adapter = True
-        print(f'[WeatherSAM] MultiStage WarpedVGG Adapter enabled at ViT Blocks {inject_blocks}.')
+        print(f'[WeatherSAM] MultiStage WarpedVGG Adapter enabled at ViT Blocks {inject_blocks} (mode={mode!r}).')
 
     def disable_vgg_adapter(self):
         """停用 MultiScale WarpedVGG Adapter，移除所有已注冊的 hook。"""

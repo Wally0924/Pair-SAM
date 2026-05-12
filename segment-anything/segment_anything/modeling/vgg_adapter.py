@@ -118,6 +118,12 @@ class MultiScaleCrossAttnInjector(nn.Module):
             return self._inject_at_stage(output, stage_idx)
         return hook
 
+    def _make_pre_hook(self, stage_idx: int):
+        """Pre-hook fires before block's self-attn; compensation participates in Q/K/V."""
+        def hook(module, input):
+            return (self._inject_at_stage(input[0], stage_idx),)
+        return hook
+
     def _inject_at_stage(self, output: torch.Tensor, stage_idx: int) -> torch.Tensor:
         """
         在指定 stage 執行瓶頸式 Cross-Attention 注入。
