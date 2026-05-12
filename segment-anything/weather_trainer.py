@@ -336,6 +336,8 @@ class WeatherSAMTrainer:
             "inject_cos_sim":    AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
             "inject_gate":       AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
             "inject_delta_norm": AverageMeter(),  # inject_delta_norm / vit_token_norm 早期監控
+            **{f"inject_gate_s{i}": AverageMeter() for i in range(4)},
+            **{f"inject_cos_s{i}":  AverageMeter() for i in range(4)},
         }
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch_index+1} [Train]")
         
@@ -517,6 +519,11 @@ class WeatherSAMTrainer:
                     losses['inject_gate'].update(float(_injector._last_gate_val), batch_size)
                     if hasattr(_injector, '_last_delta_norm_ratio'):
                         losses['inject_delta_norm'].update(float(_injector._last_delta_norm_ratio), batch_size)
+                    for _si in range(_injector._num_stages):
+                        losses[f'inject_gate_s{_si}'].update(
+                            float(_injector._stage_gate_vals[_si]), batch_size)
+                        losses[f'inject_cos_s{_si}'].update(
+                            float(_injector._stage_cos_sims[_si]), batch_size)
             losses['pred_conf_mean'].update(float(sample_pred_conf_sum) / float(batch_size), batch_size)
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
@@ -843,6 +850,8 @@ class WeatherSAMTrainer:
             "inject_cos_sim":    AverageMeter(),  # [testv14] WarpedVGG 注入前後 token cosine similarity
             "inject_gate":       AverageMeter(),  # [testv14] WarpedVGG sigmoid(gate) 當前數值
             "inject_delta_norm": AverageMeter(),  # inject_delta_norm / vit_token_norm 早期監控
+            **{f"inject_gate_s{i}": AverageMeter() for i in range(4)},
+            **{f"inject_cos_s{i}":  AverageMeter() for i in range(4)},
         }
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch_index+1} [Val]")
         step_count = 0
@@ -978,6 +987,11 @@ class WeatherSAMTrainer:
                     losses['inject_gate'].update(float(_injector._last_gate_val), batch_size)
                     if hasattr(_injector, '_last_delta_norm_ratio'):
                         losses['inject_delta_norm'].update(float(_injector._last_delta_norm_ratio), batch_size)
+                    for _si in range(_injector._num_stages):
+                        losses[f'inject_gate_s{_si}'].update(
+                            float(_injector._stage_gate_vals[_si]), batch_size)
+                        losses[f'inject_cos_s{_si}'].update(
+                            float(_injector._stage_cos_sims[_si]), batch_size)
             losses['pred_conf_mean'].update(float(sample_pred_conf_sum) / float(batch_size), batch_size)
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
