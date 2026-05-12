@@ -65,11 +65,16 @@ def test_inject_shape_preserved():
 
 
 def test_delta_driven_by_vgg_not_vit():
-    """固定 ViT token，改變 VGG feats → output 應改變。"""
+    """固定 ViT token，改變 VGG feats → output 應改變。
+    注意：MLP_up 以 zero-init 建構，此測試手動覆寫為 xavier init
+    以驗證架構路徑（zero-init 是訓練穩定性設計，不是永久限制）。
+    """
     inj = _small()
     with torch.no_grad():
         for g in inj.gates:
             g.fill_(5.0)
+        for proj in inj.vgg_mlp_ups:
+            nn.init.xavier_uniform_(proj.weight)
     B, H, W, C = 1, 8, 8, 64
     vit = torch.randn(B, H, W, C)
 
