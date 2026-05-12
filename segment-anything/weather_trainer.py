@@ -109,6 +109,12 @@ class WeatherSAMTrainer:
             ce_weight=ce_w, label_smoothing=label_smooth, lovasz_weight=lovasz_w,
         ).to(self.device)
         self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
+        # Gate warmup：識別 gate 參數，前 warmup_gate_epochs 個 epoch 凍結
+        self.warmup_gate_epochs = getattr(args, 'warmup_gate_epochs', 3)
+        self._gate_params = [
+            p for n, p in model.named_parameters()
+            if 'vgg_injector.gates' in n
+        ]
         # MaskLoss 加權平均用：稀少類（rider/motorcycle/bicycle）獲得更高梯度權重
         self._mask_cls_w = ACDC_CLASS_WEIGHTS.to(self.device)
         
@@ -299,6 +305,15 @@ class WeatherSAMTrainer:
                 for param in module.parameters():
                     if param in self.optimizer.state:
                         del self.optimizer.state[param]
+
+        # Gate warmup：前 warmup_gate_epochs 個 epoch 凍結 gate 參數
+        _gate_frozen = (epoch_index < self.warmup_gate_epochs)
+        for p in self._gate_params:
+            p.requires_grad_(not _gate_frozen)
+        if self._gate_params:
+            status = "frozen" if _gate_frozen else "trainable"
+            print(f"   [Gate Warmup] epoch {epoch_index+1}: gate params {status} "
+                  f"(warmup ends at epoch {self.warmup_gate_epochs})")
 
         self.model.train()
         losses = {
