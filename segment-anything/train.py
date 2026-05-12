@@ -61,7 +61,6 @@ def plot_history(history, output_dir):
         ('miou',            'Val mIoU ↑ [0→1]',              'darkgreen', 'Train mIoU',       'Val mIoU'),
         ('conf_mean',       'UAWarpC Confidence Mean [0-1]',  'purple',    'Train Conf',       'Val Conf'),
         ('valid_ratio',     'Warp Valid Ratio [0-1]',         'm',         'Train Valid',      'Val Valid'),
-        ('fusion_cos_sim',   'CMA Cos Similarity (f_curr vs warped)', 'olive', 'Train Cos Sim', 'Val Cos Sim'),
         ('pred_conf_mean',  'Prediction Confidence ↑',         'navy',      'Train Pred Conf',  'Val Pred Conf'),
         ('pred_entropy',    'Prediction Entropy ↓ decisive',   'crimson',   'Train Pred Ent',   'Val Pred Ent'),
         ('logit_margin',    'Top1-Top2 Probability Margin ↑',  'sienna',    'Train Margin',     'Val Margin'),
@@ -381,8 +380,6 @@ def main():
             "val_conf_mean":         val_metrics.get("conf_mean",      0.0),
             "train_valid_ratio":     train_metrics.get("valid_ratio",  0.0),
             "val_valid_ratio":       val_metrics.get("valid_ratio",    0.0),
-            "train_fusion_cos_sim":  train_metrics.get("fusion_cos_sim",   0.0),
-            "val_fusion_cos_sim":    val_metrics.get("fusion_cos_sim",     0.0),
             # dense prediction 診斷：破碎/猶豫通常會反映在 entropy 高、margin 低
             "train_pred_conf_mean":  train_metrics.get("pred_conf_mean", 0.0),
             "val_pred_conf_mean":    val_metrics.get("pred_conf_mean",   0.0),
@@ -410,7 +407,6 @@ def main():
         pred_ent    = val_metrics.get('pred_entropy', 0.0)
         pred_margin = val_metrics.get('logit_margin', 0.0)
         pred_conf   = val_metrics.get('pred_conf_mean', 0.0)
-        fusion_cos  = val_metrics.get('fusion_cos_sim', 0.0)
         inj_cos     = val_metrics.get('inject_cos_sim', 1.0)
         inj_gate    = val_metrics.get('inject_gate', 0.0)
         lov_val = val_metrics.get('lovasz', 0.0)
@@ -425,7 +421,7 @@ def main():
             print(f"               [per-cls] {' '.join(short)}")
         print(f"               [CMA] conf={conf_mean:.3f} | valid={valid_ratio:.3f}")
         print(f"               [pred] conf={pred_conf:.3f} | entropy={pred_ent:.3f} | margin={pred_margin:.3f}")
-        print(f"               [CMA] cos={fusion_cos:.3f} | [Adapter] inject_cos={inj_cos:.4f} gate={inj_gate:.4f}")
+        print(f"               [Adapter] inject_cos={inj_cos:.4f} gate={inj_gate:.4f}")
         print(f"               [grad] GN_main={gn_m:.3f}  GN_decoder={gn_d:.3f} | AMP scale={scale:.0f}")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)

@@ -309,7 +309,6 @@ class WeatherSAMTrainer:
             "dice": AverageMeter(),
             "conf_mean":        AverageMeter(),  # UAWarpC 置信度全局均值 [0, 1]
             "valid_ratio":      AverageMeter(),  # warp 邊界內有效像素比例 [0, 1]
-            "fusion_cos_sim":   AverageMeter(),  # f_curr vs f_ref_warped cosine similarity
             "pred_conf_mean":   AverageMeter(),  # 19-class softmax max probability
             "pred_entropy":     AverageMeter(),  # 19-class normalized entropy，低=分類更果斷
             "logit_margin":     AverageMeter(),  # top1-top2 probability margin，低=argmax 易破碎
@@ -495,9 +494,6 @@ class WeatherSAMTrainer:
             _fm = self.model.fusion_module
             losses['conf_mean'].update(getattr(_fm, '_last_conf_mean', 0.0), batch_size)
             losses['valid_ratio'].update(getattr(_fm, '_last_valid_ratio', 0.0), batch_size)
-            _last_cos = getattr(self.model, '_last_cos_sim', None)
-            if _last_cos is not None:
-                losses['fusion_cos_sim'].update(float(_last_cos.mean().item()), batch_size)
             # [multi-stage] WarpedVGG Adapter 診斷：注入前後 cos_sim 與 gate 值
             if getattr(self.model, 'use_vgg_adapter', False):
                 _injector = getattr(self.model, 'vgg_injector', None)
@@ -825,7 +821,6 @@ class WeatherSAMTrainer:
             "dice": AverageMeter(),
             "conf_mean": AverageMeter(),
             "valid_ratio": AverageMeter(),
-            "fusion_cos_sim": AverageMeter(),
             "pred_conf_mean": AverageMeter(),
             "pred_entropy": AverageMeter(),
             "logit_margin": AverageMeter(),
@@ -960,9 +955,6 @@ class WeatherSAMTrainer:
             _fm = self.model.fusion_module
             losses['conf_mean'].update(getattr(_fm, '_last_conf_mean', 0.0), batch_size)
             losses['valid_ratio'].update(getattr(_fm, '_last_valid_ratio', 0.0), batch_size)
-            _last_cos = getattr(self.model, '_last_cos_sim', None)
-            if _last_cos is not None:
-                losses['fusion_cos_sim'].update(float(_last_cos.mean().item()), batch_size)
             # [multi-stage] WarpedVGG Adapter 診斷
             if getattr(self.model, 'use_vgg_adapter', False):
                 _injector = getattr(self.model, 'vgg_injector', None)
