@@ -180,8 +180,12 @@ class MultiScaleCrossAttnInjector(nn.Module):
         V = self.v_projs[stage_idx](f_flat)   # (B, P², d_attn)
 
         # Cross-attention：Q(detach) × K × V → delta
+        # need_weights=False 讓 PyTorch 走 SDPA / flash attention 快速路徑，
+        # 不物化 (B, heads, L_q, L_k) 的 attention matrix（~250 MB），記憶體大幅下降
         delta, _ = self.cross_attns[stage_idx](
-            Q, K, V, key_padding_mask=key_padding_mask
+            Q, K, V,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
         )  # (B, H*W, vit_dim)
 
         gate = F.softplus(self.gates[stage_idx])
