@@ -80,7 +80,7 @@ class WeatherSAM(nn.Module):
         _vit_dim = image_encoder.patch_embed.proj.out_channels
         self.vgg_injector = MultiScaleCrossAttnInjector(
             vit_dim=_vit_dim, l2_channels=256, l3_channels=512,
-            d_hidden=256, pool_size=32,
+            d_attn=256, pool_size=32, num_heads=4,
         )
         self._adapter_hook_handles: list = []
 
