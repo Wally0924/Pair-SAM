@@ -35,7 +35,7 @@ class FakeWeatherSAM(nn.Module):
         self.image_encoder = FakeEncoder(n_blocks=32)
         self.vgg_injector = MultiScaleCrossAttnInjector(
             vit_dim=1280, l2_channels=256, l3_channels=512,
-            d_hidden=256, pool_size=32,
+            d_attn=256, pool_size=32, num_heads=4,
         )
         self.use_vgg_adapter = False
         self._adapter_hook_handles = []
