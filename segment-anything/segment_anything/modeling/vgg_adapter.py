@@ -9,22 +9,27 @@ _DEFAULT_GATE_INIT = math.log(math.exp(0.05) - 1)  # ≈ -2.9444；softplus(x) �
 
 class MultiScaleCrossAttnInjector(nn.Module):
     """
-    Multi-scale VGG Feature Injector（SAM-Adapter 風格，v4）。
+    Multi-scale VGG Feature Injector（Cross-Attention v5）。
 
-    設計變更（相對 v3）：
-      - 移除 Cross-Attention（Q 來自 ViT token → delta 被迫與 q 相似，inject_cos_sim 高）
-      - 改用 SAM-Adapter 風格 MLP：VGG feats → pool → MLP_down/GELU/MLP_up → delta
-        delta 完全獨立於 ViT token，inject_cos_sim 預期從 0.79 降至 0.5 以下
-      - Gate：sigmoid(-5)≈0.007 → softplus(-2.94)≈0.05，梯度強 7×，上界 ∞
-      - MLP_up zero-init：初期 delta=0，與 gate warmup 雙重保護訓練穩定性
+    設計：
+      - Q = ViT token（.detach()，stop_gradient）— 場景感知但梯度不回傳至 ViT
+      - K, V = VGG feats（l2+l3 concat → pool(pool_size²) → Linear(kv_in, d_attn)）
+      - MHA(embed_dim=vit_dim, kdim=d_attn, vdim=d_attn, num_heads, batch_first=True)
+      - 所有投影 Xavier init（PyTorch MHA/Linear 預設），無 zero-init 梯度死鎖
+      - Gate: softplus(init≈0.05) + trainer gate warmup 保護穩定性
+
+    相對 v4（MLP）的改動：
+      - 移除 vgg_mlp_downs / vgg_mlp_ups（MLP 路徑）
+      - 新增 k_projs / v_projs / cross_attns（Cross-Attention 路徑）
+      - Q 不經瓶頸壓縮，保留完整 vit_dim 語意
 
     注入點：ViT-H Block [7, 15, 23, 31]（global attention blocks）
     輸入特徵：multi_scale_feats dict = {'l2': (B,256,H,W), 'l3': (B,512,H,W)}
 
     Diagnostics（trainer 相容）：
-        _last_inject_cos_sim  : float — 4 stage 注入前後 cosine similarity 均值
-        _last_gate_val        : float — 4 stage softplus(gate) 均值
-        _last_delta_norm_ratio: float — inject_delta_norm / vit_token_norm
+        _last_inject_cos_sim  : float — cos(q, injected) 4 stage 均值
+        _last_gate_val        : float — softplus(gate) 4 stage 均值
+        _last_delta_norm_ratio: float — ||gate*delta|| / ||q||
         _stage_cos_sims       : list[float] — per-stage cos_sim
         _stage_gate_vals      : list[float] — per-stage gate 值
     """
@@ -36,8 +41,9 @@ class MultiScaleCrossAttnInjector(nn.Module):
         vit_dim: int = 1280,
         l2_channels: int = 256,
         l3_channels: int = 512,
-        d_hidden: int = 256,
+        d_attn: int = 256,
         pool_size: int = 32,
+        num_heads: int = 4,
         gate_init: float = _DEFAULT_GATE_INIT,
     ):
         super().__init__()
@@ -48,19 +54,27 @@ class MultiScaleCrossAttnInjector(nn.Module):
         num_stages = len(self.INJECT_BLOCKS)
         self._num_stages = num_stages
 
-        # MLP_down: kv_in → d_hidden（per-stage）
-        self.vgg_mlp_downs = nn.ModuleList([
-            nn.Linear(kv_in, d_hidden) for _ in range(num_stages)
+        # K/V projections：VGG concat → d_attn（Xavier init by default）
+        self.k_projs = nn.ModuleList([
+            nn.Linear(kv_in, d_attn) for _ in range(num_stages)
+        ])
+        self.v_projs = nn.ModuleList([
+            nn.Linear(kv_in, d_attn) for _ in range(num_stages)
         ])
 
-        # MLP_up: d_hidden → vit_dim（per-stage）；zero-init 避免初期擾動
-        self.vgg_mlp_ups = nn.ModuleList([
-            nn.Linear(d_hidden, vit_dim, bias=False) for _ in range(num_stages)
+        # Cross-attention：Q(vit_dim) × K(d_attn) × V(d_attn) → delta(vit_dim)
+        self.cross_attns = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=vit_dim,
+                kdim=d_attn,
+                vdim=d_attn,
+                num_heads=num_heads,
+                batch_first=True,
+            )
+            for _ in range(num_stages)
         ])
-        for proj in self.vgg_mlp_ups:
-            nn.init.zeros_(proj.weight)
 
-        # Gate：softplus(raw_gate)，初始 ≈ 0.05
+        # Gate：softplus(raw_gate)，初始 ≈ 0.05，無上界
         self.gates = nn.ParameterList([
             nn.Parameter(torch.tensor(gate_init, dtype=torch.float32))
             for _ in range(num_stages)
@@ -99,7 +113,8 @@ class MultiScaleCrossAttnInjector(nn.Module):
         f_l3 = self._multi_scale_feats['l3'].to(output.device, dtype=output.dtype)
 
         B, H, W, C = output.shape
-        q = output.reshape(B, H * W, C)
+        q = output.reshape(B, H * W, C)   # 有梯度，用於殘差加法
+        Q = q.detach()                     # 無梯度，用於 attention key selection
 
         # VGG feats → interpolate to (H,W) → concat → pool → flatten
         if f_l2.shape[-2:] != (H, W):
@@ -107,19 +122,16 @@ class MultiScaleCrossAttnInjector(nn.Module):
         if f_l3.shape[-2:] != (H, W):
             f_l3 = F.interpolate(f_l3, size=(H, W), mode='bilinear', align_corners=False)
 
-        f_concat = torch.cat([f_l2, f_l3], dim=1)                          # (B, kv_in, H, W)
+        f_concat = torch.cat([f_l2, f_l3], dim=1)  # (B, kv_in, H, W)
         f_pooled = F.adaptive_avg_pool2d(f_concat, (self.pool_size, self.pool_size))
         f_flat = f_pooled.permute(0, 2, 3, 1).reshape(B, self.pool_size ** 2, -1)  # (B, P², kv_in)
 
-        # MLP: (B, P², kv_in) → (B, P², d_hidden) → (B, P², vit_dim)
-        h = F.gelu(self.vgg_mlp_downs[stage_idx](f_flat))
-        delta_spatial = self.vgg_mlp_ups[stage_idx](h)                     # (B, P², vit_dim)
+        # K, V projections（Xavier init）
+        K = self.k_projs[stage_idx](f_flat)   # (B, P², d_attn)
+        V = self.v_projs[stage_idx](f_flat)   # (B, P², d_attn)
 
-        # Bilinear upsample: pool_size×pool_size → H×W，保留空間結構
-        delta_map = delta_spatial.reshape(B, self.pool_size, self.pool_size, self.vit_dim)
-        delta_map = delta_map.permute(0, 3, 1, 2)                          # (B, vit_dim, P, P)
-        delta_map = F.interpolate(delta_map, size=(H, W), mode='bilinear', align_corners=False)
-        delta = delta_map.permute(0, 2, 3, 1).reshape(B, H * W, self.vit_dim)  # (B, H*W, vit_dim)
+        # Cross-attention：Q(detach) × K × V → delta
+        delta, _ = self.cross_attns[stage_idx](Q, K, V)  # (B, H*W, vit_dim)
 
         gate = F.softplus(self.gates[stage_idx])
         injected_flat = q + gate * delta
