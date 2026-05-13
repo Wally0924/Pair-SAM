@@ -121,3 +121,45 @@ def test_make_hook_post_still_exists():
     """_make_hook (post-hook) 必須保留供 ablation 使用。"""
     inj = MultiScaleCrossAttnInjector()
     assert hasattr(inj, '_make_hook')
+
+
+def test_mask_aware_path_activated_when_mask_provided():
+    """提供 mask 時應啟用 confidence-aware path，更新 _last_kv_keep_ratio。"""
+    inj = _small()
+    B, H, W, C = 1, 8, 8, 64
+    mask = torch.zeros(B, 1, H, W)
+    mask[:, :, :, :W // 2] = 1.0
+    feats = {
+        'l2':   torch.randn(B, 16, H, W) * mask,
+        'l3':   torch.randn(B, 32, H, W) * mask,
+        'mask': mask,
+    }
+    inj.set_features(feats)
+    out = inj._inject_at_stage(torch.randn(B, H, W, C), 0)
+    assert out.shape == (B, H, W, C)
+    assert 0.0 < inj._last_kv_keep_ratio < 1.0, \
+        f"expected partial keep_ratio, got {inj._last_kv_keep_ratio:.4f}"
+
+
+def test_backward_compat_no_mask_key():
+    """未提供 mask 時應退回 v5 原始邏輯，_last_kv_keep_ratio 維持 1.0。"""
+    inj = _small()
+    B, H, W, C = 1, 8, 8, 64
+    inj.set_features({'l2': torch.randn(B, 16, H, W), 'l3': torch.randn(B, 32, H, W)})
+    out = inj._inject_at_stage(torch.randn(B, H, W, C), 0)
+    assert out.shape == (B, H, W, C)
+    assert inj._last_kv_keep_ratio == 1.0
+
+
+def test_all_masked_fallback_no_nan():
+    """全 mask=0 的極端情況：fallback 保留最高 valid_ratio 的 cell，不可 NaN。"""
+    inj = _small()
+    B, H, W, C = 1, 8, 8, 64
+    feats = {
+        'l2':   torch.zeros(B, 16, H, W),
+        'l3':   torch.zeros(B, 32, H, W),
+        'mask': torch.zeros(B, 1,  H, W),
+    }
+    inj.set_features(feats)
+    out = inj._inject_at_stage(torch.randn(B, H, W, C), 0)
+    assert torch.isfinite(out).all(), "output must be finite even when mask is all zero"

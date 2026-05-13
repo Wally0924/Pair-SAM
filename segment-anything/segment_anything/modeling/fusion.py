@@ -242,8 +242,9 @@ class CMAAlignment(nn.Module):
         self._last_confidence_map = confidence.cpu()      # (B, 1, out_H, out_W)
 
         return {
-            'l2': f_ref_warped_l2_masked,   # (B, 256, out_H, out_W)
-            'l3': f_ref_warped_l3_masked,   # (B, 512, out_H, out_W)
+            'l2':   f_ref_warped_l2_masked,   # (B, 256, out_H, out_W)
+            'l3':   f_ref_warped_l3_masked,   # (B, 512, out_H, out_W)
+            'mask': hard_mask,                 # (B, 1,   out_H, out_W) — 1=valid, 0=ignore
         }
 
 
