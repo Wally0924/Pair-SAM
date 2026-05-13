@@ -53,10 +53,12 @@ def plot_history(history, output_dir):
     # train_col = f'train_{key}'，val_col = f'val_{key}'；缺失欄位自動跳過
     components = [
         ('total',           'Total Loss',                     'k',         'Train Total',      'Val Total'),
-        ('ce',              'CE Loss',                        'b',         'Train CE',         'Val CE'),
+        ('ce',              'CE Loss (unweighted)',           'b',         'Train CE',         'Val CE'),
+        ('ce_weighted',     'CE Loss (MFB-weighted)',         'royalblue', 'Train CE_w',       'Val CE_w'),
         ('lovasz',          'Lovász-Softmax Loss ↓',          'darkorange','Train Lovász',     'Val Lovász'),
         ('focal',           'Focal Loss',                     'r',         'Train Focal',      'Val Focal'),
-        ('dice',            'Dice Loss',                      'g',         'Train Dice',       'Val Dice'),
+        ('dice',            'Dice Loss (unweighted)',         'g',         'Train Dice',       'Val Dice'),
+        ('dice_weighted',   'Dice Loss (MFB-weighted)',       'seagreen',  'Train Dice_w',     'Val Dice_w'),
         # ── 需求 1: mIoU（僅 val，train 欄位不存在會自動跳過）──
         ('miou',            'Val mIoU ↑ [0→1]',              'darkgreen', 'Train mIoU',       'Val mIoU'),
         ('conf_mean',       'UAWarpC Confidence Mean [0-1]',  'purple',    'Train Conf',       'Val Conf'),
@@ -364,14 +366,18 @@ def main():
             "epoch": epoch + 1,
             "train_total":           train_metrics["total"],
             "train_ce":              train_metrics["ce"],
+            "train_ce_weighted":     train_metrics.get("ce_weighted", 0.0),
             "train_lovasz":          train_metrics.get("lovasz", 0.0),
             "train_focal":           train_metrics["focal"],
             "train_dice":            train_metrics["dice"],
+            "train_dice_weighted":   train_metrics.get("dice_weighted", 0.0),
             "val_total":             val_metrics["total"],
             "val_ce":                val_metrics["ce"],
+            "val_ce_weighted":       val_metrics.get("ce_weighted", 0.0),
             "val_lovasz":            val_metrics.get("lovasz", 0.0),
             "val_focal":             val_metrics["focal"],
             "val_dice":              val_metrics["dice"],
+            "val_dice_weighted":     val_metrics.get("dice_weighted", 0.0),
             # ── 需求 1 ──
             "val_miou":              val_metrics.get("miou", 0.0),
             # ── 需求 2 ──

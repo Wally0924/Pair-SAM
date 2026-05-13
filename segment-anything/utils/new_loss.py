@@ -143,17 +143,21 @@ class ContextLoss(nn.Module):
             fused_logits_hr: (B, 19, H, W) 融合後的 19 類別高解析度特徵圖。
             gt_mask: (B, H, W) 標註的 Ground Truth (0~18 類別，255 為忽略區)。
         Returns:
-            total_loss: (scalar) 加權總損失（用於 backward）。
-            ce_val:     (float)  原始未加權 CE（用於 monitoring）。
+            total_loss:   (scalar) 加權總損失（用於 backward）。
+            ce_val:       (float)  未加權 CE（純語意難度監控）。
+            lov_val:      (float)  Lovász-Softmax loss（lovasz_weight=0 時為 0）。
+            ce_weighted_val: (float) MFB 加權 CE（與 total_loss 中實際使用的一致；
+                              監控稀有類懲罰是否爆炸）。
         """
         valid_pixel_count = (gt_mask != 255).sum()
         if valid_pixel_count == 0:
             zero = torch.zeros((), device=fused_logits_hr.device, dtype=fused_logits_hr.dtype)
-            return zero, 0.0
+            return zero, 0.0, 0.0, 0.0
 
-        # ── 原始 CE（加 MFB 類別權重）──
-        ce_loss = self.ce_loss_fn(fused_logits_hr, gt_mask)
-        ce_val  = self.ce_unweighted(fused_logits_hr, gt_mask).item()
+        # ── CE：weighted（進 total）+ unweighted（純監控）──
+        ce_loss = self.ce_loss_fn(fused_logits_hr, gt_mask)             # MFB-weighted
+        ce_val  = self.ce_unweighted(fused_logits_hr, gt_mask).item()    # unweighted
+        ce_weighted_val = float(ce_loss.item())                          # weighted scalar
 
         total   = self.ce_weight * ce_loss
         lov_val = 0.0
@@ -165,7 +169,7 @@ class ContextLoss(nn.Module):
             total    = total + self.lovasz_weight * lov_loss
             lov_val  = lov_loss.item()
 
-        return total, ce_val, lov_val
+        return total, ce_val, lov_val, ce_weighted_val
 
 
 

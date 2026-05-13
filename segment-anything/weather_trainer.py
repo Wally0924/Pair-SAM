@@ -318,10 +318,12 @@ class WeatherSAMTrainer:
         self.model.train()
         losses = {
             "total": AverageMeter(),
-            "ce": AverageMeter(),
+            "ce": AverageMeter(),                # unweighted CE（語意難度）
+            "ce_weighted":      AverageMeter(),  # MFB 加權 CE（與 total 中實際貢獻一致）
             "lovasz":           AverageMeter(),  # Lovász-Softmax（0=停用）
             "focal": AverageMeter(),
-            "dice": AverageMeter(),
+            "dice": AverageMeter(),              # unweighted dice 平均
+            "dice_weighted":    AverageMeter(),  # MFB 加權 dice（與 total 中實際貢獻一致）
             "conf_mean":        AverageMeter(),  # UAWarpC 置信度全局均值 [0, 1]
             "valid_ratio":      AverageMeter(),  # warp 邊界內有效像素比例 [0, 1]
             "pred_conf_mean":   AverageMeter(),  # 19-class softmax max probability
@@ -357,9 +359,11 @@ class WeatherSAMTrainer:
 
                 total_loss = torch.tensor(0.0, device=self.device)
                 sample_ce_sum = 0.0
+                sample_ce_w_sum = 0.0
                 sample_lovasz_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
+                sample_dice_w_sum = 0.0
                 sample_pred_conf_sum = 0.0
                 sample_pred_entropy_sum = 0.0
                 sample_margin_sum = 0.0
@@ -409,6 +413,9 @@ class WeatherSAMTrainer:
                         sample_total_loss += (min_mask_loss * cls_w).sum() / cls_w.sum()
                         acc_focal = focal.squeeze(1).mean().item()
                         acc_dice  = dice.squeeze(1).mean().item()
+                        # MFB-weighted dice（反映 dice 對 total_loss 的實際貢獻）
+                        with torch.no_grad():
+                            acc_dice_w = float(((dice.squeeze(1) * cls_w).sum() / cls_w.sum()).item())
 
                     # ── Stage 3: 前 5 epoch detach，防止初期 Focal Loss 梯度爆炸 ──
                     if num_prompts > 0:
@@ -448,7 +455,7 @@ class WeatherSAMTrainer:
                         original_size=(1024, 1024),
                     )
                     
-                    context_loss, ce_val, lov_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
+                    context_loss, ce_val, lov_val, ce_w_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
                     sample_total_loss += context_loss
 
                     if i == 0:
@@ -461,9 +468,11 @@ class WeatherSAMTrainer:
 
                     total_loss = total_loss + sample_total_loss
                     sample_ce_sum += ce_val
+                    sample_ce_w_sum += ce_w_val
                     sample_lovasz_sum += lov_val
                     sample_focal_sum += float(acc_focal)
                     sample_dice_sum += float(acc_dice)
+                    sample_dice_w_sum += float(acc_dice_w)
 
                 total_loss = total_loss / float(batch_size)
                 loss_to_backward = total_loss / float(accumulation_steps)
@@ -503,9 +512,11 @@ class WeatherSAMTrainer:
             
             losses['total'].update(float(total_loss.item()), batch_size)
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
+            losses['ce_weighted'].update(float(sample_ce_w_sum) / float(batch_size), batch_size)
             losses['lovasz'].update(float(sample_lovasz_sum) / float(batch_size), batch_size)
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
+            losses['dice_weighted'].update(float(sample_dice_w_sum) / float(batch_size), batch_size)
             # CMA 診斷：直接從 fusion_module 屬性讀取（pre_align 是自定義方法，
             # register_forward_hook 不攔截，attn_monitor 的 hook 永遠不觸發）
             _fm = self.model.fusion_module
@@ -838,9 +849,11 @@ class WeatherSAMTrainer:
         losses = {
             "total": AverageMeter(),
             "ce": AverageMeter(),
+            "ce_weighted": AverageMeter(),
             "lovasz":           AverageMeter(),
             "focal": AverageMeter(),
             "dice": AverageMeter(),
+            "dice_weighted": AverageMeter(),
             "conf_mean": AverageMeter(),
             "valid_ratio": AverageMeter(),
             "pred_conf_mean": AverageMeter(),
@@ -869,14 +882,16 @@ class WeatherSAMTrainer:
                 outputs = self.model(batched_input)
 
                 sample_ce_sum = 0.0
+                sample_ce_w_sum = 0.0
                 sample_lovasz_sum = 0.0
                 sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
+                sample_dice_w_sum = 0.0
                 sample_pred_conf_sum = 0.0
                 sample_pred_entropy_sum = 0.0
                 sample_margin_sum = 0.0
                 total_loss = torch.tensor(0.0, device=self.device)
-                
+
                 for i in range(batch_size):
                     # [Mask2Former] 新輸出格式
                     low_res_logits = outputs[i]['low_res_logits'].squeeze(0)  # (K, 256, 256)
@@ -913,8 +928,9 @@ class WeatherSAMTrainer:
                         min_mask_loss = mask_total_loss.squeeze(1)
                         cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
                         sample_total_loss = sample_total_loss + (min_mask_loss * cls_w).sum() / cls_w.sum()
-                        acc_focal = float(focal.squeeze(1).mean().item())
-                        acc_dice  = float(dice.squeeze(1).mean().item())
+                        acc_focal  = float(focal.squeeze(1).mean().item())
+                        acc_dice   = float(dice.squeeze(1).mean().item())
+                        acc_dice_w = float(((dice.squeeze(1) * cls_w).sum() / cls_w.sum()).item())
 
                     # ── Stage 3 & 4: 所有 19 類別固定存在，直接使用（不需 -10 填充）──
                     if num_prompts > 0:
@@ -947,7 +963,7 @@ class WeatherSAMTrainer:
                         original_size=(1024, 1024),
                     )
                     
-                    context_loss, ce_val, lov_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
+                    context_loss, ce_val, lov_val, ce_w_val = self.context_loss_fn(fused_logits_hr, gt_mask_i)
 
                     # ── 需求 1: 混淆矩陣更新（argmax 預測 vs GT，排除 ignore_index=255）──
                     pred_cls = fused_logits_hr.argmax(dim=1).squeeze(0)  # (H, W)
@@ -964,18 +980,22 @@ class WeatherSAMTrainer:
 
                     total_loss = total_loss + sample_total_loss
                     sample_ce_sum += float(ce_val)
+                    sample_ce_w_sum += float(ce_w_val)
                     sample_lovasz_sum += float(lov_val)
                     sample_focal_sum += acc_focal
                     sample_dice_sum += acc_dice
+                    sample_dice_w_sum += float(acc_dice_w)
 
             step_count += 1
-            
+
             total_loss_avg = float(total_loss.item()) / float(batch_size)
             losses['total'].update(total_loss_avg, batch_size)
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
+            losses['ce_weighted'].update(float(sample_ce_w_sum) / float(batch_size), batch_size)
             losses['lovasz'].update(float(sample_lovasz_sum) / float(batch_size), batch_size)
             losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
+            losses['dice_weighted'].update(float(sample_dice_w_sum) / float(batch_size), batch_size)
             _fm = self.model.fusion_module
             losses['conf_mean'].update(getattr(_fm, '_last_conf_mean', 0.0), batch_size)
             losses['valid_ratio'].update(getattr(_fm, '_last_valid_ratio', 0.0), batch_size)
