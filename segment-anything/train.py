@@ -71,7 +71,7 @@ def plot_history(history, output_dir):
         ('scaler_scale',    'AMP Scaler Scale ↑ stable',      'gray',      'Train Scale',      'Val Scale'),
         # [testv14] WarpedVGG Adapter 診斷
         ('inject_cos_sim',  'WarpedVGG Inject CosSim ↑ stable','purple',   'Train Inj CosSim', 'Val Inj CosSim'),
-        ('inject_gate',     'WarpedVGG sigmoid(gate) ↑ learning','brown',  'Train Gate',       'Val Gate'),
+        ('inject_gate',     'WarpedVGG softplus(gate) ↑ learning','brown', 'Train Gate',       'Val Gate'),
     ]
 
     n_plots = len(components)
@@ -171,15 +171,15 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv14",)
+    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv15",)
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=150, help="總共訓練的 Epoch 數量")
-    parser.add_argument("--patience", type=int, default=15, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--epochs", type=int, default=80, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
-    parser.add_argument("--batch_size", type=int, default=1, help="每次前向傳播的 Batch size（ViT-H global attention 需大量 VRAM，建議 1）")
-    parser.add_argument("--accumulate_steps", type=int, default=8, help="梯度累積步數 (等效 batch_size = batch_size * steps，預設 1×8=8)")
+    parser.add_argument("--batch_size", type=int, default=2, help="每次前向傳播的 Batch size（ViT-H global attention 需大量 VRAM，建議 1）")
+    parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps，預設 1×8=8)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
     parser.add_argument("--max_norm", type=float, default=1.0, help="梯度裁剪的 Max norm。")
 
