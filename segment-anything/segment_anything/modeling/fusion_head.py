@@ -1,63 +1,72 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ResidualDWConvFusion(nn.Module):
     """
-    [Mask2Former-style 後置精修] 取代 ContextFusionHead 的輕量殘差融合模組。
+    [Mask2Former-style 後置精修] 重設計版本。
 
-    設計原則：
-      - Mask2Former self-attention 已處理 token 空間的類別競爭
-      - 此模組只補足 pixel 空間的局部空間一致性（self-attention 做不到的事）
-      - 殘差設計 + zero-init 最終層 → 初始時等同 identity，訓練穩定不爆梯度
+    核心設計改動（相對 v1）：
+      1. cross_class_mixer 移至 DW Conv 之前
+         原因：空間平滑應作用在「已知各 class 互相競爭結果」的 feature 上，
+         而非在各 class 獨立演化的 logit 上。先競爭再平滑，DW Conv 平滑的
+         方向才能與正確的類別邊界對齊。
+      2. cross_class_mixer 最後一層改用 small-init（std=0.01）而非 zero-init
+         原因：zero-init 需要 CE loss 先把輸出從 0 推離，等待期長達數千 iter。
+         small-init 讓 mixer 從訓練第一步就有微小輸出，梯度立即流動。
+      3. DW Conv 保持 dilation=1+2（有效感受野 ~7×7），做空間平滑。
 
     結構：
-      x → 3×3 DW Conv dilation=1（局部平滑）
-        → 3×3 DW Conv dilation=2（擴大至約 7×7 感受野）
-        → 1×1 PW Conv（跨類別線性混合／互斥抑制）
-        → residual add
-        → 缺席通道恢復為 ABSENT_FILL
-
-    zero-init 設計：pw_conv 權重與 bias 全初始化為 0，
-    訓練起始時 F(x) = 0，output = identity，讓模型穩定收斂後再逐漸學習修正量。
+      x → cross_class_mixer（跨類別競爭，residual add）
+        → DW Conv dilation=1 → GroupNorm
+        → DW Conv dilation=2 → GroupNorm
+        → residual add（with original x）
     """
 
     def __init__(self, num_classes: int = 19):
         super().__init__()
 
-        # 3×3 Depthwise Conv：每個 class channel 獨立做局部空間平滑。
+        # Step 1: Cross-class competition
+        # 19 → 64 → 19，非線性讓模型學習非線性的抑制關係
+        # small-init 最後一層：訓練初期輸出微小但非零，梯度立即流動
+        self.cross_class_mixer = nn.Sequential(
+            nn.Conv2d(num_classes, 64, kernel_size=1, bias=True),
+            nn.GELU(),
+            nn.Conv2d(64, num_classes, kernel_size=1, bias=True),
+        )
+        nn.init.normal_(self.cross_class_mixer[-1].weight, std=0.01)
+        nn.init.zeros_(self.cross_class_mixer[-1].bias)
+
+        # Step 2: Spatial smoothing（在競爭已建立的 feature 上做局部平滑）
+        # Per-class instance-style normalization，避免 absent class 填充值污染其他類別
         self.dw_conv1 = nn.Conv2d(
             num_classes, num_classes, kernel_size=3, padding=1, dilation=1,
-            groups=num_classes, bias=False
+            groups=num_classes, bias=False,
         )
-        # Per-class instance-style normalization，避免 absent class 的 -10 填充值污染其他類別通道。
         self.norm1 = nn.GroupNorm(num_groups=num_classes, num_channels=num_classes)
 
-        # dilation=2 讓兩層 DWConv 串接後覆蓋約 7×7 鄰域，補強破碎 logits 的局部一致性。
+        # dilation=2 讓兩層串接後有效感受野 ~7×7
         self.dw_conv2 = nn.Conv2d(
             num_classes, num_classes, kernel_size=3, padding=2, dilation=2,
-            groups=num_classes, bias=False
+            groups=num_classes, bias=False,
         )
         self.norm2 = nn.GroupNorm(num_groups=num_classes, num_channels=num_classes)
-
-        # 1×1 Pointwise Conv：跨類別線性混合，學習類別間的相互抑制關係
-        self.pw_conv = nn.Conv2d(num_classes, num_classes, kernel_size=1, bias=True)
-
-        # zero-init：確保訓練起始時此模組輸出等同 identity
-        nn.init.zeros_(self.pw_conv.weight)
-        nn.init.zeros_(self.pw_conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (B, num_classes, H, W) — 各類別 logit map（全 19 類，decoder 直接輸出）
+            x: (B, num_classes, H, W) — 各類別 logit map
         Returns:
             out: (B, num_classes, H, W) — 精修後的 logit map
         """
-        # F(x)：局部平滑 → 中程平滑 → 跨類別混合
+        identity = x
+
+        # 1. Cross-class competition（residual add 保護訓練穩定性）
+        x = x + self.cross_class_mixer(x)
+
+        # 2. Spatial smoothing on competition-adjusted features
         out = self.norm1(self.dw_conv1(x))
         out = self.norm2(self.dw_conv2(out))
-        out = self.pw_conv(out)
 
-        # 殘差相加（zero-init 保證初始時 out = x）
-        return out + x
+        return identity + out

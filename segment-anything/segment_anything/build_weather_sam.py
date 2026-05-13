@@ -2,7 +2,7 @@
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CMAAlignment, FlowGuidedSemanticAlignment, TextEncoder, WeatherSAM, MaskDecoder
+from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CMAAlignment, TextEncoder, WeatherSAM, MaskDecoder
 
 def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
     return _build_weather_sam(
@@ -83,11 +83,6 @@ def _build_weather_sam(
         confidence_threshold=0.2,
     )
 
-    gated_fusion = FlowGuidedSemanticAlignment(
-        embed_dim=prompt_embed_dim,
-        confidence_threshold=0.2,
-    )
-
     text_encoder = TextEncoder(
         model_name="ViT-B/32", # CLIP model
         output_dim=prompt_embed_dim,
@@ -100,7 +95,6 @@ def _build_weather_sam(
         prompt_encoder=prompt_encoder,
         mask_decoder=mask_decoder,
         fusion_module=fusion_module,
-        gated_fusion=gated_fusion,
         text_encoder=text_encoder,
         num_classes=num_classes,
     )

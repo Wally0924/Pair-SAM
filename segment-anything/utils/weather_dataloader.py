@@ -7,15 +7,19 @@ import os
 import pandas as pd
 
 class WeatherSegmentationDataset(Dataset):
-    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train'):
+    def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train',
+                 force_raw_images: bool = False):
         """
         Args:
             csv_file (str): CSV 路徑
             image_size (int): 統一縮放尺寸 (預設 1024)
             mode (str): 'train', 'val', 或 'test'
+            force_raw_images (bool): 強制使用原始影像，忽略預提取 feature cache。
+                當 Image Encoder 解凍訓練時必須設為 True，否則 encoder 被 bypass，梯度無法回傳。
         """
         self.image_size = image_size
         self.mode = mode
+        self.force_raw_images = force_raw_images
         
         # 1. 檢查並讀取 CSV
         if not os.path.exists(csv_file):
@@ -40,8 +44,8 @@ class WeatherSegmentationDataset(Dataset):
         if mode in ['train', 'val']:
             # 基本檢查：GT 與 Ref 必須存在
             subset = ['gt_path', self.ref_col]
-            # 如果是快取模式，也要檢查 feature_path 是否存在 (非 NaN)
-            if self.has_cached_features:
+            # force_raw_images=True 時不使用快取，不要求 feature_path 非空
+            if self.has_cached_features and not self.force_raw_images:
                 subset.append('feature_path')
                 
             initial_len = len(self.data)
@@ -68,11 +72,14 @@ class WeatherSegmentationDataset(Dataset):
         output = {}
         
         # ===========================================================
-        # 1. 判斷是否使用 Cache (訓練模式下強制關閉 Cache 以便做增強)
+        # 1. 判斷是否使用 Cache
         # ===========================================================
-        # 只有當檔案存在時，才使用 cache (現在訓練與驗證都支援 Cache)
+        # force_raw_images=True 時強制走原始影像路徑（Image Encoder 解凍訓練必須如此）
         use_cache = False
-        if self.has_cached_features and pd.notna(row.get('feature_path')) and os.path.exists(str(row.get('feature_path'))):
+        if (not self.force_raw_images
+                and self.has_cached_features
+                and pd.notna(row.get('feature_path'))
+                and os.path.exists(str(row.get('feature_path')))):
             use_cache = True
 
         # 準備變數 (若是 cache 模式，這些變數可能不會被建立，所以先 init)
@@ -160,7 +167,7 @@ class WeatherSegmentationDataset(Dataset):
             # E. 轉 Tensor
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
             output["image"] = image_tensor
-            # clear_image：供 predict_single_image 即時 encode，取得 clear_embedding
+            # clear_image：供 CMAAlignment.pre_align() 提取 VGG 特徵使用
             output["clear_image"] = torch.as_tensor(clear_image).permute(2, 0, 1).float()
 
         # ===========================================================
@@ -168,15 +175,6 @@ class WeatherSegmentationDataset(Dataset):
         # ===========================================================
 
         output["original_size"] = original_size
-
-        # [image-pair] 載入 clear-weather ViT-H embedding（作為 CrossViewAlignment 的 f_ref）
-        # 若 CSV 有 clear_feature_path 且檔案存在，直接載入預算 embedding (256, 64, 64)
-        # 若無，退回全零 tensor（模型仍可訓練，但 CrossViewAlignment 退化為 self-attention）
-        if self.has_clear_features and pd.notna(row.get('clear_feature_path')) and os.path.exists(str(row['clear_feature_path'])):
-            clear_embedding = torch.load(str(row['clear_feature_path']), weights_only=True)  # (256, 64, 64)
-        else:
-            clear_embedding = torch.zeros(256, 64, 64, dtype=torch.float32)
-        output["clear_embedding"] = clear_embedding
 
         # 處理 Ref Void Mask (黑色區域檢測)
         ref_mask_tensor = torch.as_tensor(ref_mask).permute(2, 0, 1).float()
@@ -199,18 +197,18 @@ class WeatherSegmentationDataset(Dataset):
         # 固定使用全部 19 個類別（與推論時保持一致，消除 oracle gap）
         output["text_prompts"] = [self.ID_TO_NAME[i] for i in range(len(self.ID_TO_NAME))]
 
-        # 處理 condition_id（天氣條件索引，ACDC 專用：fog=0, rain=1, snow=2）
-        # Strict mode：CSV 必須有合法 condition_id (0/1/2)，缺失或越界直接 raise
+        # 處理 condition_id（天氣條件索引：fog=0, rain=1, snow=2, night=3）
+        # Strict mode：CSV 必須有合法 condition_id，缺失或越界直接 raise
         cid_raw = row.get('condition_id')
         if 'condition_id' not in row or pd.isna(cid_raw):
             raise ValueError(
                 f"Sample {idx} 缺少 condition_id 欄位。"
-                f"請確認 CSV 為 ACDC 格式且 condition_id ∈ {{0,1,2}}（fog/rain/snow）。"
+                f"請確認 CSV 有 condition_id 欄位且值 ∈ {{0,1,2,3}}（fog/rain/snow/night）。"
             )
         cid_int = int(cid_raw)
-        if cid_int not in (0, 1, 2):
+        if cid_int not in (0, 1, 2, 3):
             raise ValueError(
-                f"Sample {idx} 的 condition_id={cid_int} 越界，必須為 0(fog)/1(rain)/2(snow)。"
+                f"Sample {idx} 的 condition_id={cid_int} 越界，必須為 0(fog)/1(rain)/2(snow)/3(night)。"
             )
         output["condition_id"] = torch.tensor(cid_int, dtype=torch.long)
 
@@ -247,9 +245,6 @@ class WeatherSegmentationDataset(Dataset):
             "condition_id": condition_ids,
             "condition": conditions,
         }
-
-        # [image-pair] clear-weather ViT-H embedding
-        batch_dict['clear_embedding'] = torch.stack([item['clear_embedding'] for item in batch])
 
         # 2. 動態處理影像輸入
         if 'image_embedding' in batch[0]:

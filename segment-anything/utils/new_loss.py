@@ -39,18 +39,102 @@ def _build_median_freq_weights(freq: torch.Tensor, cap: float = 10.0) -> torch.T
     return w / w.mean()
 
 
+# 預算好的 MFB 類別權重（供 MaskLoss 加權平均使用）
+# 稀少類（rider/motorcycle/bicycle）最高可達 cap=10，正規化後均值=1
+ACDC_CLASS_WEIGHTS: torch.Tensor = _build_median_freq_weights(_ACDC_CLASS_FREQ)
+
+
+# =============================================================================
+# Lovász-Softmax Loss（嵌入實作，無需外部套件）
+# 來源：Berman et al., CVPR 2018 — "The Lovász-Softmax Loss"
+# https://github.com/bermanmaxim/LovaszSoftmax
+# 直接優化 IoU 的可微近似，梯度方向與 mIoU 評估指標完全對齊。
+# =============================================================================
+
+def _lovasz_grad(gt_sorted: torch.Tensor) -> torch.Tensor:
+    """計算 Lovász extension 的梯度（排序後的 GT 向量）。"""
+    p = gt_sorted.numel()
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1.0 - intersection / union
+    if p > 1:
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:p - 1]
+    return jaccard
+
+
+def _lovasz_softmax_flat(probs: torch.Tensor, labels: torch.Tensor,
+                          classes: str = 'present') -> torch.Tensor:
+    """
+    probs : (P, C) softmax 機率，P = 有效像素數
+    labels: (P,)   GT 類別 id
+    classes: 'all' 計算全部 C 類；'present' 只計算出現在此 batch 的類別
+    """
+    C = probs.shape[1]
+    losses = []
+    class_to_sum = list(range(C)) if classes == 'all' else torch.unique(labels).tolist()
+    for c in class_to_sum:
+        fg = (labels == c).float()
+        if fg.sum() == 0:
+            continue
+        errors = (fg - probs[:, c]).abs()
+        errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
+        fg_sorted = fg[perm]
+        losses.append(torch.dot(errors_sorted, _lovasz_grad(fg_sorted)))
+    return torch.stack(losses).mean() if losses else probs.sum() * 0.0
+
+
+def lovasz_softmax(probs: torch.Tensor, labels: torch.Tensor,
+                   classes: str = 'present', ignore_index: int = 255) -> torch.Tensor:
+    """
+    多類別 Lovász-Softmax Loss。
+
+    Inputs:
+        probs : (B, C, H, W) softmax 機率（請先對 logits 做 .softmax(dim=1)）
+        labels: (B, H, W)    GT（ignore_index 會被過濾）
+        classes: 'present' 僅計算 batch 中出現的類別（訓練用，更穩定）
+        ignore_index: 忽略的 GT 值（預設 255）
+    """
+    B, C, H, W = probs.shape
+    probs_flat  = probs.permute(0, 2, 3, 1).reshape(-1, C)   # (B*H*W, C)
+    labels_flat = labels.reshape(-1)                           # (B*H*W,)
+
+    valid = labels_flat != ignore_index
+    probs_flat  = probs_flat[valid]
+    labels_flat = labels_flat[valid]
+
+    if labels_flat.numel() == 0:
+        return probs.sum() * 0.0
+
+    return _lovasz_softmax_flat(probs_flat, labels_flat, classes=classes)
+
+
+# =============================================================================
+# ContextLoss
+# =============================================================================
+
 class ContextLoss(nn.Module):
     """
-    計算 ResidualDWConvFusion 輸出的 19 類別高解析度 logits 的 Cross Entropy Loss。
-    使用 ACDC 訓練集實測頻率做 Median Frequency Balancing，補償 long-tail class 監督信號。
+    計算 ResidualDWConvFusion 輸出的 19 類別高解析度 logits 的語意分割損失。
+
+    組成：
+      - weighted CE（Median Frequency Balancing）：補償 long-tail class 監督信號
+      - Lovász-Softmax（可選）：直接優化 mIoU 的可微近似，梯度方向與評估指標對齊
+
+    lovasz_weight=0.0 時退化為原始純 CE 行為，完全向後相容。
     """
-    def __init__(self, ce_weight: float = 1.0, num_classes: int = 19):
+    def __init__(self, ce_weight: float = 1.0, num_classes: int = 19,
+                 label_smoothing: float = 0.0, lovasz_weight: float = 0.0):
         super().__init__()
-        self.ce_weight = ce_weight
+        self.ce_weight     = ce_weight
+        self.lovasz_weight = lovasz_weight
+
         class_weights = _build_median_freq_weights(_ACDC_CLASS_FREQ)
-        # register_buffer 確保 .to(device) 時自動跟著移動
         self.register_buffer('class_weights', class_weights)
-        self.ce_loss_fn   = nn.CrossEntropyLoss(weight=self.class_weights, ignore_index=255)
+        self.ce_loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights, ignore_index=255,
+            label_smoothing=label_smoothing,
+        )
         self.ce_unweighted = nn.CrossEntropyLoss(ignore_index=255)
 
     def forward(self, fused_logits_hr: torch.Tensor, gt_mask: torch.Tensor):
@@ -59,17 +143,29 @@ class ContextLoss(nn.Module):
             fused_logits_hr: (B, 19, H, W) 融合後的 19 類別高解析度特徵圖。
             gt_mask: (B, H, W) 標註的 Ground Truth (0~18 類別，255 為忽略區)。
         Returns:
-            total_loss: (scalar) weighted CE loss（用於 backward）。
-            ce_val: (float) 原始未加權 CE（用於 monitoring，與舊版 log 可比較）。
+            total_loss: (scalar) 加權總損失（用於 backward）。
+            ce_val:     (float)  原始未加權 CE（用於 monitoring）。
         """
         valid_pixel_count = (gt_mask != 255).sum()
         if valid_pixel_count == 0:
             zero = torch.zeros((), device=fused_logits_hr.device, dtype=fused_logits_hr.dtype)
             return zero, 0.0
 
+        # ── 原始 CE（加 MFB 類別權重）──
         ce_loss = self.ce_loss_fn(fused_logits_hr, gt_mask)
         ce_val  = self.ce_unweighted(fused_logits_hr, gt_mask).item()
-        return self.ce_weight * ce_loss, ce_val
+
+        total   = self.ce_weight * ce_loss
+        lov_val = 0.0
+
+        # ── Lovász-Softmax（lovasz_weight=0 時跳過，不影響原有行為）──
+        if self.lovasz_weight > 0.0:
+            probs    = fused_logits_hr.softmax(dim=1)
+            lov_loss = lovasz_softmax(probs, gt_mask, classes='present', ignore_index=255)
+            total    = total + self.lovasz_weight * lov_loss
+            lov_val  = lov_loss.item()
+
+        return total, ce_val, lov_val
 
 
 
@@ -83,7 +179,7 @@ class MaskLoss(nn.Module):
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
         self.smooth = 1e-5
-        
+
         self.gamma = 2.0
         self.alpha = 0.75  # 正樣本（前景）權重，負樣本為 1-alpha=0.25；必須在 (0,1)
 
@@ -99,38 +195,36 @@ class MaskLoss(nn.Module):
             dice_loss: (B, K) K 個候選 Mask 的 Dice Loss。
         """
         B, K, H, W = pred_masks.shape
-        
+
         p_t = torch.sigmoid(pred_masks)
-        
+
         p_t_masked = p_t * valid_mask
         target_t_masked = target_mask * valid_mask
-        
+
         # --- 計算 Focal Loss ---
         p_t_clamped = torch.clamp(p_t, min=1e-7, max=1.0-1e-7)
         p_t_clamped_masked = p_t_clamped * valid_mask
         prob_correct = p_t_clamped_masked * target_t_masked + (1.0 - p_t_clamped) * (1.0 - target_t_masked) * valid_mask
-        
+
         target_t_expanded = target_mask.expand(-1, K, -1, -1)
         bce_loss_raw = F.binary_cross_entropy_with_logits(pred_masks, target_t_expanded, reduction='none')
         bce_loss = bce_loss_raw * valid_mask
-        
+
         focal_term = (1.0 - prob_correct) ** self.gamma
         alpha_term = self.alpha * target_t_masked + (1.0 - self.alpha) * (1.0 - target_t_masked)
-        
+
         focal_loss_pixel = alpha_term * focal_term * bce_loss
-        
+
         valid_pixels = valid_mask.sum(dim=(2, 3)) + 1e-6 # (B, 1)
         focal_loss = focal_loss_pixel.sum(dim=(2, 3)) / valid_pixels # (B, K)
-        
+
         # --- 計算 Dice Loss ---
         intersection = (p_t_clamped_masked * target_t_masked).sum(dim=(2, 3)) # (B, K)
         target_t_masked_expanded = target_t_masked.expand(-1, K, -1, -1) # (B, K, H, W)
         union = p_t_clamped_masked.sum(dim=(2, 3)) + target_t_masked_expanded.sum(dim=(2, 3)) # (B, K)
-        
+
         dice_loss = 1.0 - (2.0 * intersection + self.smooth) / (union + self.smooth) # (B, K)
-        
+
         total_loss = self.focal_weight * focal_loss + self.dice_weight * dice_loss
-        
+
         return total_loss, focal_loss, dice_loss
-
-

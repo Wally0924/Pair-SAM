@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 import os
@@ -24,11 +25,13 @@ CITYSCAPES_PALETTE = np.array([
 ], dtype=np.uint8)
 
 class InferenceRunner:
-    def __init__(self, model, device, output_dir="inference_results", use_reference=True):
+    def __init__(self, model, device, output_dir="inference_results", use_reference=True,
+                 temperature: float = 1.0):
         self.model = model
         self.device = device
         self.output_dir = output_dir
         self.use_reference = use_reference
+        self.temperature = temperature  # T<1.0: sharper competition; T=1.0: standard softmax
         os.makedirs(output_dir, exist_ok=True)
 
         self.classes = CITYSCAPES_CLASSES
@@ -111,9 +114,14 @@ class InferenceRunner:
             original_size=(orig_h, orig_w),
         )
 
-        # --- 6. Argmax 決策（不再套 max_logits<0 過濾；trainer 亦未套用）---
+        # --- 6. Argmax 決策（temperature softmax 強化跨類別競爭）---
+        # T < 1.0：sharpening，放大 logit 差距，減少低 confidence 區域的隨機跳類別
+        # T = 1.0：標準 softmax（不影響 argmax 結果，但可與 T<1.0 做 ablation 對比）
         fused_logits = fused_logits.squeeze(0)  # (19, H, W)
-        pred_mask = torch.argmax(fused_logits, dim=0)  # (H, W)
+        if self.temperature != 1.0:
+            pred_mask = F.softmax(fused_logits / self.temperature, dim=0).argmax(dim=0)
+        else:
+            pred_mask = torch.argmax(fused_logits, dim=0)
         return pred_mask.cpu().numpy()
 
     def visualize(self, sample, pred_mask, gt_np, idx, miou=None):
@@ -272,8 +280,8 @@ class InferenceRunner:
 
 def register_diagnostic_hooks(model):
     """
-    在 fusion_module（CMAAlignment）與 gated_fusion（FlowGuidedSemanticAlignment）上掛 forward hook，
-    擷取每次推論的中間特徵統計，以驗證模組確實在運作。
+    在 fusion_module（CMAAlignment）上掛 forward hook，
+    擷取每次推論的中間特徵統計。
 
     回傳 diag dict（每次 forward 後會被更新）與 hook handle list（呼叫 remove() 可清除）。
     """
@@ -288,7 +296,7 @@ def register_diagnostic_hooks(model):
             diag['f_curr_norm'] = f_curr.norm(dim=1).mean().item()
         if f_ref is not None:
             diag['f_ref_norm'] = f_ref.norm(dim=1).mean().item()
-            diag['_f_curr_for_diff'] = f_curr  # 暫存供 output hook 計算 diff
+            diag['_f_curr_for_diff'] = f_curr
 
     def out_hook_fusion(_, __, output):
         # CMAAlignment.forward() 回傳 (f_ref_warped, confidence) tuple
@@ -303,37 +311,23 @@ def register_diagnostic_hooks(model):
             ).mean().item()
             diag['align_cosine_sim'] = cos
 
-    # gated_fusion（FlowGuidedSemanticAlignment）以 positional args 呼叫，
-    # alpha 已存於 module._last_alpha；直接在 output hook 讀取，無需 pre_hook 暫存。
-    def out_hook_gate(module, __, output):
-        diag['f_fused_norm'] = output.norm(dim=1).mean().item()
-        # _last_alpha 由 FlowGuidedSemanticAlignment.forward() 於每次呼叫後更新
-        alpha = getattr(module, '_last_alpha', None)
-        if alpha is not None:
-            diag['alpha_mean'] = alpha.mean().item()
-            diag['alpha_std']  = alpha.std().item()
-            diag['alpha_min']  = alpha.min().item()
-            diag['alpha_max']  = alpha.max().item()
-        # cross-attn entropy（_last_attn_w 已存於 module）
-        attn_w = getattr(module, '_last_attn_w', None)
-        if attn_w is not None:
-            aw = attn_w.float().clamp(min=1e-9)
-            diag['attn_entropy'] = (-(aw * aw.log()).sum(dim=-1)).mean().item()
-
     handles.append(model.fusion_module.register_forward_pre_hook(pre_hook_fusion, with_kwargs=True))
     handles.append(model.fusion_module.register_forward_hook(out_hook_fusion))
-    handles.append(model.gated_fusion.register_forward_hook(out_hook_gate))
     return diag, handles
 
 
 if __name__ == "__main__":
-    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_mask2former_testv5_noabl/weather_sam_best_latest.pth"
+    CHECKPOINT_PATH = "/home/rvl1421/SAM_research-1/segment-anything/outputs_weather_sam_mask2former_testv7/weather_sam_best_latest.pth"
     # raw image mode：使用有 ref_image_path 的 CSV，adverse 與 clear 圖都即時過 image_encoder
     # 若改用 acdc_val_with_embeddings.csv 並移除 has_cached_features=False，則改走預算 embedding 模式
     TEST_CSV_PATH = "/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_val.csv"
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     USE_REFERENCE = True   # True = full model (clear image → image_encoder), False = ablation (zeros)
+
+    # Temperature scaling sweep: T<1.0 sharpens cross-class competition
+    # 建議先用 TEMPERATURE=1.0 確認 baseline，再嘗試 0.7, 0.5, 0.3
+    TEMPERATURE = 1.0     # sweep 候選: [1.0, 0.7, 0.5, 0.3]
 
     print("Loading Model...")
     model = build_weather_sam_vit_h(checkpoint=CHECKPOINT_PATH)
@@ -350,11 +344,13 @@ if __name__ == "__main__":
         collate_fn=WeatherSegmentationDataset.collate_fn
     )
 
-    out_dir = "inference_viz_acdc_testv5_noabl_ref" if USE_REFERENCE else "inference_viz_acdc_testv5_noabl_noref"
+    out_dir = "inference_viz_acdc_testv7" if USE_REFERENCE else "inference_viz_acdc_testv5_noabl_noref"
     print(f"Reference ablation: use_reference={USE_REFERENCE}  →  output: {out_dir}")
-    print(f"Diagnostic hooks registered on fusion_module (CMAAlignment) & gated_fusion (FlowGuidedSemanticAlignment)\n")
+    print(f"Temperature: {TEMPERATURE}  (T<1.0 sharpens cross-class competition)")
+    print(f"Diagnostic hooks registered on fusion_module (CMAAlignment)\n")
 
-    runner = InferenceRunner(model, DEVICE, output_dir=out_dir, use_reference=USE_REFERENCE)
+    runner = InferenceRunner(model, DEVICE, output_dir=out_dir, use_reference=USE_REFERENCE,
+                             temperature=TEMPERATURE)
 
     # 覆寫 run_inference 以印出每張的診斷數值
     orig_predict = runner.predict_single_image
@@ -368,10 +364,7 @@ if __name__ == "__main__":
             f"f_align_norm={diag.get('f_align_norm',0):.3f}  "
             f"conf={diag.get('conf_mean',0):.3f}  "
             f"align_diff={diag.get('align_diff_from_curr',0):.4f}  "
-            f"cosine_sim={diag.get('align_cosine_sim',0):.4f}  "
-            f"alpha={diag.get('alpha_mean',0):.3f}±{diag.get('alpha_std',0):.3f}"
-            f"[{diag.get('alpha_min',0):.2f}~{diag.get('alpha_max',0):.2f}]  "
-            f"attn_ent={diag.get('attn_entropy',0):.3f}"
+            f"cosine_sim={diag.get('align_cosine_sim',0):.4f}"
         )
         return result
     runner.predict_single_image = predict_with_diag
