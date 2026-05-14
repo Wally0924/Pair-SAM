@@ -7,6 +7,7 @@ E1: ACDC val 完整評估
 import json
 import math
 import sys
+from datetime import datetime
 from pathlib import Path
 import numpy as np
 import torch
@@ -141,7 +142,7 @@ def main():
     lines.append('# E1: WeatherSAM v15 (E18) — ACDC val Evaluation')
     lines.append('')
     lines.append(f'**Checkpoint:** `{Path(DEFAULT_CKPT).name}`')
-    lines.append(f'**Date:** 2026-05-14')
+    lines.append(f'**Date:** {datetime.now().strftime("%Y-%m-%d")}')
     lines.append(f'**Samples:** {sum(sample_counts.values())} ' +
                  '(' + ', '.join(f'{CONDITION_NAMES[cid]}={n}'
                                   for cid, n in sample_counts.items()) + ')')
