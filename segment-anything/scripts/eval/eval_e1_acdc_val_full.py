@@ -139,7 +139,7 @@ def main():
     # ── 輸出 Markdown ──
     md_path = OUTPUT_ROOT / 'e1_acdc_val_results.md'
     lines = []
-    lines.append('# E1: WeatherSAM v15 (E18) — ACDC val Evaluation')
+    lines.append('# E1: WeatherSAM v15 (E27) — ACDC val Evaluation')
     lines.append('')
     lines.append(f'**Checkpoint:** `{Path(DEFAULT_CKPT).name}`')
     lines.append(f'**Date:** {datetime.now().strftime("%Y-%m-%d")}')

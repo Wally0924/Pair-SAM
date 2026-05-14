@@ -20,7 +20,7 @@ from utils.weather_dataloader import WeatherSegmentationDataset
 # ── 預設路徑 ───────────────────────────────────────────────
 DEFAULT_CKPT = str(
     _SEGANY_ROOT / "outputs_weather_sam_mask2former_testv15" /
-    "best_E18_mIoU65.06_LR4.6e-05.pth"
+    "best_E27_mIoU65.68_LR4.0e-05.pth"
 )
 DEFAULT_VAL_CSV = str(
     _SEGANY_ROOT.parent / "Datasets" / "acdc_adverse_ref_rgb_val.csv"
