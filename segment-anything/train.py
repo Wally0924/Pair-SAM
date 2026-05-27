@@ -56,7 +56,6 @@ def plot_history(history, output_dir):
         ('ce',              'CE Loss (unweighted)',           'b',         'Train CE',         'Val CE'),
         ('ce_weighted',     'CE Loss (MFB-weighted)',         'royalblue', 'Train CE_w',       'Val CE_w'),
         ('lovasz',          'Lovász-Softmax Loss ↓',          'darkorange','Train Lovász',     'Val Lovász'),
-        ('focal',           'Focal Loss',                     'r',         'Train Focal',      'Val Focal'),
         ('dice',            'Dice Loss (unweighted)',         'g',         'Train Dice',       'Val Dice'),
         ('dice_weighted',   'Dice Loss (MFB-weighted)',       'seagreen',  'Train Dice_w',     'Val Dice_w'),
         # ── 需求 1: mIoU（僅 val，train 欄位不存在會自動跳過）──
@@ -145,7 +144,6 @@ def print_training_config(args, device):
     # 3. Decoupled Loss Weights
     print(f"\n⚖️  Decoupled Loss Weights:")
     print(f"   • CE Weight:         {args.ce_weight}")
-    print(f"   • Focal Weight:      {args.focal_weight}")
     print(f"   • Dice Weight:       {args.dice_weight}")
     lovasz_w = getattr(args, 'lovasz_weight', 0.0)
     print(f"   • Lovász Weight:     {lovasz_w}{'  (disabled)' if lovasz_w == 0.0 else '  ← mIoU-aligned'}")
@@ -187,10 +185,8 @@ def main():
 
     # --- Decoupled Loss 權重 ---
     parser.add_argument("--ce_weight", type=float, default=2.0, help="ContextLoss (CrossEntropy) 權重")
-    parser.add_argument("--focal_weight", type=float, default=0.0,
-                        help="MaskLoss (Focal) 權重；0.0=停用（Focal γ=2 會壓制信心成長）")
     parser.add_argument("--dice_weight",  type=float, default=1.0,
-                        help="MaskLoss (Dice) 權重；移除 Focal 後調高至 1.0")
+                        help="MaskLoss (Dice) 權重")
     parser.add_argument("--label_smoothing", type=float, default=0.05, help="CE label smoothing（建議 0.05）")
     parser.add_argument("--lovasz_weight", type=float, default=1.0,
                         help="Lovász-Softmax Loss 權重（0.0=停用，退化為純 CE；建議從 0.5 開始實驗）。"
@@ -368,14 +364,12 @@ def main():
             "train_ce":              train_metrics["ce"],
             "train_ce_weighted":     train_metrics.get("ce_weighted", 0.0),
             "train_lovasz":          train_metrics.get("lovasz", 0.0),
-            "train_focal":           train_metrics["focal"],
             "train_dice":            train_metrics["dice"],
             "train_dice_weighted":   train_metrics.get("dice_weighted", 0.0),
             "val_total":             val_metrics["total"],
             "val_ce":                val_metrics["ce"],
             "val_ce_weighted":       val_metrics.get("ce_weighted", 0.0),
             "val_lovasz":            val_metrics.get("lovasz", 0.0),
-            "val_focal":             val_metrics["focal"],
             "val_dice":              val_metrics["dice"],
             "val_dice_weighted":     val_metrics.get("dice_weighted", 0.0),
             # ── 需求 1 ──
@@ -433,7 +427,7 @@ def main():
         lov_val = val_metrics.get('lovasz', 0.0)
         lov_str = f", Lovász:{lov_val:.4f}" if lov_val > 0.0 else ""
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}{lov_str}, Focal:{val_metrics['focal']:.4f}, Dice:{val_metrics['dice']:.4f})")
+        print(f"               (CE:{val_metrics['ce']:.4f}{lov_str}, Dice:{val_metrics['dice']:.4f})")
         print(f"               [Val mIoU] {val_miou*100:.2f}%")
         # Per-class IoU（縮寫格式，每類別顯示至小數點後一位）
         per_cls = val_metrics.get('per_class_iou', [])

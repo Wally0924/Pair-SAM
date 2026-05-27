@@ -2,7 +2,8 @@
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional, Type
+from typing import Tuple, Optional
+
 
 class WeatherPromptEncoder(nn.Module):
     def __init__(
@@ -10,14 +11,12 @@ class WeatherPromptEncoder(nn.Module):
         embed_dim: int,
         image_embedding_size: Tuple[int, int],
         input_image_size: Tuple[int, int],
-        mask_in_chans: int, 
-        activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         """
         修改版 WeatherPromptEncoder (Sparse Prompt Strategy):
         1. 接收 Text Embeddings
         2. 接收 Location Embeddings
-        將兩者串接作為 Transformer 的 Tokens。
+        將兩者串接作為 Transformer 的 Tokens；dense prompt 固定為 no_mask_embed。
         """
         super().__init__()
         self.embed_dim = embed_dim

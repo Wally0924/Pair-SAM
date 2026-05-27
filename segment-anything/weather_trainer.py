@@ -71,7 +71,7 @@ class AttentionMonitor:
 class WeatherSAMTrainer:
     """
     負責訓練 WeatherSAM 的訓練器（Mask2Former-style），實作解耦式的多重 Loss 計算：
-    包含 MaskLoss (Focal+Dice)、ContextLoss (CE)。
+    包含 MaskLoss (Dice)、ContextLoss (CE + 可選 Lovász)。
     """
     def __init__(
         self, 
@@ -93,22 +93,20 @@ class WeatherSAMTrainer:
         lr = args.lr if args else 1e-4
         
         ce_w = getattr(args, 'ce_weight', 1.0)
-        focal_w = getattr(args, 'focal_weight', 3.0)
         dice_w = getattr(args, 'dice_weight', 1.0)
-        # iou_w = getattr(args, 'iou_weight', 1.0)  # [Mask2Former] IoU MSE Loss 已移除
         decoder_lr_scale = getattr(args, 'decoder_lr_scale', 0.1)
         transformer_lr_scale = getattr(args, 'transformer_lr_scale', 0.01)
-        
+
         label_smooth  = getattr(args, 'label_smoothing', 0.0)
         lovasz_w      = getattr(args, 'lovasz_weight',   0.0)
-        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Focal: {focal_w}, Dice: {dice_w}], "
+        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Dice: {dice_w}], "
               f"Lovász: {lovasz_w}, LabelSmooth: {label_smooth})")
         print(f"🔓 MaskDecoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
         print(f"🔓 MaskDecoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
         self.context_loss_fn = ContextLoss(
             ce_weight=ce_w, label_smoothing=label_smooth, lovasz_weight=lovasz_w,
         ).to(self.device)
-        self.mask_loss_fn = MaskLoss(focal_weight=focal_w, dice_weight=dice_w)
+        self.mask_loss_fn = MaskLoss(dice_weight=dice_w)
         # Gate warmup：識別 gate 參數，前 warmup_gate_epochs 個 epoch 凍結
         self.warmup_gate_epochs = getattr(args, 'warmup_gate_epochs', 3)
         self._gate_params = [
@@ -286,7 +284,7 @@ class WeatherSAMTrainer:
     def train_epoch(self, epoch_index: int):
         """
         執行單一 Epoch 的模型訓練（Mask2Former-style 解耦 Multi-Loss）：
-        Stage 1: MaskLoss (Focal+Dice，每類別 1 mask)。
+        Stage 1: MaskLoss (Dice，每類別 1 mask)。
         Stage 3: 漸進式梯度解放（前 5 epoch detach）。
         Stage 4: 組裝 19 個 class channel。
         Stage 5: ResidualDWConvFusion + ContextLoss (CE)。
@@ -321,7 +319,6 @@ class WeatherSAMTrainer:
             "ce": AverageMeter(),                # unweighted CE（語意難度）
             "ce_weighted":      AverageMeter(),  # MFB 加權 CE（與 total 中實際貢獻一致）
             "lovasz":           AverageMeter(),  # Lovász-Softmax（0=停用）
-            "focal": AverageMeter(),
             "dice": AverageMeter(),              # unweighted dice 平均
             "dice_weighted":    AverageMeter(),  # MFB 加權 dice（與 total 中實際貢獻一致）
             "conf_mean":        AverageMeter(),  # UAWarpC 置信度全局均值 [0, 1]
@@ -361,7 +358,6 @@ class WeatherSAMTrainer:
                 sample_ce_sum = 0.0
                 sample_ce_w_sum = 0.0
                 sample_lovasz_sum = 0.0
-                sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
                 sample_dice_w_sum = 0.0
                 sample_pred_conf_sum = 0.0
@@ -386,9 +382,10 @@ class WeatherSAMTrainer:
                     valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1)  # (1, 1, 1024, 1024)
 
                     sample_total_loss = torch.tensor(0.0, device=self.device)
-                    acc_focal, acc_dice = 0.0, 0.0
+                    acc_dice = 0.0
+                    acc_dice_w = 0.0
 
-                    # ── Stage 1: MaskLoss（每類別 1 個 mask，class_ids_out 固定為 [0..18]）──
+                    # ── Stage 1: MaskLoss（Dice，每類別 1 個 mask；class_ids_out 固定為 [0..18]）──
                     if num_prompts > 0:
                         # (K, 256, 256) → (K, 1, 256, 256) 供 postprocess 使用
                         low_res_logits_upscaled = self.model.postprocess_masks(
@@ -404,20 +401,19 @@ class WeatherSAMTrainer:
                         target_masks_k = torch.cat(target_masks_k, dim=0)     # (K, 1, 1024, 1024)
                         valid_mask_k   = valid_mask_i.expand(num_prompts, -1, -1, -1)
 
-                        mask_total_loss, focal, dice = self.mask_loss_fn(
+                        mask_total_loss, dice = self.mask_loss_fn(
                             low_res_logits_upscaled, target_masks_k, valid_mask_k
                         )
                         min_mask_loss = mask_total_loss.squeeze(1)   # (K,)
                         # 加權平均：稀少類（rider/motorcycle/bicycle）獲得更高梯度貢獻
                         cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
                         sample_total_loss += (min_mask_loss * cls_w).sum() / cls_w.sum()
-                        acc_focal = focal.squeeze(1).mean().item()
                         acc_dice  = dice.squeeze(1).mean().item()
                         # MFB-weighted dice（反映 dice 對 total_loss 的實際貢獻）
                         with torch.no_grad():
                             acc_dice_w = float(((dice.squeeze(1) * cls_w).sum() / cls_w.sum()).item())
 
-                    # ── Stage 3: 前 5 epoch detach，防止初期 Focal Loss 梯度爆炸 ──
+                    # ── Stage 3: 前 5 epoch detach，避免初期 mask gradient 衝擊低層 ViT ──
                     if num_prompts > 0:
                         if epoch_index < 5:
                             selected_logits = low_res_logits.detach()  # (K, 256, 256)
@@ -470,7 +466,6 @@ class WeatherSAMTrainer:
                     sample_ce_sum += ce_val
                     sample_ce_w_sum += ce_w_val
                     sample_lovasz_sum += lov_val
-                    sample_focal_sum += float(acc_focal)
                     sample_dice_sum += float(acc_dice)
                     sample_dice_w_sum += float(acc_dice_w)
 
@@ -514,7 +509,6 @@ class WeatherSAMTrainer:
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
             losses['ce_weighted'].update(float(sample_ce_w_sum) / float(batch_size), batch_size)
             losses['lovasz'].update(float(sample_lovasz_sum) / float(batch_size), batch_size)
-            losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
             losses['dice_weighted'].update(float(sample_dice_w_sum) / float(batch_size), batch_size)
             # CMA 診斷：直接從 fusion_module 屬性讀取（pre_align 是自定義方法，
@@ -542,7 +536,6 @@ class WeatherSAMTrainer:
             pbar.set_postfix(
                 loss=f"{losses['total'].avg:.4f}",
                 ce=f"{losses['ce'].avg:.4f}",
-                focal=f"{losses['focal'].avg:.4f}",
                 dice=f"{losses['dice'].avg:.4f}",
                 ent=f"{losses['pred_entropy'].avg:.3f}",
                 margin=f"{losses['logit_margin'].avg:.3f}",
@@ -851,7 +844,6 @@ class WeatherSAMTrainer:
             "ce": AverageMeter(),
             "ce_weighted": AverageMeter(),
             "lovasz":           AverageMeter(),
-            "focal": AverageMeter(),
             "dice": AverageMeter(),
             "dice_weighted": AverageMeter(),
             "conf_mean": AverageMeter(),
@@ -884,7 +876,6 @@ class WeatherSAMTrainer:
                 sample_ce_sum = 0.0
                 sample_ce_w_sum = 0.0
                 sample_lovasz_sum = 0.0
-                sample_focal_sum = 0.0
                 sample_dice_sum = 0.0
                 sample_dice_w_sum = 0.0
                 sample_pred_conf_sum = 0.0
@@ -905,9 +896,10 @@ class WeatherSAMTrainer:
                     valid_mask_i = (gt_mask_i != 255).float().unsqueeze(1)
 
                     sample_total_loss = torch.tensor(0.0, device=self.device)
-                    acc_focal, acc_dice = 0.0, 0.0
+                    acc_dice = 0.0
+                    acc_dice_w = 0.0
 
-                    # ── Stage 1: MaskLoss（class_ids_out 固定為 [0..18]）──
+                    # ── Stage 1: MaskLoss（Dice，class_ids_out 固定為 [0..18]）──
                     if num_prompts > 0:
                         low_res_logits_upscaled = self.model.postprocess_masks(
                             low_res_logits.unsqueeze(1),
@@ -922,13 +914,12 @@ class WeatherSAMTrainer:
                         target_masks_k = torch.cat(target_masks_k, dim=0)
                         valid_mask_k   = valid_mask_i.expand(num_prompts, -1, -1, -1)
 
-                        mask_total_loss, focal, dice = self.mask_loss_fn(
+                        mask_total_loss, dice = self.mask_loss_fn(
                             low_res_logits_upscaled, target_masks_k, valid_mask_k
                         )
                         min_mask_loss = mask_total_loss.squeeze(1)
                         cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
                         sample_total_loss = sample_total_loss + (min_mask_loss * cls_w).sum() / cls_w.sum()
-                        acc_focal  = float(focal.squeeze(1).mean().item())
                         acc_dice   = float(dice.squeeze(1).mean().item())
                         acc_dice_w = float(((dice.squeeze(1) * cls_w).sum() / cls_w.sum()).item())
 
@@ -982,7 +973,6 @@ class WeatherSAMTrainer:
                     sample_ce_sum += float(ce_val)
                     sample_ce_w_sum += float(ce_w_val)
                     sample_lovasz_sum += float(lov_val)
-                    sample_focal_sum += acc_focal
                     sample_dice_sum += acc_dice
                     sample_dice_w_sum += float(acc_dice_w)
 
@@ -993,7 +983,6 @@ class WeatherSAMTrainer:
             losses['ce'].update(float(sample_ce_sum) / float(batch_size), batch_size)
             losses['ce_weighted'].update(float(sample_ce_w_sum) / float(batch_size), batch_size)
             losses['lovasz'].update(float(sample_lovasz_sum) / float(batch_size), batch_size)
-            losses['focal'].update(float(sample_focal_sum) / float(batch_size), batch_size)
             losses['dice'].update(float(sample_dice_sum) / float(batch_size), batch_size)
             losses['dice_weighted'].update(float(sample_dice_w_sum) / float(batch_size), batch_size)
             _fm = self.model.fusion_module
@@ -1019,7 +1008,6 @@ class WeatherSAMTrainer:
             pbar.set_postfix(
                 loss=losses['total'].avg,
                 ce=losses['ce'].avg,
-                focal=losses['focal'].avg,
                 dice=losses['dice'].avg,
                 ent=f"{losses['pred_entropy'].avg:.3f}",
                 margin=f"{losses['logit_margin'].avg:.3f}",

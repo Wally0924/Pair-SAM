@@ -1,10 +1,15 @@
 """
-v15 ACDC val inference + visualization
-======================================
-與 scripts/eval/eval_e1_acdc_val_full.py 相同的 forward + post-process pipeline，
-但聚焦在 per-image 2x2 可視化 + per-image mIoU 列印，最後彙總 per-class /
-per-condition metrics。所有評估與可視化皆在 1024x1024 解析度上進行
-（與 weather_trainer.validate_epoch 一致）。
+v15 ACDC val inference + visualization (Paper Protocol)
+=======================================================
+與 scripts/eval/eval_e1_acdc_val_paper.py 完全相同的口徑：
+  * 模型 forward 在 1024x1024 解析度
+  * pred / GT / invalid_mask 全部在 ACDC 原始 1080x1920 比對
+  * GT、invalid_mask、input image、clear reference 都直接從 CSV 路徑讀原始 PNG
+  * per-image mIoU 與 E1-paper（CMA / Refign ablation 對齊）同口徑
+
+輸出：
+  inference_viz_acdc_v15_E27_paper/result_XXX.png    每張 2x2 視覺化
+  終端：per-image mIoU + 最終 SegMetricsCalculator 報表
 """
 import sys
 from pathlib import Path
@@ -18,7 +23,6 @@ import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
 from tqdm import tqdm
 
-# 複用 scripts/eval/_eval_common.py 內的 v15 載入/dataloader/調色盤工具
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent / 'scripts' / 'eval'))
 from _eval_common import (  # noqa: E402
@@ -32,26 +36,22 @@ IGNORE_INDEX = 255
 
 
 class InferenceRunner:
-    def __init__(self, model, device, output_dir="inference_results"):
+    def __init__(self, model, device, csv_df, output_dir="inference_results"):
         self.model = model
         self.device = device
+        self.csv_df = csv_df  # 與 loader 順序一致 (shuffle=False)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.metrics = SegMetricsCalculator(classes=CITYSCAPES_CLASSES)
 
     @torch.no_grad()
-    def predict_single_image(self, batch) -> np.ndarray:
-        """v15 forward → scatter → context_fusion_head → 1024 argmax。
-
-        與 scripts/eval/eval_e1_acdc_val_full.py 邏輯 1:1 對齊。
-        """
+    def predict_native(self, batch, target_hw):
+        """forward → fused logits → 上採至 target_hw → argmax。"""
         batched_input = make_batched_input(batch, self.device)
         outputs = self.model(batched_input)
-
         low_res = outputs[0]['low_res_logits'].squeeze(0)   # (K, 256, 256)
-        class_ids = outputs[0]['class_ids']                 # List[int]
+        class_ids = outputs[0]['class_ids']
 
-        # K=0 防呆：所有 class 填 -10，argmax 落到 class 0
         full = torch.full(
             (1, NUM_CLASSES, 256, 256), -10.0,
             device=self.device, dtype=low_res.dtype,
@@ -61,49 +61,45 @@ class InferenceRunner:
 
         fused = self.model.context_fusion_head(full)        # (1, 19, 256, 256)
         fused_hr = F.interpolate(
-            fused, size=(1024, 1024), mode='bilinear', align_corners=False,
+            fused, size=target_hw, mode='bilinear', align_corners=False,
         )
-        pred = fused_hr.argmax(dim=1).squeeze(0)            # (1024, 1024)
-        return pred.cpu().numpy().astype(np.int64)
+        return fused_hr.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int64)
 
-    def prepare_gt_1024(self, batch):
-        """GT mask 縮到 1024，invalid_mask 標記設 255。"""
-        if 'gt_mask' not in batch:
-            return None
-        gt = batch['gt_mask'][0].to(self.device).long()             # (H, W)
-        gt_1024 = F.interpolate(
-            gt.unsqueeze(0).unsqueeze(0).float(),
-            size=(1024, 1024), mode='nearest',
-        ).long().squeeze(0).squeeze(0)
-        inv = batch['invalid_mask'][0].to(self.device)
-        if inv.any():
-            inv_1024 = F.interpolate(
-                inv.unsqueeze(0).unsqueeze(0).float(),
-                size=(1024, 1024), mode='nearest',
-            ).bool().squeeze(0).squeeze(0)
-            gt_1024[inv_1024] = IGNORE_INDEX
-        return gt_1024.cpu().numpy().astype(np.int64)
+    @staticmethod
+    def load_native_assets(row):
+        """從 CSV row 讀原始解析度資產：input RGB / clear RGB / GT / invalid。"""
+        img = cv2.imread(str(row['image_path']), cv2.IMREAD_COLOR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img is not None else None
+        ref = cv2.imread(str(row['ref_image_path']), cv2.IMREAD_COLOR)
+        ref = cv2.cvtColor(ref, cv2.COLOR_BGR2RGB) if ref is not None else None
+        gt = cv2.imread(str(row['gt_path']), cv2.IMREAD_GRAYSCALE).astype(np.int64)
 
-    def visualize(self, batch, pred, gt, idx, miou):
-        """2x2 grid：Input / Clear Reference / Pred / GT，全部在 1024 顯示。"""
-        # Input image: dataloader 已 letterbox 至 1024
-        img = batch['image'][0].permute(1, 2, 0).cpu().numpy() / 255.0
-        img = np.clip(img, 0, 1)
+        inv_path = row.get('invalid_mask') if 'invalid_mask' in row else None
+        if inv_path and Path(str(inv_path)).is_file():
+            inv = cv2.imread(str(inv_path), cv2.IMREAD_GRAYSCALE) != 0
+        else:
+            inv = np.zeros_like(gt, dtype=bool)
+        return img, ref, gt, inv
 
-        ref = batch['reference_mask'][0].permute(1, 2, 0).cpu().numpy() / 255.0
-        ref = np.clip(ref, 0, 1)
-        if ref.shape[:2] != (1024, 1024):
-            ref = cv2.resize(ref, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+    def visualize(self, img, ref, pred, gt, idx, miou, condition):
+        """2x2 grid 在原始解析度顯示。"""
+        H, W = pred.shape
+
+        # 對齊 ref / img 解析度（理論上都是 1080x1920，但保險起見 resize）
+        if img.shape[:2] != (H, W):
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
+        if ref is not None and ref.shape[:2] != (H, W):
+            ref = cv2.resize(ref, (W, H), interpolation=cv2.INTER_AREA)
 
         pred_color = colorize_19class(pred)
         gt_color = colorize_19class(gt) if gt is not None else np.zeros_like(pred_color)
 
-        fig = plt.figure(figsize=(16, 12))
+        # 1080x1920 直接畫，figsize 對齊 16:9
+        fig = plt.figure(figsize=(20, 12))
+        title = f"Sample {idx:03d} ({condition})"
         if miou is not None:
-            fig.suptitle(
-                f"Sample {idx:03d} | Image mIoU: {miou:.4f}",
-                fontsize=20, fontweight='bold', y=0.98,
-            )
+            title += f" | mIoU: {miou:.4f}"
+        fig.suptitle(title, fontsize=20, fontweight='bold', y=0.98)
 
         gs = gridspec.GridSpec(3, 2, height_ratios=[1, 1, 0.15], figure=fig)
 
@@ -111,7 +107,9 @@ class InferenceRunner:
         ax1.imshow(img); ax1.set_title("Input Image (Adverse)", fontsize=14); ax1.axis('off')
 
         ax2 = fig.add_subplot(gs[0, 1])
-        ax2.imshow(ref); ax2.set_title("Clear-Weather Reference (RGB)", fontsize=14); ax2.axis('off')
+        if ref is not None:
+            ax2.imshow(ref)
+        ax2.set_title("Clear-Weather Reference", fontsize=14); ax2.axis('off')
 
         ax3 = fig.add_subplot(gs[1, 0])
         ax3.imshow(pred_color); ax3.set_title("Prediction (WeatherSAM v15)", fontsize=14); ax3.axis('off')
@@ -128,8 +126,10 @@ class InferenceRunner:
         for cls_id in sorted(unique):
             if cls_id >= NUM_CLASSES:
                 continue
-            color = CITYSCAPES_PALETTE[cls_id] / 255.0
-            patches.append(mpatches.Patch(color=color, label=CITYSCAPES_CLASSES[cls_id]))
+            patches.append(mpatches.Patch(
+                color=CITYSCAPES_PALETTE[cls_id] / 255.0,
+                label=CITYSCAPES_CLASSES[cls_id],
+            ))
         if patches:
             ax_legend.legend(
                 handles=patches, loc='center',
@@ -138,28 +138,31 @@ class InferenceRunner:
             )
 
         plt.tight_layout()
-        if miou is not None:
-            plt.subplots_adjust(top=0.92)
-        plt.savefig(self.output_dir / f"result_{idx:03d}.png")
+        plt.subplots_adjust(top=0.93)
+        plt.savefig(self.output_dir / f"result_{idx:03d}.png", dpi=90)
         plt.close()
 
     def run_inference(self, loader, num_samples=None):
         n = 0
-        pbar = tqdm(loader, desc="Inference")
+        pbar = tqdm(loader, desc="Inference (paper protocol)")
         for batch in pbar:
-            pred = self.predict_single_image(batch)
-            gt = self.prepare_gt_1024(batch)
+            row = self.csv_df.iloc[n]
+            img, ref, gt, inv = self.load_native_assets(row)
+            H, W = gt.shape  # ACDC: 1080 x 1920
 
-            miou = None
-            if gt is not None:
-                miou = SegMetricsCalculator.compute_image_miou(pred, gt, NUM_CLASSES)
-                condition = None
-                if 'condition' in batch and isinstance(batch['condition'][0], str):
-                    condition = batch['condition'][0]
-                self.metrics.update(pred, gt, condition=condition)
-                print(f"📊 Image {n:03d} | mIoU: {miou:.4f}")
+            pred = self.predict_native(batch, target_hw=(H, W))
 
-            self.visualize(batch, pred, gt, idx=n, miou=miou)
+            # GT with invalid → 255
+            gt_used = gt.copy()
+            gt_used[inv] = IGNORE_INDEX
+
+            condition = str(row['condition']) if 'condition' in row else 'unknown'
+
+            miou = SegMetricsCalculator.compute_image_miou(pred, gt_used, NUM_CLASSES)
+            self.metrics.update(pred, gt_used, condition=condition)
+            print(f"📊 Image {n:03d} ({condition:5s}) | mIoU: {miou:.4f}")
+
+            self.visualize(img, ref, pred, gt_used, idx=n, miou=miou, condition=condition)
 
             n += 1
             if num_samples is not None and n >= num_samples:
@@ -173,20 +176,21 @@ if __name__ == "__main__":
     CHECKPOINT_PATH = str(
         _THIS.parent /
         "outputs_weather_sam_mask2former_testv15" /
-        "best_E27_mIoU65.68_LR4.0e-05.pth"
+        "weather_sam_best_latest.pth"
     )
     TEST_CSV_PATH = str(
         _THIS.parent.parent / "Datasets" / "acdc_adverse_ref_rgb_val.csv"
     )
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    OUTPUT_DIR = "inference_viz_acdc_v15_E27"
+    OUTPUT_DIR = "inference_viz_acdc_v15_paper"
 
     print(f"Loading v15 model: {Path(CHECKPOINT_PATH).name}")
     model = load_v15_model(CHECKPOINT_PATH, device=DEVICE)
 
     print(f"Building ACDC val loader: {Path(TEST_CSV_PATH).name}")
     loader = build_acdc_val_loader(TEST_CSV_PATH, batch_size=1, num_workers=4)
+    csv_df = loader.dataset.data.reset_index(drop=True)
 
-    print(f"Output dir: {OUTPUT_DIR}\n")
-    runner = InferenceRunner(model, DEVICE, output_dir=OUTPUT_DIR)
+    print(f"Output dir: {OUTPUT_DIR}  (paper protocol: native 1080x1920)\n")
+    runner = InferenceRunner(model, DEVICE, csv_df, output_dir=OUTPUT_DIR)
     runner.run_inference(loader, num_samples=None)

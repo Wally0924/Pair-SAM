@@ -63,7 +63,6 @@ def _build_weather_sam(
         embed_dim=prompt_embed_dim,
         image_embedding_size=(image_embedding_size, image_embedding_size),
         input_image_size=(image_size, image_size),
-        mask_in_chans=16,
     )
 
     mask_decoder = MaskDecoder(

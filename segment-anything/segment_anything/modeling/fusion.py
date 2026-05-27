@@ -6,14 +6,6 @@ from .common import LayerNorm2d
 from .uawarpc_head import UAWarpCHead
 from .cma_utils import warp, estimate_probability_of_confidence_interval
 
-try:
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    from utils.viz_warp import save_warp_comparison
-    _VIZ_AVAILABLE = True
-except Exception:
-    _VIZ_AVAILABLE = False
-
 
 # =============================================================================
 # VGG16AlignmentBackbone
@@ -88,8 +80,9 @@ class CMAAlignment(nn.Module):
     """
     UAWarpC-based dense feature alignment (CMA, Bruggemann et al., ICCV 2023).
 
-    VGG16 backbone and UAWarpCHead are both frozen after loading CMA pretrained
-    weights. Only ConfidenceGatedFusion's gate_net is trainable.
+    VGG16 backbone 與 UAWarpCHead 在載入 CMA pretrained 權重後皆凍結；
+    本模組本身不含任何可訓練參數，僅輸出對齊後的 reference 特徵與 confidence map，
+    供下游 WeatherSAM.vgg_injector (MultiScaleCrossAttnInjector) 使用。
     """
 
     _IMG_MEAN = [0.485, 0.456, 0.406]
