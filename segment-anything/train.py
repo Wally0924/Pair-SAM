@@ -1,5 +1,6 @@
 # train.py
 import os
+import json
 # ViT-H global attention (64×64 token grid, 16 heads) 需要 ~1 GiB 連續記憶體，
 # expandable_segments 讓 CUDA allocator 以延伸段取代重新分配，大幅降低碎片化 OOM 機率
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -16,7 +17,7 @@ import argparse
 # 引入你的模組
 from utils.weather_dataloader import WeatherSegmentationDataset
 from weather_trainer import WeatherSAMTrainer
-from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
+from segment_anything.build_weather_sam import build_weather_sam_from_config
 
 
 def set_seed(seed: int, deterministic: bool = True):
@@ -233,6 +234,18 @@ def main():
     parser.add_argument("--adapter_lr_scale", type=float, default=3.0,
                         help="WarpedVGG Adapter 參數的 LR 倍率（相對 main lr）")
 
+    # --- [ablation] 消融開關（預設值 = FULL，向後相容）---
+    parser.add_argument("--inject", choices=["pre", "post"], default="pre",
+                        help="WarpedVGG Adapter 注入位置：pre=block 自注意力前；post=後")
+    parser.add_argument("--decoder", choices=["unified", "per_class"], default="unified",
+                        help="解碼模式：unified=統一查詢；per_class=逐類別獨立解碼")
+    parser.add_argument("--lrh", action=argparse.BooleanOptionalAction, default=True,
+                        help="是否套用 LRH (ResidualDWConvFusion)；--no-lrh 關閉")
+    parser.add_argument("--mfb", action=argparse.BooleanOptionalAction, default=True,
+                        help="CE/dice 是否套用 MFB 類別權重；--no-mfb = uniform")
+    parser.add_argument("--ref", action=argparse.BooleanOptionalAction, default=True,
+                        help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
+
     # NOTE: --use_condition_embedding 已移除；模型現在固定使用 condition_encoder（ACDC 模式）
     args = parser.parse_args()
 
@@ -244,20 +257,29 @@ def main():
 
     print_training_config(args, args.device)
 
-    # 1. 建立模型（若有 resume 則從訓練 checkpoint 載入權重）
+    # 1. 建立模型（依消融 config 統一建構；若有 resume 則從訓練 checkpoint 載入權重）
     model_checkpoint = args.resume if args.resume else args.checkpoint
     print(f"🏗️  Building model from: {model_checkpoint}")
-    if args.model_type == "vit_h":
-        model = build_weather_sam_vit_h(checkpoint=model_checkpoint)
-    else:
-        model = build_weather_sam_vit_b(checkpoint=model_checkpoint)
-
-    # [testv14] WarpedVGG Adapter：在 ViT Block 後註冊 forward hook
-    # 啟用後 trainer 會自動為 vgg_injector 建立獨立 param group（高 LR）
+    abl_cfg = dict(
+        model_type=args.model_type,
+        use_vgg_adapter=args.use_vgg_adapter,
+        inject=args.inject,
+        decoder=args.decoder,
+        lrh=args.lrh,
+        mfb=args.mfb,
+        ref=args.ref,
+    )
+    model = build_weather_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
+    print(f"[Ablation] config = {abl_cfg}")
     if args.use_vgg_adapter:
-        model.enable_vgg_adapter()
-        print(f"[Config] MultiStage WarpedVGG Adapter @ Blocks [7, 15, 23, 31], "
-              f"lr_scale={args.adapter_lr_scale}")
+        print(f"[Config] WarpedVGG Adapter enabled (inject={args.inject}, "
+              f"lr_scale={args.adapter_lr_scale})")
+
+    # 落地完整消融 config（含 seed 與 loss 權重），供 eval 重建模型與審計
+    with open(os.path.join(args.output_dir, "ablation_config.json"), "w") as f:
+        json.dump({**abl_cfg, "seed": args.seed,
+                   "lovasz_weight": args.lovasz_weight,
+                   "dice_weight": args.dice_weight}, f, indent=2)
 
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
