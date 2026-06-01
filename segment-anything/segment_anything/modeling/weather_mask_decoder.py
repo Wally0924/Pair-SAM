@@ -62,6 +62,9 @@ class MaskDecoder(nn.Module):
              for _ in range(num_classes)]
         )
 
+        # [ablation] 'unified' = 所有 class query 同序列（跨類別 self-attention）；
+        # 'per_class' = 每類別獨立 forward（移除跨類別交互）。預設 unified = FULL 行為。
+        self.decoder_mode = 'unified'
 
     def forward_semantic(
         self,
@@ -87,6 +90,12 @@ class MaskDecoder(nn.Module):
         Returns:
           masks: (1, K, 256, 256) — 每個類別 1 張 logit map
         """
+        if self.decoder_mode == 'per_class':
+            return self.predict_masks_per_class(
+                image_embeddings, image_pe,
+                sparse_prompt_embeddings, dense_prompt_embeddings,
+                class_ids,
+            )
         return self.predict_masks_semantic(
             image_embeddings, image_pe,
             sparse_prompt_embeddings, dense_prompt_embeddings,
@@ -151,6 +160,27 @@ class MaskDecoder(nn.Module):
 
         return torch.cat(masks, dim=1)  # (1, K, 256, 256)
 
+    def predict_masks_per_class(
+        self,
+        image_embeddings: torch.Tensor,
+        image_pe: torch.Tensor,
+        sparse_prompt_embeddings: torch.Tensor,
+        dense_prompt_embeddings: torch.Tensor,
+        class_ids: List[int],
+    ) -> torch.Tensor:
+        """[ablation] 逐類別獨立解碼：每個 class 以 K=1 單獨跑一次 transformer，
+        移除跨類別 self-attention。複用 predict_masks_semantic，參數量與統一查詢版相同。
+        """
+        masks = []
+        for i, cls_id in enumerate(class_ids):
+            mask_i = self.predict_masks_semantic(
+                image_embeddings, image_pe,
+                sparse_prompt_embeddings[i:i + 1],   # (1, N_tok, 256)
+                dense_prompt_embeddings,
+                [cls_id],
+            )  # (1, 1, 256, 256)
+            masks.append(mask_i)
+        return torch.cat(masks, dim=1)  # (1, K, 256, 256)
 
 
 class MLP(nn.Module):
