@@ -99,6 +99,10 @@ class MultiScaleCrossAttnInjector(nn.Module):
         self._stage_gate_vals: list = [_init_gate] * num_stages
         self._global_step: int = 0
 
+        # [ablation] 是否引入 reference 資訊。False 時將餵入 K/V 的 reference 特徵
+        # 以零張量取代，保持 adapter 結構與參數量不變，僅移除參考內容。預設 True = FULL。
+        self.use_reference = True
+
     def set_features(self, multi_scale_feats: dict):
         self._multi_scale_feats = multi_scale_feats
         self._stages_fired = 0
@@ -174,6 +178,10 @@ class MultiScaleCrossAttnInjector(nn.Module):
             key_padding_mask = None
 
         f_flat = f_pooled.permute(0, 2, 3, 1).reshape(B, P * P, -1)    # (B, P², kv_in)
+
+        # [ablation] --ref off：移除 reference 內容（零張量），保留 adapter 容量
+        if not self.use_reference:
+            f_flat = torch.zeros_like(f_flat)
 
         # K, V projections（Xavier init）
         K = self.k_projs[stage_idx](f_flat)   # (B, P², d_attn)
