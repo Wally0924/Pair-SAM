@@ -4,6 +4,7 @@ E1: ACDC val 完整評估
 產出：per-class × per-condition IoU 矩陣 + 整體 mIoU + per-condition mIoU
 對應論文：Refign Tab.1 / CMA Tab.1
 """
+import argparse
 import json
 import math
 import sys
@@ -17,7 +18,8 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
-    load_weather_sam_model, build_acdc_val_loader, make_batched_input,
+    load_weather_sam_model, load_weather_sam_from_ablation,
+    build_acdc_val_loader, make_batched_input,
     CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT, DEFAULT_CKPT,
 )
 from segment_anything.modeling.semantic_assembly import assemble_semantic_logits
@@ -38,7 +40,13 @@ def iou_from_confusion(cm: torch.Tensor) -> torch.Tensor:
 
 
 def main():
-    model = load_weather_sam_model(DEFAULT_CKPT, device=DEVICE)
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--ckpt', required=True, help='該 run 的 checkpoint 路徑')
+    ap.add_argument('--config', default=None, help='ablation_config.json（預設取 ckpt 同目錄）')
+    ap.add_argument('--out', default=None, help='輸出 JSON 路徑（預設沿用原 OUTPUT_ROOT）')
+    args = ap.parse_args()
+    model, cfg = load_weather_sam_from_ablation(args.ckpt, args.config, device=DEVICE)
+    print(f"[eval] loaded run config: {cfg}")
     loader = build_acdc_val_loader()
 
     # 5 個混淆矩陣：overall + 4 conditions
@@ -103,10 +111,14 @@ def main():
     miou_per_cond = {cid: nanmean(iou_per_cond[cid]) for cid in CONDITION_NAMES}
 
     # ── 輸出 JSON ──
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
-    json_path = OUTPUT_ROOT / 'e1_acdc_val_results.json'
+    if args.out is not None:
+        json_path = Path(args.out)
+    else:
+        OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+        json_path = OUTPUT_ROOT / 'e1_acdc_val_results.json'
+    json_path.parent.mkdir(parents=True, exist_ok=True)
     json_data = {
-        'checkpoint': str(Path(DEFAULT_CKPT).name),
+        'checkpoint': str(Path(args.ckpt).name),
         'num_samples_total': sum(sample_counts.values()),
         'sample_counts_by_condition': {
             CONDITION_NAMES[cid]: n for cid, n in sample_counts.items()
@@ -137,11 +149,11 @@ def main():
     print(f'✅ JSON written: {json_path}')
 
     # ── 輸出 Markdown ──
-    md_path = OUTPUT_ROOT / 'e1_acdc_val_results.md'
+    md_path = json_path.with_suffix('.md')
     lines = []
     lines.append('# E1: WeatherSAM v15 (E27) — ACDC val Evaluation')
     lines.append('')
-    lines.append(f'**Checkpoint:** `{Path(DEFAULT_CKPT).name}`')
+    lines.append(f'**Checkpoint:** `{Path(args.ckpt).name}`')
     lines.append(f'**Date:** {datetime.now().strftime("%Y-%m-%d")}')
     lines.append(f'**Samples:** {sum(sample_counts.values())} ' +
                  '(' + ', '.join(f'{CONDITION_NAMES[cid]}={n}'
