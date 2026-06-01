@@ -99,12 +99,14 @@ class WeatherSAMTrainer:
 
         label_smooth  = getattr(args, 'label_smoothing', 0.0)
         lovasz_w      = getattr(args, 'lovasz_weight',   0.0)
+        use_mfb       = getattr(args, 'mfb',             True)
         print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Dice: {dice_w}], "
               f"Lovász: {lovasz_w}, LabelSmooth: {label_smooth})")
         print(f"🔓 MaskDecoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
         print(f"🔓 MaskDecoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
         self.context_loss_fn = ContextLoss(
             ce_weight=ce_w, label_smoothing=label_smooth, lovasz_weight=lovasz_w,
+            use_mfb=use_mfb,
         ).to(self.device)
         self.mask_loss_fn = MaskLoss(dice_weight=dice_w)
         # Gate warmup：識別 gate 參數，前 warmup_gate_epochs 個 epoch 凍結
@@ -114,7 +116,8 @@ class WeatherSAMTrainer:
             if 'vgg_injector.gates' in n
         ]
         # MaskLoss 加權平均用：稀少類（rider/motorcycle/bicycle）獲得更高梯度權重
-        self._mask_cls_w = ACDC_CLASS_WEIGHTS.to(self.device)
+        self._mask_cls_w = (ACDC_CLASS_WEIGHTS if use_mfb
+                            else torch.ones_like(ACDC_CLASS_WEIGHTS)).to(self.device)
         
         # init_scale 從 8192 降至 2048：fp16 overflow 閾值從 8.0 提升至 32.0
         # （threshold = fp16_max / init_scale = 65504 / 2048 ≈ 32）

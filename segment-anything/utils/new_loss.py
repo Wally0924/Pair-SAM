@@ -124,15 +124,18 @@ class ContextLoss(nn.Module):
     lovasz_weight=0.0 時退化為原始純 CE 行為，完全向後相容。
     """
     def __init__(self, ce_weight: float = 1.0, num_classes: int = 19,
-                 label_smoothing: float = 0.0, lovasz_weight: float = 0.0):
+                 label_smoothing: float = 0.0, lovasz_weight: float = 0.0,
+                 use_mfb: bool = True):
         super().__init__()
         self.ce_weight     = ce_weight
         self.lovasz_weight = lovasz_weight
+        self.use_mfb       = use_mfb
 
         class_weights = _build_median_freq_weights(_ACDC_CLASS_FREQ)
         self.register_buffer('class_weights', class_weights)
+        ce_weight_arg = self.class_weights if use_mfb else None  # [ablation] off = uniform
         self.ce_loss_fn = nn.CrossEntropyLoss(
-            weight=self.class_weights, ignore_index=255,
+            weight=ce_weight_arg, ignore_index=255,
             label_smoothing=label_smoothing,
         )
         self.ce_unweighted = nn.CrossEntropyLoss(ignore_index=255)
