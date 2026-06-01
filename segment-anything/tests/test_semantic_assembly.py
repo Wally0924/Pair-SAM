@@ -23,12 +23,16 @@ def test_scatter_places_classes_and_fills_rest():
 
 def test_use_lrh_false_skips_fusion_head():
     low_res = torch.randn(1, 4, 4)
-    head = nn.Identity()
-    out_off = assemble_semantic_logits(low_res, [0], fusion_head=head,
+
+    class AddOne(nn.Module):
+        def forward(self, x):
+            return x + 1.0
+
+    out_off = assemble_semantic_logits(low_res, [0], fusion_head=AddOne(),
                                        num_classes=19, use_lrh=False)
     out_raw = assemble_semantic_logits(low_res, [0], fusion_head=None,
                                        num_classes=19, use_lrh=False)
-    assert torch.allclose(out_off, out_raw)
+    assert torch.allclose(out_off, out_raw)   # head must NOT have been applied
 
 
 def test_use_lrh_true_applies_fusion_head():

@@ -6,6 +6,7 @@ from .weather_prompt_encoder import WeatherPromptEncoder
 from .weather_sam import WeatherSAM
 from .weather_mask_decoder import MaskDecoder
 from .vgg_adapter import MultiScaleCrossAttnInjector
+from .semantic_assembly import assemble_semantic_logits
 
 __all__ = [
     'ImageEncoderViT',
@@ -16,4 +17,5 @@ __all__ = [
     'WeatherPromptEncoder',
     'WeatherSAM',
     'MultiScaleCrossAttnInjector',
+    'assemble_semantic_logits',
 ]

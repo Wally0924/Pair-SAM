@@ -28,6 +28,8 @@ def assemble_semantic_logits(
         (1, num_classes, H, W) logits（use_lrh=True 時為 LRH 精修後）。
     """
     K, H, W = low_res_logits.shape
+    assert low_res_logits.ndim == 3, f"expected (K,H,W), got {tuple(low_res_logits.shape)}"
+    assert len(class_ids) == K, f"class_ids len {len(class_ids)} != K {K}"
     full = torch.full(
         (1, num_classes, H, W), fill_value,
         device=low_res_logits.device, dtype=low_res_logits.dtype,
