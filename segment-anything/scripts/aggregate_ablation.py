@@ -51,7 +51,7 @@ def fmt_cell(mean, std=0.0):
         LaTeX 格式字串。
     """
     m_pct = mean * 100
-    if std > 0.0:
+    if std is not None and std * 100 >= 0.05:
         s_pct = std * 100
         return f"{m_pct:.1f}$\\pm${s_pct:.1f}"
     return f"{m_pct:.1f}"
@@ -186,7 +186,7 @@ def build_summary_table(runs):
         m, s = _agg_overall(runs, rid)
         use_std = rid in multi_seed_rows and s > 0.0
         cell = fmt_cell(m, s if use_std else 0.0)
-        delta = _delta_str(m, full_mean)
+        delta = "---" if rid == 'FULL' else _delta_str(m, full_mean)
         lines.append(f"{rid} & {cell} & {delta} \\\\")
 
     return "\n".join(lines) + "\n"
@@ -226,7 +226,7 @@ def build_adapter_table(runs):
             cond_cells.append(fmt_cell(cm, cs if use_cond_std else 0.0))
 
         all_cell = fmt_cell(overall_m, overall_s if use_std else 0.0)
-        delta = _delta_str(overall_m, full_mean)
+        delta = "---" if rid == 'FULL' else _delta_str(overall_m, full_mean)
         row = " & ".join([rid] + cond_cells + [all_cell, delta]) + " \\\\"
         lines.append(row)
 
@@ -279,7 +279,7 @@ def build_loss_table(runs):
             else:
                 class_cells.append(fmt_cell(cm, cs if use_cls_std else 0.0))
 
-        delta = _delta_str(overall_m, full_mean)
+        delta = "---" if display_id == 'FULL' else _delta_str(overall_m, full_mean)
         row = " & ".join([display_id, all_cell] + class_cells + [delta]) + " \\\\"
         lines.append(row)
 

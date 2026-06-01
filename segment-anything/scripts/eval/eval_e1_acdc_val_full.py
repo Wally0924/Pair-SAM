@@ -20,7 +20,7 @@ sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
     load_weather_sam_model, load_weather_sam_from_ablation,
     build_acdc_val_loader, make_batched_input,
-    CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT, DEFAULT_CKPT,
+    CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT,
 )
 from segment_anything.modeling.semantic_assembly import assemble_semantic_logits
 
