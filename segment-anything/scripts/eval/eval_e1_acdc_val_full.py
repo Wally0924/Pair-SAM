@@ -20,6 +20,7 @@ from _eval_common import (
     load_weather_sam_model, build_acdc_val_loader, make_batched_input,
     CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT, DEFAULT_CKPT,
 )
+from segment_anything.modeling.semantic_assembly import assemble_semantic_logits
 
 NUM_CLASSES = 19
 IGNORE_INDEX = 255
@@ -59,13 +60,12 @@ def main():
             #    遵照 weather_trainer.validate_epoch 的流程
             low_res = outputs[0]['low_res_logits'].squeeze(0)         # (K, 256, 256)
             class_ids_out = outputs[0]['class_ids']                    # List[int]
-            full = torch.full(
-                (1, NUM_CLASSES, 256, 256), -10.0,
-                device=DEVICE, dtype=low_res.dtype,
+            fused = assemble_semantic_logits(
+                low_res, class_ids_out,
+                fusion_head=model.context_fusion_head,
+                num_classes=NUM_CLASSES,
+                use_lrh=getattr(model, 'use_lrh', True),
             )
-            for k, c in enumerate(class_ids_out):
-                full[0, c] = low_res[k]
-            fused = model.context_fusion_head(full)                    # (1, 19, 256, 256)
             fused_hr = F.interpolate(
                 fused, size=(1024, 1024), mode='bilinear', align_corners=False,
             )

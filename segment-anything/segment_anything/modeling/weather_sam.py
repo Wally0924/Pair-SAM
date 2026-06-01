@@ -56,6 +56,8 @@ class WeatherSAM(nn.Module):
         }
 
         self.num_classes = num_classes
+        # [ablation] LRH (context_fusion_head) 是否套用；訓練/評估組裝點依此 gate。預設 True = FULL 行為。
+        self.use_lrh = True
         # [Mask2Former-style] 輕量殘差精修：3×3 DW Conv + 1×1 PW Conv + residual
         self.context_fusion_head = ResidualDWConvFusion(num_classes=num_classes)
 

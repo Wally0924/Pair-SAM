@@ -426,7 +426,8 @@ class WeatherSAMTrainer:
                     full_class_logits = selected_logits.unsqueeze(0)  # (1, 19, 256, 256)
                     
                     # ── Stage 5: ContextFusionHead & Context Loss (CE) ──
-                    fused_logits = self.model.context_fusion_head(full_class_logits)
+                    fused_logits = (self.model.context_fusion_head(full_class_logits)
+                                    if self.model.use_lrh else full_class_logits)
 
                     with torch.no_grad():
                         # head_delta_norm：fusion head 的輸出與輸入之差的 L2 norm
@@ -932,7 +933,8 @@ class WeatherSAMTrainer:
                     full_class_logits = selected_logits.unsqueeze(0)  # (1, 19, 256, 256)
                     
                     # ── Stage 5: ContextFusionHead & Context Loss ──
-                    fused_logits = self.model.context_fusion_head(full_class_logits)
+                    fused_logits = (self.model.context_fusion_head(full_class_logits)
+                                    if self.model.use_lrh else full_class_logits)
 
                     with torch.no_grad():
                         _head_delta = (fused_logits - full_class_logits).norm(dim=1).mean().item()
