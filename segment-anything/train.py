@@ -486,15 +486,13 @@ def main():
             print(f"   ⚠️ No mIoU progress ({current_val_miou*100:.2f}% vs best {best_val_miou*100:.2f}%). "
                   f"Counter: {early_stop_counter} / {args.patience}")
 
-        # 只要打破最佳紀錄就存檔
+        # 只要打破最佳紀錄就存檔（只保留單一最佳權重，覆寫固定檔名，不另存 epoch 命名檔）
         if is_best:
             current_lr = trainer.optimizer.param_groups[0]['lr']
-            save_filename = f"best_E{epoch+1}_mIoU{best_val_miou*100:.2f}_LR{current_lr:.1e}.pth"
-            save_path = os.path.join(args.output_dir, save_filename)
-            trainer.save_checkpoint(save_path, epoch=epoch+1, best_score=best_val_miou)
-            print(f"   🏆 New best model saved: {save_filename}")
             fixed_path = os.path.join(args.output_dir, "weather_sam_best_latest.pth")
             trainer.save_checkpoint(fixed_path, epoch=epoch+1, best_score=best_val_miou)
+            print(f"   🏆 New best (E{epoch+1}, mIoU {best_val_miou*100:.2f}%, LR {current_lr:.1e}) "
+                  f"saved: weather_sam_best_latest.pth")
 
         # 觸發 Early Stopping
         if early_stop_counter >= args.patience:
