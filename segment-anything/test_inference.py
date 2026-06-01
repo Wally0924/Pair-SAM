@@ -26,7 +26,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent / 'scripts' / 'eval'))
 from _eval_common import (  # noqa: E402
-    load_v15_model, build_acdc_val_loader, make_batched_input,
+    load_weather_sam_model, build_acdc_val_loader, make_batched_input,
     CITYSCAPES_CLASSES, CITYSCAPES_PALETTE, colorize_19class,
 )
 from utils.seg_metrics import SegMetricsCalculator  # noqa: E402
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     OUTPUT_DIR = "inference_viz_acdc_v15_paper"
 
     print(f"Loading v15 model: {Path(CHECKPOINT_PATH).name}")
-    model = load_v15_model(CHECKPOINT_PATH, device=DEVICE)
+    model = load_weather_sam_model(CHECKPOINT_PATH, device=DEVICE)
 
     print(f"Building ACDC val loader: {Path(TEST_CSV_PATH).name}")
     loader = build_acdc_val_loader(TEST_CSV_PATH, batch_size=1, num_workers=4)

@@ -15,7 +15,7 @@ import torch.nn.functional as F
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
-    load_v15_model, pick_first_per_condition, denorm_image,
+    load_weather_sam_model, pick_first_per_condition, denorm_image,
     CONDITION_NAMES, OUTPUT_ROOT, DEFAULT_CKPT, DEFAULT_VAL_CSV,
 )
 
@@ -42,14 +42,14 @@ def main():
     from segment_anything.modeling.cma_utils import warp
     from utils.weather_dataloader import WeatherSegmentationDataset
 
-    model = load_v15_model(DEFAULT_CKPT, device=DEVICE)
+    model = load_weather_sam_model(DEFAULT_CKPT, device=DEVICE)
     ds = WeatherSegmentationDataset(
         csv_file=DEFAULT_VAL_CSV, image_size=1024, mode='val', force_raw_images=True,
     )
     picked = pick_first_per_condition(DEFAULT_VAL_CSV)
     print('Picked indices:', picked)
 
-    fig, axes = plt.subplots(4, 4, figsize=(16, 16))
+    fig, axes = plt.subplots(4, 4, figsize=(20, 20))
     column_titles = ['Clear Reference', 'Warped Reference',
                      'Warped × Confidence', 'Adverse (Target)']
 
@@ -91,16 +91,18 @@ def main():
 
             axes[row, 0].set_ylabel(
                 CONDITION_NAMES[cid].capitalize(),
-                fontsize=14, fontweight='bold',
+                fontsize=28, fontweight='bold',
             )
             for col in range(4):
                 axes[row, col].set_xticks([])
                 axes[row, col].set_yticks([])
 
     for col, title in enumerate(column_titles):
-        axes[0, col].set_title(title, fontsize=13, fontweight='bold', pad=10)
+        axes[0, col].set_title(title, fontsize=22, fontweight='bold', pad=12)
 
     plt.tight_layout()
+    # 拉開欄間距，避免長標題（如 "Warped × Confidence"）擠到鄰欄
+    plt.subplots_adjust(wspace=0.04, hspace=0.04)
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_ROOT / 'e5_warp_confidence.png'
     plt.savefig(out_path, dpi=200, bbox_inches='tight')

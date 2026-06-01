@@ -28,7 +28,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (  # noqa: E402
-    load_v15_model, build_acdc_val_loader, make_batched_input,
+    load_weather_sam_model, build_acdc_val_loader, make_batched_input,
     CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT, DEFAULT_CKPT,
 )
 
@@ -60,7 +60,7 @@ def load_native_gt(gt_path: str, invalid_path: str | None) -> tuple[np.ndarray, 
 
 
 def main():
-    model = load_v15_model(DEFAULT_CKPT, device=DEVICE)
+    model = load_weather_sam_model(DEFAULT_CKPT, device=DEVICE)
     loader = build_acdc_val_loader()
     # 透過 dataset.data 取得原始 CSV row（順序與 loader 一致，shuffle=False）
     csv_df = loader.dataset.data.reset_index(drop=True)

@@ -67,10 +67,11 @@ def colorize_19class(mask: np.ndarray) -> np.ndarray:
     return color
 
 
-def load_v15_model(ckpt_path: str = DEFAULT_CKPT, device: str = 'cuda'):
-    """載入 best_E18 v15 checkpoint，啟用 pre-hook cross-attn adapter。
+def load_weather_sam_model(ckpt_path: str = DEFAULT_CKPT, device: str = 'cuda'):
+    """建構 WeatherSAM-ViT-H 並載入任意版本的 checkpoint，啟用 pre-hook cross-attn adapter。
 
-    strict=False：v5 後續加了 `_last_kv_keep_ratio` 等 buffer，舊 ckpt 不含此欄。
+    版本無關：以 strict=False 載入，容忍版本間 buffer 增減（如 `_last_kv_keep_ratio`），
+    對 v5、v14、v15、E27 等所有歷代 ckpt 皆相容。
     """
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
@@ -85,11 +86,15 @@ def load_v15_model(ckpt_path: str = DEFAULT_CKPT, device: str = 'cuda'):
         sd = state
     missing, unexpected = model.load_state_dict(sd, strict=False)
     if unexpected:
-        print(f"[load_v15_model] 忽略 {len(unexpected)} 個多餘鍵（OK）")
+        print(f"[load_weather_sam_model] 忽略 {len(unexpected)} 個多餘鍵（OK）")
     if missing:
-        print(f"[load_v15_model] 缺少 {len(missing)} 個鍵（多為新增 buffer，OK）")
+        print(f"[load_weather_sam_model] 缺少 {len(missing)} 個鍵（多為新增 buffer，OK）")
     model.enable_vgg_adapter('pre')
     return model.to(device).eval()
+
+
+# 向後相容別名：舊 script 仍可用 load_v15_model 名稱
+load_v15_model = load_weather_sam_model
 
 
 def build_acdc_val_loader(csv_path: str = DEFAULT_VAL_CSV,

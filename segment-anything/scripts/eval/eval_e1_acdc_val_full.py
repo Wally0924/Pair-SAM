@@ -17,7 +17,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
-    load_v15_model, build_acdc_val_loader, make_batched_input,
+    load_weather_sam_model, build_acdc_val_loader, make_batched_input,
     CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT, DEFAULT_CKPT,
 )
 
@@ -37,7 +37,7 @@ def iou_from_confusion(cm: torch.Tensor) -> torch.Tensor:
 
 
 def main():
-    model = load_v15_model(DEFAULT_CKPT, device=DEVICE)
+    model = load_weather_sam_model(DEFAULT_CKPT, device=DEVICE)
     loader = build_acdc_val_loader()
 
     # 5 個混淆矩陣：overall + 4 conditions

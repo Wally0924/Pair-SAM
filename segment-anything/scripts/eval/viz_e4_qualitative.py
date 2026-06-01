@@ -13,7 +13,7 @@ import torch.nn.functional as F
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
-    load_v15_model, make_batched_input, pick_first_per_condition, denorm_image,
+    load_weather_sam_model, make_batched_input, pick_first_per_condition, denorm_image,
     CONDITION_NAMES, OUTPUT_ROOT, DEFAULT_CKPT, DEFAULT_VAL_CSV,
     colorize_19class,
 )
@@ -23,7 +23,7 @@ DEVICE = 'cuda'
 
 
 def main():
-    model = load_v15_model(DEFAULT_CKPT, device=DEVICE)
+    model = load_weather_sam_model(DEFAULT_CKPT, device=DEVICE)
 
     # 為了取「指定 index 的 sample」，直接使用 Dataset 而非 DataLoader
     from utils.weather_dataloader import WeatherSegmentationDataset
