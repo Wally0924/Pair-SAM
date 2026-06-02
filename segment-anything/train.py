@@ -16,6 +16,7 @@ import argparse
 
 # 引入你的模組
 from utils.weather_dataloader import WeatherSegmentationDataset
+from utils.rare_class_sampler import RareClassSampler
 from weather_trainer import WeatherSAMTrainer
 from segment_anything.build_weather_sam import build_weather_sam_from_config
 
@@ -245,6 +246,12 @@ def main():
                         help="CE/dice 是否套用 MFB 類別權重；--no-mfb = uniform")
     parser.add_argument("--ref", action=argparse.BooleanOptionalAction, default=True,
                         help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
+    parser.add_argument("--rcs", action=argparse.BooleanOptionalAction, default=True,
+                        help="Rare Class Sampling：依稀有類過取樣訓練影像（--no-rcs 關閉=純 shuffle）")
+    parser.add_argument("--rcs_temp", type=float, default=0.01,
+                        help="RCS 溫度 T（DAFormer 預設 0.01）")
+    parser.add_argument("--class_presence", type=str, default=None,
+                        help="class_presence.json 路徑（預設取 train_csv 同目錄）")
 
     # NOTE: --use_condition_embedding 已移除；模型現在固定使用 condition_encoder（ACDC 模式）
     args = parser.parse_args()
@@ -279,7 +286,9 @@ def main():
     with open(os.path.join(args.output_dir, "ablation_config.json"), "w") as f:
         json.dump({**abl_cfg, "seed": args.seed,
                    "lovasz_weight": args.lovasz_weight,
-                   "dice_weight": args.dice_weight}, f, indent=2)
+                   "dice_weight": args.dice_weight,
+                   "rcs": args.rcs,
+                   "rcs_temp": args.rcs_temp}, f, indent=2)
 
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
@@ -318,10 +327,37 @@ def main():
     loader_generator = torch.Generator()
     loader_generator.manual_seed(args.seed)
 
+    train_sampler = None
+    if args.rcs:
+        cp_path = args.class_presence or os.path.join(
+            os.path.dirname(args.train_csv), "class_presence.json")
+        if not os.path.isfile(cp_path):
+            raise FileNotFoundError(
+                f"--rcs 啟用但找不到 {cp_path}；請先執行 "
+                f"scripts/precompute_class_presence.py（見 ABLATION_RUNBOOK Phase 0）。")
+        with open(cp_path) as f:
+            cp = json.load(f)
+        num_classes = int(cp.get('num_classes', 19))
+        gt_paths = train_ds.data['gt_path'].tolist()
+        presence_list = []
+        for gp in gt_paths:
+            if gp not in cp['presence']:
+                raise KeyError(f"class_presence.json 缺少 {gp}；請以 --force 重新 precompute。")
+            presence_list.append(cp['presence'][gp])
+        # JSON 載入後 class_pixel_counts 的 key 為字串
+        pcounts = cp['class_pixel_counts']
+        pixel_counts = [int(pcounts.get(str(c), pcounts.get(c, 0))) for c in range(num_classes)]
+        train_sampler = RareClassSampler(
+            presence_list, pixel_counts, num_samples=len(train_ds),
+            temperature=args.rcs_temp, seed=args.seed, num_classes=num_classes)
+        top5 = sorted(range(num_classes), key=lambda c: -train_sampler.class_probs[c])[:5]
+        print(f"[RCS] enabled (T={args.rcs_temp}); top-5 sampled classes = {top5}")
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=4,
         collate_fn=WeatherSegmentationDataset.collate_fn,
         pin_memory=True,
