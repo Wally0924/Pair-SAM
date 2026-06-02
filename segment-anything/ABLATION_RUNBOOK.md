@@ -9,19 +9,19 @@
 
 ## Phase 0 — 起跑前檢查（5 分鐘）
 
-- [ ] **環境**：確認當前 `python` 為含齊套件的環境（如已 `conda activate sam_env`）；本 runbook 指令直接使用 `python`，不再前綴 conda
-- [ ] **工作目錄**：`cd /home/rvl1421/SAM_research-1/segment-anything`
-- [ ] **GPU 空閒**：`nvidia-smi`（確認 24GB 幾乎全空；單 run 需大量 VRAM）
-- [ ] **資料 CSV 存在**：
-      `ls -la /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_{train,val}.csv`
-- [ ] **SAM 權重存在**：`ls -lah checkpoints/sam_vit_h_4b8939.pth`（2.4G）
-- [ ] **CMA 權重存在**：`ls -lah checkpoints/cma_alignment_weights.pth`（72M）
-- [ ] **class_presence.json**：RCS 採樣前置資料（冪等，可重算）：
-      `python scripts/precompute_class_presence.py --csv /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv --out /home/rvl1421/SAM_research-1/Datasets/class_presence.json`
-- [ ] **磁碟空間**：`df -h .` —— train.py 只保留單一最佳權重（覆寫 `weather_sam_best_latest.pth`，約 3.1G/run），14 runs ≈ **44GB**，無需事後清理。1.2T 剩餘充足。
-- [ ] **單元測試綠燈**（確認程式碼完好）：
+- [x] **環境**：確認當前 `python` 為含齊套件的環境（如已 `conda activate sam_env`）；本 runbook 指令直接使用 `python`，不再前綴 conda ✅ sam_env
+- [x] **工作目錄**：`cd /home/rvl1421/SAM_research-1/segment-anything` ✅
+- [x] **GPU 空閒**：`nvidia-smi`（確認 24GB 幾乎全空；單 run 需大量 VRAM） ✅ 用 1.1GB/24.5GB、5%
+- [x] **資料 CSV 存在**：
+      `ls -la /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_{train,val}.csv` ✅
+- [x] **SAM 權重存在**：`ls -lah checkpoints/sam_vit_h_4b8939.pth`（2.4G） ✅
+- [x] **CMA 權重存在**：`ls -lah checkpoints/cma_alignment_weights.pth`（69M） ✅
+- [x] **class_presence.json**：RCS 採樣前置資料（冪等，可重算）：
+      `python scripts/precompute_class_presence.py --csv /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv --out /home/rvl1421/SAM_research-1/Datasets/class_presence.json` ✅ 已產出（232K；rider 最稀有 632K px）
+- [x] **磁碟空間**：`df -h .` —— train.py 只保留單一最佳權重（覆寫 `weather_sam_best_latest.pth`，約 3.1G/run），14 runs ≈ **44GB**，無需事後清理。1.2T 剩餘充足。 ✅
+- [x] **單元測試綠燈**（確認程式碼完好）：
       `python -m pytest segment-anything/tests/ -q`
-      預期 `42 passed`。
+      實測 **50 passed**（2 warnings，無關）。
 
 ---
 
