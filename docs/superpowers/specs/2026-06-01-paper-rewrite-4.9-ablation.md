@@ -43,7 +43,7 @@
 
 ### 3.1 4.9.1 注入機制（Adapter）消融 — `tab:adapter_ablation`【保留】
 - 三列維持：完整模型（前置注入）/ 後置注入（A1）/ 不引入 reference（A2）。
-- **數據來源**：FULL（3-seed mean±std）、A1（單 seed）、A2（3-seed mean±std）。表格 FULL 與 A2 列標 mean±std。
+- **數據來源**：FULL=R8（3-seed mean±std）、A1（單 seed）、A2（單 seed=42）。僅 FULL 列標 mean±std。
 - 「不引入 reference」段是中心論點（reference 才是主貢獻），呼應第 1.2.1 節 → **維持**。
 - 提醒：A2 的實作為「零張量取代 reference 特徵、保 adapter 參數量不變」，敘述可補一句「在不改變 Adapter 容量的前提下移除參考內容」以強化「資訊 vs 容量」的分離論證。
 
@@ -54,12 +54,12 @@
 - 呼應第 4.5 節長尾失效 → 維持。
 
 ### 3.3 4.9.4 消融總結 — `tab:ablation_summary`【保留 + 吸收 §2】
-- 7 列（R1–R6+FULL）維持；R1、FULL 標 mean±std（3-seed）。
+- 8 列（R1–R8）；僅 FULL(R8) 標 mean±std（3-seed），其餘單 seed。
 - 逐列趨勢段落吸收 §2 的 per-class 解碼與 LRH 論述。
 
 ### 3.4 4.9 節開頭段【微調】
 - 原文為「每組消融僅切換單一模組」（leave-one-out）。現結構為**累積（R 系列）+ leave-one-out（4.9.1/4.9.3 的 A1/A2/C1/C2）並存**。開頭段補一句說明兩種消融並用：累積式觀察邊際貢獻（4.9.4），leave-one-out 在完整框架下隔離單一模組（4.9.1、4.9.3）。
-- 補述 seed：最簡基線、完整框架、不引入 reference 之控制各以三組隨機種子重複，報平均與標準差。
+- 補述 seed：僅完整框架（FULL=R8）以三組隨機種子重複，報平均與標準差；其餘各 run 單 seed=42。
 
 ---
 
@@ -113,9 +113,9 @@ R7→R8 的 Δ 來自 Rare-Class Sampler（RCS）對長尾類別的採樣修正�
 - [ ] grep `tab:decoder_ablation` 確認無孤兒 `\ref`
 - [ ] 第 1.2.2 節呼應 → 搬到累積表 R3→R4 討論（§2）
 - [ ] LRH（R4→R5）段誠實標註：僅報 mIoU 有限增益，未量測 boundary（§2）
-- [ ] 4.9.1 adapter 表填值；FULL、A2 列標 mean±std；A2 補「不改變容量」一句（§3.1）
-- [ ] 4.9.3 loss 表填值；C2 複用 R6；rider/moto/bike IoU + 像素頻率（§3.2）
-- [ ] 4.9.4 累積表填值；R1、FULL 標 mean±std；吸收解碼論述（§3.3）
+- [ ] 4.9.1 adapter 表填值；僅 FULL 列標 mean±std；A2 補「不改變容量」一句（§3.1）
+- [ ] 4.9.3 loss 表填值；C2 獨立 run（mfb off, rcs on, seed=42）；rider/moto/bike IoU + 像素頻率（§3.2）
+- [ ] 4.9.4 累積表填值；僅 FULL(R8) 標 mean±std；吸收解碼論述（§3.3）
 - [ ] 開頭段補「累積 + leave-one-out 並用」與 seed 說明（§3.4）
 - [ ] 小節節號遞補（§4）
 - [ ] 全節數值與 `aggregate_ablation.py` 三張表輸出一致

@@ -21,9 +21,9 @@
 
 ### 表格範圍的取捨依據
 
-- **累積表**（R1–R6+FULL）：逐次加入單一模組，觀察邊際貢獻。
+- **累積表**（R1–R8，含 R7 與 FULL=R8）：逐次加入單一模組，觀察邊際貢獻。
 - **adapter 表**（FULL/A1 後置注入/A2 不引入 reference）：A2 是唯一能分離「參考資訊 vs adapter 容量」的控制組（無累積表對應）；A1 提供完整基準下的 post-vs-pre leave-one-out。
-- **loss 表**（FULL/C1 純CE/C2 取消MFB）：以表格呈現 rider/moto/bike 長尾 per-class IoU，呼應 §4.5；C2 與 R6 為**同一 config**（免費複用）。
+- **loss 表**（FULL/C1 純CE/C2 取消MFB）：以表格呈現 rider/moto/bike 長尾 per-class IoU，呼應 §4.5；C2 為獨立 run（mfb off, rcs on），不複用 R6（R6 為 no-rcs，config 不同）。
 - **decoder 表刪除**：B1（逐類別）↔ 累積 R3→R4、B2（無LRH）↔ R4→R5 已涵蓋，且 B2 因不做 Boundary metric 而證據單薄，論述改折進累積表。
 - **救回 adapter+loss 表不需新增程式開關**：A1 用 `--inject post`、C1 用 `--lovasz_weight 0 --dice_weight 0`，皆既有/已規劃開關，僅各多跑 1 run。
 
@@ -122,11 +122,11 @@
 ## 4. 評估與彙整（評估端零新指標，全為重用 + 彙整）
 
 1. **per-condition / per-class / overall mIoU**：[eval_e1_acdc_val_full.py](../../segment-anything/scripts/eval/eval_e1_acdc_val_full.py) 已輸出 JSON（per-class×per-condition IoU 矩陣 + per-condition mIoU + overall）。改為 ckpt/config-aware 後逐 run 跑。
-2. **`aggregate_ablation.py`（新）**：掃 10 個 unique config 的 JSON，輸出 3 張表的 `.tex` 可貼片段：
-   - **`tab:ablation_summary`**：7 列（R1–R6+FULL）All mIoU + Δ，可選 per-condition；R1、FULL 標 mean±std（3-seed）。
-   - **`tab:adapter_ablation`**：FULL / A1（後置注入）/ A2（不引入 reference）× Fog/Rain/Snow/Night/All/Δ；FULL、A2 標 mean±std。
-   - **`tab:loss_ablation`**：FULL / C1（純CE）/ C2=R6（取消MFB）× All mIoU + rider/moto/bike IoU + Δ；FULL 標 mean±std。
-   - 對 3-seed runs（R1、FULL、A2）計算 mean±std。
+2. **`aggregate_ablation.py`（新）**：掃 12 個 unique config 的 JSON，輸出 3 張表的 `.tex` 可貼片段：
+   - **`tab:ablation_summary`**：8 列（R1–R8）All mIoU + Δ，可選 per-condition；FULL(R8) 標 mean±std（3-seed）；其餘單 seed。
+   - **`tab:adapter_ablation`**：FULL / A1（後置注入）/ A2（不引入 reference）× Fog/Rain/Snow/Night/All/Δ；FULL 標 mean±std。
+   - **`tab:loss_ablation`**：FULL / C1（純CE）/ C2（取消MFB，獨立 run）× All mIoU + rider/moto/bike IoU + Δ；FULL 標 mean±std。
+   - 對 3-seed run（僅 FULL=R8）計算 mean±std。
 3. **ACDC 類別像素頻率**：已內建於 [new_loss.py:5](../../segment-anything/utils/new_loss.py) `_ACDC_CLASS_FREQ`（1200 張實測），rider/moto/bike 比例直接導出，填 4.9.3 正文（`[X.XXX]%`）。
 
 ---
@@ -142,7 +142,7 @@
 - `--inject post`：hook 註冊在 forward hook（後置）而非 pre_hook。
 
 ### 5.2 整合 smoke 測試
-- 10 個 unique config 各跑 **0–1 epoch smoke**，確認：能跑通、`ablation_config.json` 正確落地、eval 能據 config 重建並算出數字。
+- 12 個 unique config 各跑 **0–1 epoch smoke**，確認：能跑通、`ablation_config.json` 正確落地、eval 能據 config 重建並算出數字。
 
 ### 5.3 FULL 重訓 pipeline sanity gate
 - FULL = 現行預設 config，重訓後 val mIoU 應落在 **best E27（65.68）同量級**（容許 seed 造成的 ±~0.5）。若顯著偏低，代表 pipeline 退化，須先除錯再跑其餘 runs。**此為執行順序第一道關卡。**
@@ -158,12 +158,12 @@
 
 **建議順序（由風險高/資訊量大優先）**：
 1. **FULL**（3 seeds）— pipeline sanity gate，先確認可重現 E27 量級。
-2. **A2**（3 seeds）與 **R1**（3 seeds）— 驗證兩端點，A2 驗證中心論點，早期發現 pipeline 問題。
+2. **A2**（單 seed）與 **R1**（單 seed）— 驗證兩端點，A2 驗證中心論點，早期發現 pipeline 問題。
 3. R2–R6 累積中間列。
 4. A1（後置注入）、C1（純CE）— 補齊 adapter / loss 表的 leave-one-out 變體。
 5. 全跑完 → `aggregate_ablation.py` 產出 3 張表 `.tex` + 正文數值。
 
-**並行**：16 次訓練彼此獨立，若有第二張卡可平行。
+**並行**：14 次訓練彼此獨立，若有第二張卡可平行。
 
 ---
 
@@ -171,8 +171,8 @@
 
 1. **程式**：5 個 argparse 開關（含 2.1–2.5 觸及檔案的外科式修改）+ `ablation_config.json` 落地 + eval ckpt/config-aware 改造 + `aggregate_ablation.py`。
 2. **測試**：5.1 的開關單元測試 + 5.2 smoke。
-3. **腳本**：`run_ablation.sh`（16 條訓練指令 + eval + 彙整，釘死每 run 的 flag 與 seed，可重現）。
-4. **數據產物**：10 個 unique config 的 metrics JSON + 3 張表（`tab:ablation_summary` / `tab:adapter_ablation` / `tab:loss_ablation`）的 `.tex` 可貼片段 + 正文待填數值（rider/moto/bike IoU、類別像素頻率）。
+3. **腳本**：`run_ablation.sh`（14 條訓練指令 + eval + 彙整，釘死每 run 的 flag 與 seed，可重現）。
+4. **數據產物**：12 個 unique config 的 metrics JSON + 3 張表（`tab:ablation_summary` / `tab:adapter_ablation` / `tab:loss_ablation`）的 `.tex` 可貼片段 + 正文待填數值（rider/moto/bike IoU、類別像素頻率）。
 5. **論文改寫**：見獨立文件 [`2026-06-01-paper-rewrite-4.9-ablation.md`](2026-06-01-paper-rewrite-4.9-ablation.md)（刪 4.9.1–4.9.3 三表、A2 折進論述、交叉引用搶救等），不直接改 .tex。
 
 ---
@@ -203,7 +203,7 @@
 
 ## 8. 開放項（已全部結案）
 
-1. **A2 seeds** → ✅ **3 seeds**（報 mean±std）。
+1. **A2 seeds** → ✅ **單 seed=42**（RCS 整合後改為僅 FULL=R8 跑 3 seeds）。
 2. **A2「移除 reference」語意** → ✅ **零張量取代 reference 特徵**（保 adapter 參數量不變）。
 3. **實作風格** → ✅ **argparse + `run_ablation.sh`**。
 4. **表格範圍 / 論文改寫** → ✅ **保留 adapter + loss 表，僅刪 decoder 表（4.9.2）**；改寫細節見 [`2026-06-01-paper-rewrite-4.9-ablation.md`](2026-06-01-paper-rewrite-4.9-ablation.md)。
