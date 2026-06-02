@@ -58,33 +58,49 @@ def test_load_runs_groups_seeds(tmp_path):
     assert len(runs['R1']['overall_miou']) == 1
 
 
-def test_build_summary_table_has_rows_and_delta(tmp_path):
+def test_build_summary_table_r1_to_r8(tmp_path):
     root = str(tmp_path)
-    for rid, m in [('R1',0.40),('R2',0.55),('R3',0.58),('R4',0.60),
-                   ('R5',0.61),('R6',0.63),('FULL',0.65)]:
+    seq = [('R1',0.40),('R2',0.55),('R3',0.58),('R4',0.60),
+           ('R5',0.61),('R6',0.63),('R7',0.655),('R8',0.66)]
+    for rid, m in seq:
         _write_run(root, rid, 42, m)
     runs = load_runs(root, results_filename='e1_results.json')
     tex = build_summary_table(runs)
-    assert 'R1' in tex and 'FULL' in tex
-    # Δ for R1 ≈ (0.40-0.65)*100 = -25.0
-    assert '-25.0' in tex
+    assert 'R1' in tex and 'R8' in tex
+    assert '-26.0' in tex          # R1 Δ vs FULL(R8=0.66) = (0.40-0.66)*100
+
+
+def test_loss_table_c2_uses_own_run(tmp_path):
+    root = str(tmp_path)
+    for rid, m in [('R8',0.66),('C1',0.62),('C2',0.64)]:
+        _write_run(root, rid, 42, m)
+    runs = load_runs(root, results_filename='e1_results.json')
+    tex = build_loss_table(runs)
+    assert 'C2' in tex
 
 
 def test_full_row_delta_is_dashes(tmp_path):
-    """FULL 行的 Δ 欄應輸出 '---'，而非 '+0.0'。"""
+    """FULL(=R8) 行的 Δ 欄應輸出 '---'，而非 '+0.0'。"""
     root = str(tmp_path)
     for rid, m in [('R1',0.40),('R2',0.55),('R3',0.58),('R4',0.60),
-                   ('R5',0.61),('R6',0.63),('FULL',0.65)]:
+                   ('R5',0.61),('R6',0.63),('R7',0.655),('R8',0.66)]:
         _write_run(root, rid, 42, m)
     # adapter table also needs A1, A2
     _write_run(root, 'A1', 42, 0.62)
     _write_run(root, 'A2', 42, 0.64)
-    # loss table needs C1
+    # loss table needs C1, C2
     _write_run(root, 'C1', 42, 0.60)
+    _write_run(root, 'C2', 42, 0.64)
     runs = load_runs(root, results_filename='e1_results.json')
 
+    # summary table: R8 is the last row (FULL), its Δ = '---'
+    summary_tex = build_summary_table(runs)
+    r8_line = next(l for l in summary_tex.splitlines() if l.startswith('R8'))
+    assert '---' in r8_line, f"summary: R8 row missing '---': {r8_line!r}"
+    assert '+0.0' not in r8_line, f"summary: R8 row has '+0.0': {r8_line!r}"
+
+    # adapter and loss tables: FULL row (display name) maps to R8
     for tex, name in [
-        (build_summary_table(runs), 'summary'),
         (build_adapter_table(runs), 'adapter'),
         (build_loss_table(runs),    'loss'),
     ]:
