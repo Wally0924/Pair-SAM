@@ -64,7 +64,7 @@ python scripts/aggregate_ablation.py \
 
 > 註：`--epochs` 同時是 cosine LR 衰減的時程。50 比 80 衰減更陡（同 epoch 的 LR 更低），與 5/14 E27（≈80 時程）較不可比；這是刻意選擇。
 
-**目的**：FULL = 現行最佳架構配置，重訓後 val mIoU 必須達 **best E27 ≈ 65.68% 量級**（容許 seed 造成 ±~0.5）。這是判斷「pipeline 沒退化」的關卡。
+**目的**：確認重訓的 FULL（=R8）pipeline 健康、分數非退化、各類別 IoU 合理。**不以 E27 的 65.68% 為硬門檻** —— 該數字為 5/14 舊架構（含 focal 等差異）的單一 seed，不可比；本關卡看的是「能跑通、val mIoU 達現行架構合理量級、長尾類別未崩」。
 
 - [ ] **跑 FULL = R8（seed 42，含 RCS）**，直接寫進正式輸出目錄：
 ```bash
