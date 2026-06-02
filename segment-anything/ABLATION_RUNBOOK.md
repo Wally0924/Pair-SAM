@@ -1,7 +1,8 @@
 # 消融實驗執行 Runbook（第 4.9 節）
 
 > 對應 `docs/superpowers/specs/2026-06-01-ablation-experiment-design.md`。
-> 目標：10 unique config / 16 訓練 run → 3 張表（累積 / adapter / loss）。
+> 目標：12 unique config / 14 訓練 run → 3 張表（累積 / adapter / loss）。
+> R1–R7 使用 `--no-rcs`；R8(=FULL, +RCS) 與 A1/A2/C1/C2 使用 `--rcs`；僅 R8(FULL) 跑 3 seeds；C2 為獨立 run（mfb off, rcs on）。
 > 全程於 `segment-anything/` 目錄、`sam_env` conda 環境執行。
 
 ---
@@ -15,7 +16,9 @@
       `ls -la /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_{train,val}.csv`
 - [ ] **SAM 權重存在**：`ls -lah checkpoints/sam_vit_h_4b8939.pth`（2.4G）
 - [ ] **CMA 權重存在**：`ls -lah checkpoints/cma_alignment_weights.pth`（72M）
-- [ ] **磁碟空間**：`df -h .` —— train.py 只保留單一最佳權重（覆寫 `weather_sam_best_latest.pth`，約 3.1G/run），16 runs ≈ **50GB**，無需事後清理。1.2T 剩餘充足。
+- [ ] **class_presence.json**：RCS 採樣前置資料（冪等，可重算）：
+      `python scripts/precompute_class_presence.py --csv /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv --out /home/rvl1421/SAM_research-1/Datasets/class_presence.json`
+- [ ] **磁碟空間**：`df -h .` —— train.py 只保留單一最佳權重（覆寫 `weather_sam_best_latest.pth`，約 3.1G/run），14 runs ≈ **44GB**，無需事後清理。1.2T 剩餘充足。
 - [ ] **單元測試綠燈**（確認程式碼完好）：
       `python -m pytest segment-anything/tests/ -q`
       預期 `42 passed`。
@@ -61,17 +64,18 @@ python scripts/aggregate_ablation.py \
 
 **目的**：FULL = 現行最佳架構配置，重訓後 val mIoU 必須達 **best E27 ≈ 65.68% 量級**（容許 seed 造成 ±~0.5）。這是判斷「pipeline 沒退化」的關卡。
 
-- [ ] **跑 FULL（seed 42）**，直接寫進正式輸出目錄：
+- [ ] **跑 FULL = R8（seed 42，含 RCS）**，直接寫進正式輸出目錄：
 ```bash
 mkdir -p outputs_ablation
 python train.py \
   --epochs 50 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5 \
   --inject pre --decoder unified --lrh --mfb --lovasz_weight 1 --dice_weight 1 \
-  --seed 42 --output_dir outputs_ablation/FULL_seed42
+  --rcs --seed 42 --output_dir outputs_ablation/R8_seed42
 ```
+> FULL = R8 = +RCS（最後累積步驟）。Run dir 命名為 `R8_seed42`；彙整器自動將 FULL 欄位映射至 R8。
 > 不要接 `| tee`：管線會讓 tqdm 進度條退化成每步印一行（洗版）。train.py 已自動寫 `train_log.csv` + `training_curve.png`，無需另存 log。
 > 若要背景執行：`nohup python train.py ... > /dev/null 2>&1 &`，再看 `train_log.csv` / `training_curve.png`（背景時進度條本就不顯示）。
-- [ ] **監看**：訓練曲線 `outputs_ablation/FULL_seed42/training_curve.png`；`train_log.csv` 每 epoch 的 val mIoU。
+- [ ] **監看**：訓練曲線 `outputs_ablation/R8_seed42/training_curve.png`；`train_log.csv` 每 epoch 的 val mIoU。
 - [ ] **關卡判定**：訓練結束（early stopping 或 50 epoch）後，best val mIoU 是否落在**現行架構的合理水準**？
       （參考：seed42 FULL 已得 **63.47%**；5/14 的 65.68% 是舊架構，不必硬追。重點是管線健康、分數非退化、各類別 IoU 合理。建議跑滿 FULL 3 seeds 看 mean±std 再定錨。）
       - ✅ 達標 → 進入 Phase 3。
@@ -79,25 +83,24 @@ python train.py \
 
 ---
 
-## Phase 3 — 其餘 15 個 run（算力主體，數天）
+## Phase 3 — 其餘 13 個 run（算力主體，數天）
 
-FULL_seed42 已在 Phase 2 完成。剩下 15 個。**建議順序：先驗端點，再補中間**（早期發現問題）。
+R8_seed42（FULL）已在 Phase 2 完成。剩下 13 個。**建議順序：先驗端點，再補中間**（早期發現問題）。
 
-### 3a. 端點與中心論點（先跑）
-- [ ] **R1 baseline ×3 seeds**（裸 SAM）
-- [ ] **A2 ×3 seeds**（移除 reference，中心論點控制組）
-- [ ] **FULL ×2 剩餘 seeds**（1234, 2026）
+### 3a. 端點與控制組（先跑）
+- [ ] **A2 ×1 seed=42**（移除 reference，中心論點控制組；rcs on）
+- [ ] **R7 ×1 seed=42**（= 舊 FULL，--no-rcs，RCS leave-one-out 控制組）
+- [ ] **R8 ×2 剩餘 seeds**（1234, 2026）
 
-### 3b. 累積中間列（單 seed=42）
-- [ ] R2（後置注入）、R3（前置）、R4（統一查詢）、R5（+LRH）、R6（+Lovász/Dice）
+### 3b. 累積中間列（單 seed=42，全部 --no-rcs）
+- [ ] R1（baseline）、R2（後置注入）、R3（前置）、R4（統一查詢）、R5（+LRH）、R6（+Lovász/Dice）
 
-### 3c. leave-one-out 變體（單 seed=42）
-- [ ] A1（後置注入）、C1（純 CE）
-- [ ] C2 **不用跑** —— 與 R6 同 config，彙整器自動複用 R6
+### 3c. leave-one-out 變體（單 seed=42，全部 --rcs）
+- [ ] A1（後置注入）、C1（純 CE）、C2（取消 MFB，獨立 run，mfb off rcs on）
 
-> **一次跑完全部的捷徑**：上述 16 個 run 的精確指令都在 `run_ablation.sh`。若 Phase 2 已單獨跑了 FULL_seed42，直接整檔執行會重跑它（覆寫、浪費一次）。建議二選一：
-> - **(A) 逐行貼**：打開 `run_ablation.sh`，跳過 FULL_seed42 那行，其餘逐一/分批貼到終端機（可背景跑）。
-> - **(B) 整檔跑**：先 `rm -rf outputs_ablation/FULL_seed42`，再 `bash run_ablation.sh`（讓它從頭一致地跑完 16 個，含 eval + 彙整）。
+> **一次跑完全部的捷徑**：上述 14 個 run 的精確指令都在 `run_ablation.sh`（含 Step 0 precompute）。若 Phase 2 已單獨跑了 R8_seed42，直接整檔執行會重跑它（覆寫、浪費一次）。建議二選一：
+> - **(A) 逐行貼**：打開 `run_ablation.sh`，跳過 R8_seed42 那行，其餘逐一/分批貼到終端機（可背景跑）。
+> - **(B) 整檔跑**：先 `rm -rf outputs_ablation/R8_seed42`，再 `bash run_ablation.sh`（讓它從頭一致地跑完 14 個，含 eval + 彙整）。
 
 **背景執行建議**（單一 run）：
 ```bash
@@ -132,16 +135,17 @@ nohup python train.py <flags> \
         --runs_root outputs_ablation --out outputs_ablation/ablation_tables.tex
       ```
 - [ ] 檢視 `outputs_ablation/ablation_tables.tex`：應含
-      `% tab:ablation_summary`（R1–R6+FULL）、`% tab:adapter_ablation`（FULL/A1/A2）、`% tab:loss_ablation`（FULL/C1/C2）三段；R1/FULL/A2 顯示 `mean±std`，FULL 的 Δ 為 `---`。
+      `% tab:ablation_summary`（R1–R8/FULL，8 列含 R7 控制組）、`% tab:adapter_ablation`（FULL/A1/A2）、`% tab:loss_ablation`（FULL/C1/C2）三段；FULL(R8) 顯示 `mean±std`（3-seed），FULL 的 Δ 為 `---`。
 
 ---
 
 ## Phase 6 — 數據健全性與誠實性檢查（重要）
 
-- [ ] **FULL ≈ E27**：FULL 三 seed 平均落在 65.68% 量級。
-- [ ] **累積趨勢**：R1 < R2 < ... < FULL 大致遞增？若某步（尤其 R4→R5 LRH、R6→FULL MFB）增益極小或為負 —— **據實寫進正文，不調數據**（spec §5.4）。
-- [ ] **A2 落差**：FULL − A2 是否明顯（中心論點「reference 才是主貢獻」）？
-- [ ] **長尾證據**：loss 表的 rider/moto/bike IoU 從 C2(R6)→FULL 是否上升（MFB 效果）？
+- [ ] **FULL(R8) ≈ E27**：R8 三 seed 平均落在 65.68% 量級。
+- [ ] **累積趨勢**：R1 < R2 < ... < R7 < R8(FULL) 大致遞增？若某步（尤其 R4→R5 LRH、R6→R7 MFB、R7→R8 RCS）增益極小或為負 —— **據實寫進正文，不調數據**（spec §5.4）。
+- [ ] **RCS 長尾效益**：R7→R8 的 bus/moto/bicycle IoU 是否提升（支持 RCS 論據）？
+- [ ] **A2 落差**：FULL(R8) − A2 是否明顯（中心論點「reference 才是主貢獻」）？
+- [ ] **長尾證據**：loss 表的 rider/moto/bike IoU 從 C2→FULL(R8) 是否上升（MFB 效果）？
 - [ ] **LRH 誠實標註**：未做 Boundary metric，LRH 僅以整體 mIoU 之有限增益陳述，**不得宣稱未量測的 boundary 數據**。
 
 ---
@@ -161,7 +165,7 @@ nohup python train.py <flags> \
 |------|---------|------|
 | smoke | `train.py --epochs 1 ... --output_dir /tmp/smoke_full` + eval + aggregate | 管線跑通 |
 | 關卡 | FULL seed42 完整訓練 | val mIoU ≈ 65.68% |
-| 主體 | `run_ablation.sh`（或逐行）跑滿 16 run | 各 run 出 `weather_sam_best_latest.pth` + `ablation_config.json` |
+| 主體 | `run_ablation.sh`（或逐行）跑滿 14 run | 各 run 出 `weather_sam_best_latest.pth` + `ablation_config.json` |
 | eval | `eval_e1_acdc_val_full.py --ckpt ... --out .../e1_results.json` | 每 run 出 JSON |
 | 彙整 | `aggregate_ablation.py --runs_root outputs_ablation` | `ablation_tables.tex`（3 表） |
 | 改寫 | 依 paper-rewrite 指引 | 填數值、刪 decoder 表 |

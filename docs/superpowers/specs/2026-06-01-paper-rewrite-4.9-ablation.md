@@ -49,7 +49,7 @@
 
 ### 3.2 4.9.3 損失函數消融 — `tab:loss_ablation`【保留】
 - 三列維持：完整模型 / 純 CE（C1）/ 取消 MFB（C2）。
-- **數據來源**：FULL（3-seed mean±std）、C1（單 seed）、C2 **= R6**（與累積表 R6 同一 run，直接複用）。
+- **數據來源**：FULL = R8（3-seed mean±std）、C1（單 seed）、C2（獨立 run，mfb off, rcs on，單 seed=42；**不再複用 R6**，因 R6 為 no-rcs，config 不同）。
 - rider/moto/bike per-class IoU 欄位由 eval 輸出直接填；ACDC 訓練集像素頻率（rider/moto/bike `[X.XXX]%`）由 `_ACDC_CLASS_FREQ` 導出填正文。
 - 呼應第 4.5 節長尾失效 → 維持。
 
@@ -74,6 +74,36 @@
 ```
 
 > 原 4.9.2 解碼端消融刪除後，4.9.3→4.9.2、4.9.4→4.9.3 順序遞補（或保留原節號僅刪中間，依排版偏好）。
+
+### 4a. 累積表 R8 列（新增）
+
+`tab:ablation_summary` 新增 R8 列，緊接 R7 之後：
+
+| Run | 相對前列新增 | mIoU | Δ |
+|-----|------------|------|---|
+| R7 | +MFB（= 舊 FULL；RCS 控制組） | [XX.XX] | +[X.XX] |
+| **R8 = FULL** | **+RCS** | **[XX.XX] ± [X.XX]** | **+[X.XX]** |
+
+R7→R8 的 Δ 來自 Rare-Class Sampler（RCS）對長尾類別的採樣修正。R8 標 mean±std（3 seeds）。
+
+### 4b. RCS 方法描述要求（4.9.3 消融總結中補一段）
+
+論文 4.9.3 節討論 R7→R8 時須包含以下要素：
+
+- 採樣機率：P(c) = softmax((1 − f(c)) / T)，T = 0.01
+- 流程：先依 P(c) 抽類別，再從含該類別的影像中均勻抽取（sample-class-then-image）
+- f(c)：訓練集 1600 張影像的類別出現頻率，由 `scripts/precompute_class_presence.py` 預計算
+- 可重現性：透過固定 seed 保證（與訓練 seed 一致）
+
+### 4c. 長尾證據（使用 R7→R8 差分）
+
+4.9.3 消融總結及 4.9.2 loss 表討論中，以 **R7→R8 的 bus/moto/bicycle per-class IoU 變化**作為 RCS 改善長尾類別的直接證據：
+
+- bus IoU：R7=[XX.X]% → R8=[XX.X]%（Δ=[+X.X]%）
+- motorcycle IoU：R7=[XX.X]% → R8=[XX.X]%（Δ=[+X.X]%）
+- bicycle IoU：R7=[XX.X]% → R8=[XX.X]%（Δ=[+X.X]%）
+
+> `[XX.X]` 欄位待 `aggregate_ablation.py` 輸出後填入。若 R7→R8 某類別增益為負，**據實陳述，不調整**（誠實性原則，§5.4 of design spec）。
 
 ---
 

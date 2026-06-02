@@ -1,58 +1,65 @@
 #!/usr/bin/env bash
-# 消融實驗：10 unique config / 16 訓練 run。R1/FULL/A2 各 3 seeds。
-# C2 = R6（複用，不另訓）。每個 run 互相獨立，可平行。
+# 消融實驗：12 unique config / 14 訓練 run。RCS 為累積最後一步（R8=FULL）。
+# 僅 R8(FULL) 跑 3 seeds；其餘各 1。R1–R7 為 --no-rcs；R8 與 A1/A2/C1/C2 為 --rcs。
+# C2(取消MFB) 為獨立 run（mfb off, rcs on），不再複用 R6。
 #
-# ⚠️ 本腳本為數天 GPU 算力的主體，請手動執行（可分批 / 背景跑）。
-# 用法：bash run_ablation.sh   （或挑單行指令逐一執行）
+# ⚠️ 數天 GPU 算力主體，請手動執行（可分批 / 背景跑）。
 set -euo pipefail
 cd "$(dirname "$0")"
 
-SEEDS_KEY=(42 1234 2026)        # R1 / FULL / A2 用 3 seeds
+TRAIN_CSV=/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv
+CP_JSON=/home/rvl1421/SAM_research-1/Datasets/class_presence.json
 OUT=outputs_ablation
+SEEDS_FULL=(42 1234 2026)        # 僅 FULL(R8) 用 3 seeds
 COMMON="--epochs 50 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5"
 
 run () { python train.py $COMMON "$@"; }
 
-# ── 累積表 R1–R6（單 seed=42；R1 另跑 3 seeds）──
-# R1 baseline：無 adapter / per-class / 純CE / 無LRH / 無MFB
-for s in "${SEEDS_KEY[@]}"; do
-  run --seed "$s" --no-use_vgg_adapter --decoder per_class --no-lrh --no-mfb \
-      --lovasz_weight 0 --dice_weight 0 --output_dir "$OUT/R1_seed$s"
-done
-# R2 +Ref 後置注入（adapter 預設啟用）
+# ── Step 0：precompute 每影像類別表（RCS 必需；冪等）──
+python scripts/precompute_class_presence.py --csv "$TRAIN_CSV" --out "$CP_JSON"
+
+# ── 累積表 R1–R7（單 seed=42，全部 --no-rcs）──
+# R1 baseline：無 adapter / per-class / 純CE / 無LRH / 無MFB / 無RCS
+run --seed 42 --no-use_vgg_adapter --decoder per_class --no-lrh --no-mfb \
+    --lovasz_weight 0 --dice_weight 0 --no-rcs --output_dir "$OUT/R1_seed42"
+# R2 +Ref（後置注入）
 run --seed 42 --inject post --decoder per_class --no-lrh --no-mfb \
-    --lovasz_weight 0 --dice_weight 0 --output_dir "$OUT/R2_seed42"
+    --lovasz_weight 0 --dice_weight 0 --no-rcs --output_dir "$OUT/R2_seed42"
 # R3 前置注入
 run --seed 42 --inject pre --decoder per_class --no-lrh --no-mfb \
-    --lovasz_weight 0 --dice_weight 0 --output_dir "$OUT/R3_seed42"
+    --lovasz_weight 0 --dice_weight 0 --no-rcs --output_dir "$OUT/R3_seed42"
 # R4 統一查詢
 run --seed 42 --inject pre --decoder unified --no-lrh --no-mfb \
-    --lovasz_weight 0 --dice_weight 0 --output_dir "$OUT/R4_seed42"
+    --lovasz_weight 0 --dice_weight 0 --no-rcs --output_dir "$OUT/R4_seed42"
 # R5 +LRH
 run --seed 42 --inject pre --decoder unified --lrh --no-mfb \
-    --lovasz_weight 0 --dice_weight 0 --output_dir "$OUT/R5_seed42"
-# R6 +Lovász/Dice（= loss 表的 C2「取消 MFB」，複用）
+    --lovasz_weight 0 --dice_weight 0 --no-rcs --output_dir "$OUT/R5_seed42"
+# R6 +Lovász/Dice
 run --seed 42 --inject pre --decoder unified --lrh --no-mfb \
-    --lovasz_weight 1 --dice_weight 1 --output_dir "$OUT/R6_seed42"
-
-# ── FULL（3 seeds）= R6 + MFB ──
-for s in "${SEEDS_KEY[@]}"; do
-  run --seed "$s" --inject pre --decoder unified --lrh --mfb \
-      --lovasz_weight 1 --dice_weight 1 --output_dir "$OUT/FULL_seed$s"
-done
-
-# ── leave-one-out 變體 ──
-# A1 後置注入（= FULL 但 inject post），單 seed
-run --seed 42 --inject post --decoder unified --lrh --mfb \
-    --lovasz_weight 1 --dice_weight 1 --output_dir "$OUT/A1_seed42"
-# A2 移除 reference（= FULL 但 --no-ref），3 seeds
-for s in "${SEEDS_KEY[@]}"; do
-  run --seed "$s" --inject pre --decoder unified --lrh --mfb --no-ref \
-      --lovasz_weight 1 --dice_weight 1 --output_dir "$OUT/A2_seed$s"
-done
-# C1 純 CE（= FULL 但 loss=CE only），單 seed
+    --lovasz_weight 1 --dice_weight 1 --no-rcs --output_dir "$OUT/R6_seed42"
+# R7 +MFB（= 舊 FULL；= 新 FULL 去 RCS，即 RCS 控制組）
 run --seed 42 --inject pre --decoder unified --lrh --mfb \
-    --lovasz_weight 0 --dice_weight 0 --output_dir "$OUT/C1_seed42"
+    --lovasz_weight 1 --dice_weight 1 --no-rcs --output_dir "$OUT/R7_seed42"
+
+# ── R8 = FULL（+RCS）3 seeds ──
+for s in "${SEEDS_FULL[@]}"; do
+  run --seed "$s" --inject pre --decoder unified --lrh --mfb \
+      --lovasz_weight 1 --dice_weight 1 --rcs --output_dir "$OUT/R8_seed$s"
+done
+
+# ── leave-one-out（皆相對 R8，rcs on，單 seed）──
+# A1 後置注入（= R8 但 inject post）
+run --seed 42 --inject post --decoder unified --lrh --mfb \
+    --lovasz_weight 1 --dice_weight 1 --rcs --output_dir "$OUT/A1_seed42"
+# A2 移除 reference（= R8 但 --no-ref）
+run --seed 42 --inject pre --decoder unified --lrh --mfb --no-ref \
+    --lovasz_weight 1 --dice_weight 1 --rcs --output_dir "$OUT/A2_seed42"
+# C1 純 CE（= R8 但 loss=CE only）
+run --seed 42 --inject pre --decoder unified --lrh --mfb \
+    --lovasz_weight 0 --dice_weight 0 --rcs --output_dir "$OUT/C1_seed42"
+# C2 取消 MFB（= R8 但 --no-mfb；mfb off, rcs on，獨立 run）
+run --seed 42 --inject pre --decoder unified --lrh --no-mfb \
+    --lovasz_weight 1 --dice_weight 1 --rcs --output_dir "$OUT/C2_seed42"
 
 # ── 逐 run 評估 ──
 for d in "$OUT"/*/; do
@@ -66,7 +73,6 @@ for d in "$OUT"/*/; do
 done
 
 # ── 彙整 3 張表 ──
-python scripts/aggregate_ablation.py \
-  --runs_root "$OUT" --out "$OUT/ablation_tables.tex"
+python scripts/aggregate_ablation.py --runs_root "$OUT" --out "$OUT/ablation_tables.tex"
 
-echo "✅ all runs + eval + tables done → $OUT/ablation_tables.tex"
+echo "✅ 14 runs + eval + tables done → $OUT/ablation_tables.tex"
