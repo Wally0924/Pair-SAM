@@ -34,10 +34,12 @@
 python train.py \
   --epochs 1 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5 \
   --inject pre --decoder unified --lrh --mfb --lovasz_weight 1 --dice_weight 1 \
-  --seed 42 --output_dir /tmp/smoke_full
+  --rcs --seed 42 --output_dir /tmp/smoke_full
 ```
+> 此 smoke 含 `--rcs`（= R8/FULL 配置），故需先完成 Phase 0 的 precompute 產出 `class_presence.json`。
 - [ ] **確認 config 落地**：`cat /tmp/smoke_full/ablation_config.json`
-      應含 `"inject":"pre","decoder":"unified","lrh":true,"mfb":true,"ref":true` + seed/loss 權重。
+      應含 `"inject":"pre","decoder":"unified","lrh":true,"mfb":true,"ref":true,"rcs":true` + seed/loss 權重。
+- [ ] **確認 RCS 啟用**：訓練 log 開頭應印 `[RCS] enabled (T=0.01); top-5 sampled classes = ...`（含 rider/moto/bike）。
 - [ ] **確認 checkpoint 產生**：`ls /tmp/smoke_full/weather_sam_best_latest.pth`
 - [ ] **確認 eval 能依 config 重建並算分**：
 ```bash

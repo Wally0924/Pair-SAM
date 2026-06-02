@@ -64,7 +64,7 @@ def fmt_cell(mean, std=0.0):
 def load_runs(runs_root, results_filename='e1_results.json'):
     """掃描 runs_root 下所有子目錄，依 RunID 分組彙整結果。
 
-    目錄命名規則：<RunID>_seed<N>（如 R1_seed42、FULL_seed1234）。
+    目錄命名規則：<RunID>_seed<N>（如 R1_seed42、R8_seed1234；FULL=R8）。
     同一 RunID 的多個 seed 結果被收集到列表中，供後續計算 mean±std。
 
     Args:
