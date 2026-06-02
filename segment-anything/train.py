@@ -3,7 +3,7 @@ import os
 import json
 # ViT-H global attention (64×64 token grid, 16 heads) 需要 ~1 GiB 連續記憶體，
 # expandable_segments 讓 CUDA allocator 以延伸段取代重新分配，大幅降低碎片化 OOM 機率
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 import torch
 from torch.utils.data import DataLoader
 import random
