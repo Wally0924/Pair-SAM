@@ -8,7 +8,7 @@
 
 ## Phase 0 — 起跑前檢查（5 分鐘）
 
-- [ ] **環境**：`conda activate sam_env`（或每條指令用 `conda run -n sam_env`）
+- [ ] **環境**：確認當前 `python` 為含齊套件的環境（如已 `conda activate sam_env`）；本 runbook 指令直接使用 `python`，不再前綴 conda
 - [ ] **工作目錄**：`cd /home/rvl1421/SAM_research-1/segment-anything`
 - [ ] **GPU 空閒**：`nvidia-smi`（確認 24GB 幾乎全空；單 run 需大量 VRAM）
 - [ ] **資料 CSV 存在**：
@@ -17,7 +17,7 @@
 - [ ] **CMA 權重存在**：`ls -lah checkpoints/cma_alignment_weights.pth`（72M）
 - [ ] **磁碟空間**：`df -h .` —— train.py 只保留單一最佳權重（覆寫 `weather_sam_best_latest.pth`，約 3.1G/run），16 runs ≈ **50GB**，無需事後清理。1.2T 剩餘充足。
 - [ ] **單元測試綠燈**（確認程式碼完好）：
-      `conda run -n sam_env python -m pytest segment-anything/tests/ -q`
+      `python -m pytest segment-anything/tests/ -q`
       預期 `42 passed`。
 
 ---
@@ -28,7 +28,7 @@
 
 - [ ] **跑 1 epoch 的 FULL 到拋棄式目錄**：
 ```bash
-conda run -n sam_env python train.py \
+python train.py \
   --epochs 1 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5 \
   --inject pre --decoder unified --lrh --mfb --lovasz_weight 1 --dice_weight 1 \
   --seed 42 --output_dir /tmp/smoke_full
@@ -38,7 +38,7 @@ conda run -n sam_env python train.py \
 - [ ] **確認 checkpoint 產生**：`ls /tmp/smoke_full/weather_sam_best_latest.pth`
 - [ ] **確認 eval 能依 config 重建並算分**：
 ```bash
-conda run -n sam_env python scripts/eval/eval_e1_acdc_val_full.py \
+python scripts/eval/eval_e1_acdc_val_full.py \
   --ckpt /tmp/smoke_full/weather_sam_best_latest.pth \
   --out /tmp/smoke_full/e1_results.json
 cat /tmp/smoke_full/e1_results.json | python -m json.tool | head -20
@@ -46,7 +46,7 @@ cat /tmp/smoke_full/e1_results.json | python -m json.tool | head -20
       應看到 `overall_miou` / `per_condition_miou` / `per_class_iou_overall`（1 epoch 分數很低是正常的，這步只驗管線）。
 - [ ] **確認彙整器能讀**（單一 run 也能跑，缺的表會印 missing 註解）：
 ```bash
-conda run -n sam_env python scripts/aggregate_ablation.py \
+python scripts/aggregate_ablation.py \
   --runs_root /tmp --results_filename e1_results.json --out /tmp/smoke_tables.tex || true
 ```
 - [ ] 通過後刪除 smoke：`rm -rf /tmp/smoke_full /tmp/smoke_tables.tex`
@@ -55,21 +55,25 @@ conda run -n sam_env python scripts/aggregate_ablation.py \
 
 ---
 
-## Phase 2 — Pipeline 關卡：FULL（完整 80 epoch，約半天～一天）⭐ 第二個做
+## Phase 2 — Pipeline 關卡：FULL（最多 50 epoch，早停約 30–40，約半天）⭐ 第二個做
+
+> 註：`--epochs` 同時是 cosine LR 衰減的時程。50 比 80 衰減更陡（同 epoch 的 LR 更低），與 5/14 E27（≈80 時程）較不可比；這是刻意選擇。
 
 **目的**：FULL = 現行最佳架構配置，重訓後 val mIoU 必須達 **best E27 ≈ 65.68% 量級**（容許 seed 造成 ±~0.5）。這是判斷「pipeline 沒退化」的關卡。
 
 - [ ] **跑 FULL（seed 42）**，直接寫進正式輸出目錄：
 ```bash
 mkdir -p outputs_ablation
-conda run -n sam_env python train.py \
-  --epochs 80 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5 \
+python train.py \
+  --epochs 50 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5 \
   --inject pre --decoder unified --lrh --mfb --lovasz_weight 1 --dice_weight 1 \
-  --seed 42 --output_dir outputs_ablation/FULL_seed42 \
-  2>&1 | tee outputs_ablation/FULL_seed42.log
+  --seed 42 --output_dir outputs_ablation/FULL_seed42
 ```
-- [ ] **監看**：訓練曲線 `outputs_ablation/FULL_seed42/training_curve.png`；log 中每 epoch 的 val mIoU。
-- [ ] **關卡判定**：訓練結束（early stopping 或 80 epoch）後，best val mIoU 是否 **≥ ~65%**？
+> 不要接 `| tee`：管線會讓 tqdm 進度條退化成每步印一行（洗版）。train.py 已自動寫 `train_log.csv` + `training_curve.png`，無需另存 log。
+> 若要背景執行：`nohup python train.py ... > /dev/null 2>&1 &`，再看 `train_log.csv` / `training_curve.png`（背景時進度條本就不顯示）。
+- [ ] **監看**：訓練曲線 `outputs_ablation/FULL_seed42/training_curve.png`；`train_log.csv` 每 epoch 的 val mIoU。
+- [ ] **關卡判定**：訓練結束（early stopping 或 50 epoch）後，best val mIoU 是否落在**現行架構的合理水準**？
+      （參考：seed42 FULL 已得 **63.47%**；5/14 的 65.68% 是舊架構，不必硬追。重點是管線健康、分數非退化、各類別 IoU 合理。建議跑滿 FULL 3 seeds 看 mean±std 再定錨。）
       - ✅ 達標 → 進入 Phase 3。
       - ❌ 明顯偏低（如 < 64%）→ **停**，代表 pipeline 退化（資料、seed、開關預設值有問題），先排查再續跑，避免浪費 15 個 run 的算力。
 
@@ -97,7 +101,7 @@ FULL_seed42 已在 Phase 2 完成。剩下 15 個。**建議順序：先驗端�
 
 **背景執行建議**（單一 run）：
 ```bash
-nohup conda run -n sam_env python train.py <flags> \
+nohup python train.py <flags> \
   --output_dir outputs_ablation/<RunID>_seed<N> \
   > outputs_ablation/<RunID>_seed<N>.log 2>&1 &
 ```
@@ -113,7 +117,7 @@ nohup conda run -n sam_env python train.py <flags> \
 - [ ] ```bash
       for d in outputs_ablation/*/; do
         ckpt="$d/weather_sam_best_latest.pth"
-        [ -f "$ckpt" ] && conda run -n sam_env python scripts/eval/eval_e1_acdc_val_full.py \
+        [ -f "$ckpt" ] && python scripts/eval/eval_e1_acdc_val_full.py \
           --ckpt "$ckpt" --out "$d/e1_results.json"
       done
       ```
@@ -124,7 +128,7 @@ nohup conda run -n sam_env python train.py <flags> \
 ## Phase 5 — 彙整 3 張表
 
 - [ ] ```bash
-      conda run -n sam_env python scripts/aggregate_ablation.py \
+      python scripts/aggregate_ablation.py \
         --runs_root outputs_ablation --out outputs_ablation/ablation_tables.tex
       ```
 - [ ] 檢視 `outputs_ablation/ablation_tables.tex`：應含

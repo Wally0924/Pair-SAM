@@ -9,9 +9,9 @@ cd "$(dirname "$0")"
 
 SEEDS_KEY=(42 1234 2026)        # R1 / FULL / A2 用 3 seeds
 OUT=outputs_ablation
-COMMON="--epochs 80 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5"
+COMMON="--epochs 50 --patience 10 --batch_size 1 --accumulate_steps 4 --lr 5e-5"
 
-run () { conda run -n sam_env python train.py $COMMON "$@"; }
+run () { python train.py $COMMON "$@"; }
 
 # ── 累積表 R1–R6（單 seed=42；R1 另跑 3 seeds）──
 # R1 baseline：無 adapter / per-class / 純CE / 無LRH / 無MFB
@@ -58,7 +58,7 @@ run --seed 42 --inject pre --decoder unified --lrh --mfb \
 for d in "$OUT"/*/; do
   ckpt="$d/weather_sam_best_latest.pth"
   if [[ -f "$ckpt" ]]; then
-    conda run -n sam_env python scripts/eval/eval_e1_acdc_val_full.py \
+    python scripts/eval/eval_e1_acdc_val_full.py \
       --ckpt "$ckpt" --out "$d/e1_results.json" || echo "⚠️ eval failed: $d"
   else
     echo "⚠️ no checkpoint in $d (run may not have completed)"
@@ -66,7 +66,7 @@ for d in "$OUT"/*/; do
 done
 
 # ── 彙整 3 張表 ──
-conda run -n sam_env python scripts/aggregate_ablation.py \
+python scripts/aggregate_ablation.py \
   --runs_root "$OUT" --out "$OUT/ablation_tables.tex"
 
 echo "✅ all runs + eval + tables done → $OUT/ablation_tables.tex"
