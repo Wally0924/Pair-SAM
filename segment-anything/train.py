@@ -288,7 +288,10 @@ def main():
                    "lovasz_weight": args.lovasz_weight,
                    "dice_weight": args.dice_weight,
                    "rcs": args.rcs,
-                   "rcs_temp": args.rcs_temp}, f, indent=2)
+                   "rcs_temp": args.rcs_temp,
+                   "epochs": args.epochs,
+                   "lr": args.lr,
+                   "warmup_epochs": args.warmup_epochs}, f, indent=2)
 
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
