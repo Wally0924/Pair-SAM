@@ -9,63 +9,57 @@
 
 | 決策 | 選定 |
 |------|------|
-| 表格範圍 | **3 張表 = 累積表 `tab:ablation_summary` + adapter 表 `tab:adapter_ablation` + loss 表 `tab:loss_ablation`；共 12 個 unique configs / 14 訓練 run** |
+| 表格範圍 | **3 張表 = 累積表 `tab:ablation_summary` + adapter 表 `tab:adapter_ablation` + loss 表 `tab:loss_ablation`；共 10 個 unique configs / 12 訓練 run** |
 | 刪除的論文內容 | **僅刪 4.9.2 decoder 表**（`tab:decoder_ablation`）；保留 4.9.1 adapter、4.9.3 loss 兩表 |
 | FULL 來源 | **全部從 SAM checkpoint 重訓**，同一訓練資本（不沿用 best E27 權重） |
-| seed 策略 | **僅 FULL(R8) 跑 3 seeds 報 mean±std**；R1–R7 及 A1/A2/C1/C2 各單 seed(42) |
-| RCS 策略 | **R1–R7 為 `--no-rcs`；R8(=FULL) 及 A1/A2/C1/C2 均為 `--rcs`**；RCS 為最後累積步驟 |
-| C2 來源 | **C2(取消MFB) 為獨立 run（mfb off, rcs on）**，不再複用 R6（R6 為 no-rcs，config 不同） |
+| seed 策略 | **僅 R7(FULL) 跑 3 seeds 報 mean±std**；R1–R6 及 A1/A2/C1 各單 seed(42) |
+| RCS 策略 | **RCS 已移除（試過無益，見比較報告 `docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md`）**；FULL = R7（MFB-only，無 RCS） |
+| C2 來源 | **C2(取消MFB) = R6（同 config 複用）**；R6 = pre/unified/lrh/full-loss/no-mfb/no-rcs，恰與「FULL 去掉 MFB」相同 |
 | A2 移除 reference 語意 | **零張量取代 reference 特徵**（保 adapter 參數量不變，精確隔離「資訊 vs 容量」） |
 | 補充指標 | **只加 per-class IoU**（rider/moto/bike，eval 已免費輸出）；**不實作 Boundary metric** |
 | 開關實作風格 | **延伸現有 argparse + `run_ablation.sh` 釘住每條指令**（不引入 YAML config 系統） |
 
 ### 表格範圍的取捨依據
 
-- **累積表**（R1–R8，含 R7 與 FULL=R8）：逐次加入單一模組，觀察邊際貢獻。
+- **累積表**（R1–R7，FULL=R7）：逐次加入單一模組，觀察邊際貢獻。
 - **adapter 表**（FULL/A1 後置注入/A2 不引入 reference）：A2 是唯一能分離「參考資訊 vs adapter 容量」的控制組（無累積表對應）；A1 提供完整基準下的 post-vs-pre leave-one-out。
-- **loss 表**（FULL/C1 純CE/C2 取消MFB）：以表格呈現 rider/moto/bike 長尾 per-class IoU，呼應 §4.5；C2 為獨立 run（mfb off, rcs on），不複用 R6（R6 為 no-rcs，config 不同）。
+- **loss 表**（FULL/C1 純CE/C2 取消MFB）：以表格呈現 rider/moto/bike 長尾 per-class IoU，呼應 §4.5；C2 = R6（同 config 複用，免費複用，無需獨立 run）。
 - **decoder 表刪除**：B1（逐類別）↔ 累積 R3→R4、B2（無LRH）↔ R4→R5 已涵蓋，且 B2 因不做 Boundary metric 而證據單薄，論述改折進累積表。
 - **救回 adapter+loss 表不需新增程式開關**：A1 用 `--inject post`、C1 用 `--lovasz_weight 0 --dice_weight 0`，皆既有/已規劃開關，僅各多跑 1 run。
 
 ---
 
-## 1. Run 矩陣（12 個 unique configs）
+## 1. Run 矩陣（10 個 unique configs）
 
-完整模型 **FULL = R8**：adapter on、inject=pre、decoder=unified、lrh=on、loss=CE+Lovász+Dice、mfb=on、**rcs=on**。
+完整模型 **FULL = R7**：adapter on、inject=pre、decoder=unified、lrh=on、loss=CE+Lovász+Dice、mfb=on、**rcs=off**。
 
-**累積表 R1–R8（含 FULL）**（每列相對前一列只改一維度；R1–R7 全部 `--no-rcs`）：
+**累積表 R1–R7（含 FULL）**（每列相對前一列只改一維度；全部無 RCS）：
 
-| Run | use_vgg_adapter | inject | decoder | lrh | loss(lovasz/dice) | mfb | rcs | 相對前列新增 | seeds |
-|-----|:--:|:--:|:--:|:--:|:--:|:--:|:--:|---|:--:|
-| **R1** baseline | **off** | – | per-class | off | CE only (0/0) | off | off | 裸 SAM + 逐類別 + 純CE | 1 |
-| **R2** | on | **post** | per-class | off | CE only | off | off | +Ref（後置注入） | 1 |
-| **R3** | on | **pre** | per-class | off | CE only | off | off | 後置→前置 | 1 |
-| **R4** | on | pre | **unified** | off | CE only | off | off | 逐類別→統一查詢 | 1 |
-| **R5** | on | pre | unified | **on** | CE only | off | off | +LRH | 1 |
-| **R6** | on | pre | unified | on | **CE+Lov+Dice** | off | off | +Lovász/Dice | 1 |
-| **R7** | on | pre | unified | on | CE+Lov+Dice | **on** | off | +MFB（= 舊 FULL；RCS 控制組） | 1 |
-| **R8 = FULL** | on | pre | unified | on | CE+Lov+Dice | on | **on** | +RCS | **3** |
+| Run | use_vgg_adapter | inject | decoder | lrh | loss(lovasz/dice) | mfb | 相對前列新增 | seeds |
+|-----|:--:|:--:|:--:|:--:|:--:|:--:|---|:--:|
+| **R1** baseline | **off** | – | per-class | off | CE only (0/0) | off | 裸 SAM + 逐類別 + 純CE | 1 |
+| **R2** | on | **post** | per-class | off | CE only | off | +Ref（後置注入） | 1 |
+| **R3** | on | **pre** | per-class | off | CE only | off | 後置→前置 | 1 |
+| **R4** | on | pre | **unified** | off | CE only | off | 逐類別→統一查詢 | 1 |
+| **R5** | on | pre | unified | **on** | CE only | off | +LRH | 1 |
+| **R6** | on | pre | unified | on | **CE+Lov+Dice** | off | +Lovász/Dice | 1 |
+| **R7 = FULL** | on | pre | unified | on | CE+Lov+Dice | **on** | +MFB | **3** |
 
-**leave-one-out 變體**（= R8/FULL 改單一維度；全部 `--rcs`）：
+**leave-one-out 變體**（= R7/FULL 改單一維度）：
 
-| Run | 用於表 | = R8 但… | inject | loss(lovasz/dice) | mfb | rcs | seeds |
-|-----|------|-----------|:--:|:--:|:--:|:--:|:--:|
-| **A1** | adapter 表 | 後置注入 | **post** | CE+Lov+Dice | on | on | 1 |
-| **A2** | adapter 表 | 移除 reference（零張量） | pre | CE+Lov+Dice | on | on | 1 |
-| **C1** | loss 表 | 純 CE | pre | **CE only (0/0)** | on | on | 1 |
-| **C2** | loss 表 | 取消 MFB | pre | CE+Lov+Dice | **off** | on | 1 |
+| Run | 用於表 | = R7 但… | inject | loss(lovasz/dice) | mfb | seeds |
+|-----|------|-----------|:--:|:--:|:--:|:--:|
+| **A1** | adapter 表 | 後置注入 | **post** | CE+Lov+Dice | on | 1 |
+| **A2** | adapter 表 | 移除 reference（零張量） | pre | CE+Lov+Dice | on | 1 |
+| **C1** | loss 表 | 純 CE | pre | **CE only (0/0)** | on | 1 |
+| **C2** | loss 表 | 取消 MFB | — | — | — | — |
 
-> A2 額外帶 `--no-ref`（其餘 = R8）。C2 為獨立 run（mfb off, rcs on）；**不再複用 R6**（R6 為 no-rcs，config 不同）。
+> A2 額外帶 `--no-ref`（其餘 = R7）。**C2 = R6（同 config 複用，免費複用）**：R6 = pre/unified/lrh/full-loss/no-mfb，與「FULL 去掉 MFB」完全相同，無需獨立 run。
 
-**unique configs**：R1–R8, A1, A2, C1, C2 = **12**。
-**訓練次數合計**：R1–R7(7) + R8(3 seeds) + A1(1) + A2(1) + C1(1) + C2(1) = **14 次訓練**。
+**unique configs**：R1–R7, A1, A2, C1 = **10**（C2 複用 R6）。
+**訓練次數合計**：R1–R6(6) + R7(3 seeds) + A1(1) + A2(1) + C1(1) = **12 次訓練**。
 
-### RCS 相關開關
-
-| Flag | 說明 | 備註 |
-|------|------|------|
-| `--rcs` / `--no-rcs` | 啟用／停用 Rare-Class Sampler | 訓練專用；eval/build 不受影響 |
-| `--rcs_temp` | softmax 溫度 T（預設 0.01） | 訓練專用；eval/build 不受影響 |
+> **RCS 已移除**：比較實驗（`docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md`）顯示 MFB-only = 67.26% 優於 MFB+RCS = 62.97% 及 RCS-only = 61.39%，故 RCS 從 FULL 中剔除。`--rcs`/`--rcs_temp` 開關仍保留於程式碼（預設 off），但不屬於 FULL config。
 
 ---
 
@@ -122,11 +116,11 @@
 ## 4. 評估與彙整（評估端零新指標，全為重用 + 彙整）
 
 1. **per-condition / per-class / overall mIoU**：[eval_e1_acdc_val_full.py](../../segment-anything/scripts/eval/eval_e1_acdc_val_full.py) 已輸出 JSON（per-class×per-condition IoU 矩陣 + per-condition mIoU + overall）。改為 ckpt/config-aware 後逐 run 跑。
-2. **`aggregate_ablation.py`（新）**：掃 12 個 unique config 的 JSON，輸出 3 張表的 `.tex` 可貼片段：
-   - **`tab:ablation_summary`**：8 列（R1–R8）All mIoU + Δ，可選 per-condition；FULL(R8) 標 mean±std（3-seed）；其餘單 seed。
+2. **`aggregate_ablation.py`（新）**：掃 10 個 unique config 的 JSON，輸出 3 張表的 `.tex` 可貼片段：
+   - **`tab:ablation_summary`**：7 列（R1–R7）All mIoU + Δ，可選 per-condition；FULL(R7) 標 mean±std（3-seed）；其餘單 seed。
    - **`tab:adapter_ablation`**：FULL / A1（後置注入）/ A2（不引入 reference）× Fog/Rain/Snow/Night/All/Δ；FULL 標 mean±std。
-   - **`tab:loss_ablation`**：FULL / C1（純CE）/ C2（取消MFB，獨立 run）× All mIoU + rider/moto/bike IoU + Δ；FULL 標 mean±std。
-   - 對 3-seed run（僅 FULL=R8）計算 mean±std。
+   - **`tab:loss_ablation`**：FULL / C1（純CE）/ C2（取消MFB，= R6 複用）× All mIoU + rider/moto/bike IoU + Δ；FULL 標 mean±std。
+   - 對 3-seed run（僅 FULL=R7）計算 mean±std。
 3. **ACDC 類別像素頻率**：已內建於 [new_loss.py:5](../../segment-anything/utils/new_loss.py) `_ACDC_CLASS_FREQ`（1200 張實測），rider/moto/bike 比例直接導出，填 4.9.3 正文（`[X.XXX]%`）。
 
 ---
@@ -142,10 +136,10 @@
 - `--inject post`：hook 註冊在 forward hook（後置）而非 pre_hook。
 
 ### 5.2 整合 smoke 測試
-- 12 個 unique config 各跑 **0–1 epoch smoke**，確認：能跑通、`ablation_config.json` 正確落地、eval 能據 config 重建並算出數字。
+- 10 個 unique config 各跑 **0–1 epoch smoke**，確認：能跑通、`ablation_config.json` 正確落地、eval 能據 config 重建並算出數字。
 
 ### 5.3 FULL 重訓 pipeline sanity gate
-- FULL = 現行預設 config，重訓後 val mIoU 應落在 **best E27（65.68）同量級**（容許 seed 造成的 ±~0.5）。若顯著偏低，代表 pipeline 退化，須先除錯再跑其餘 runs。**此為執行順序第一道關卡。**
+- FULL = R7（MFB-only，無 RCS），重訓後 val mIoU 應落在合理水準（參考 MFB-only 已得 67.26%，容許 seed 造成的 ±~0.5）。若顯著偏低，代表 pipeline 退化，須先除錯再跑其餘 runs。**此為執行順序第一道關卡。**
 
 ### 5.4 數據誠實性
 - 嚴守論文原文 4.10 的誠實檢討框架：實際 Δ 若與預期方向相左（例如 LRH/MFB 對 overall mIoU 增益極小或為負），**修改正文敘述**而非調整數據。累積表的「逐列遞增」是預期假設，非保證。
@@ -163,7 +157,7 @@
 4. A1（後置注入）、C1（純CE）— 補齊 adapter / loss 表的 leave-one-out 變體。
 5. 全跑完 → `aggregate_ablation.py` 產出 3 張表 `.tex` + 正文數值。
 
-**並行**：14 次訓練彼此獨立，若有第二張卡可平行。
+**並行**：12 次訓練彼此獨立，若有第二張卡可平行。
 
 ---
 
@@ -171,16 +165,16 @@
 
 1. **程式**：5 個 argparse 開關（含 2.1–2.5 觸及檔案的外科式修改）+ `ablation_config.json` 落地 + eval ckpt/config-aware 改造 + `aggregate_ablation.py`。
 2. **測試**：5.1 的開關單元測試 + 5.2 smoke。
-3. **腳本**：`run_ablation.sh`（14 條訓練指令 + eval + 彙整，釘死每 run 的 flag 與 seed，可重現）。
-4. **數據產物**：12 個 unique config 的 metrics JSON + 3 張表（`tab:ablation_summary` / `tab:adapter_ablation` / `tab:loss_ablation`）的 `.tex` 可貼片段 + 正文待填數值（rider/moto/bike IoU、類別像素頻率）。
+3. **腳本**：`run_ablation.sh`（12 條訓練指令 + eval + 彙整，釘死每 run 的 flag 與 seed，可重現）。
+4. **數據產物**：10 個 unique config 的 metrics JSON + 3 張表（`tab:ablation_summary` / `tab:adapter_ablation` / `tab:loss_ablation`）的 `.tex` 可貼片段 + 正文待填數值（rider/moto/bike IoU、類別像素頻率）。
 5. **論文改寫**：見獨立文件 [`2026-06-01-paper-rewrite-4.9-ablation.md`](2026-06-01-paper-rewrite-4.9-ablation.md)（刪 4.9.1–4.9.3 三表、A2 折進論述、交叉引用搶救等），不直接改 .tex。
 
 ---
 
 ## 8.5 新增獨立模組（不觸碰 model/eval 架構）
 
-- **`utils/rare_class_sampler.py`**（RCS 採樣器）：依 P(c) = softmax((1−f(c))/T) 抽取 mini-batch，T=0.01，sample-class-then-image，f(c) 來自訓練集 1600 張預計算結果，透過 seed 保證可重現。完全獨立，不修改任何模型或 eval 程式碼。
-- **`scripts/precompute_class_presence.py`**：讀取訓練 CSV，掃描所有影像 mask 並統計 f(c)，輸出 `class_presence.json`。冪等操作，`run_ablation.sh` 每次執行前自動跑（Step 0）。
+- **`utils/rare_class_sampler.py`**（RCS 採樣器）：依 P(c) = softmax((1−f(c))/T) 抽取 mini-batch，T=0.01，sample-class-then-image。已實作並保留於程式碼，但**RCS 不屬於 FULL（已移除，試過無益）**——比較實驗顯示 MFB-only=67.26% 優於含 RCS 的配置（見 `docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md`）。`--rcs`/`--rcs_temp` 開關預設 off，可作為未來研究的切入點。
+- **`scripts/precompute_class_presence.py`**：讀取訓練 CSV，掃描所有影像 mask 並統計 f(c)，輸出 `class_presence.json`。已保留於程式碼；若未來啟用 RCS 時才需執行。**正式消融 run 不需要此前置步驟**（RCS 已關閉）。
 
 ---
 
@@ -203,7 +197,7 @@
 
 ## 8. 開放項（已全部結案）
 
-1. **A2 seeds** → ✅ **單 seed=42**（RCS 整合後改為僅 FULL=R8 跑 3 seeds）。
+1. **A2 seeds** → ✅ **單 seed=42**（僅 FULL=R7 跑 3 seeds）。
 2. **A2「移除 reference」語意** → ✅ **零張量取代 reference 特徵**（保 adapter 參數量不變）。
 3. **實作風格** → ✅ **argparse + `run_ablation.sh`**。
 4. **表格範圍 / 論文改寫** → ✅ **保留 adapter + loss 表，僅刪 decoder 表（4.9.2）**；改寫細節見 [`2026-06-01-paper-rewrite-4.9-ablation.md`](2026-06-01-paper-rewrite-4.9-ablation.md)。

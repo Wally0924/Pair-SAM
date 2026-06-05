@@ -43,23 +43,23 @@
 
 ### 3.1 4.9.1 注入機制（Adapter）消融 — `tab:adapter_ablation`【保留】
 - 三列維持：完整模型（前置注入）/ 後置注入（A1）/ 不引入 reference（A2）。
-- **數據來源**：FULL=R8（3-seed mean±std）、A1（單 seed）、A2（單 seed=42）。僅 FULL 列標 mean±std。
+- **數據來源**：FULL=R7（3-seed mean±std）、A1（單 seed）、A2（單 seed=42）。僅 FULL 列標 mean±std。
 - 「不引入 reference」段是中心論點（reference 才是主貢獻），呼應第 1.2.1 節 → **維持**。
 - 提醒：A2 的實作為「零張量取代 reference 特徵、保 adapter 參數量不變」，敘述可補一句「在不改變 Adapter 容量的前提下移除參考內容」以強化「資訊 vs 容量」的分離論證。
 
 ### 3.2 4.9.3 損失函數消融 — `tab:loss_ablation`【保留】
 - 三列維持：完整模型 / 純 CE（C1）/ 取消 MFB（C2）。
-- **數據來源**：FULL = R8（3-seed mean±std）、C1（單 seed）、C2（獨立 run，mfb off, rcs on，單 seed=42；**不再複用 R6**，因 R6 為 no-rcs，config 不同）。
+- **數據來源**：FULL = R7（3-seed mean±std）、C1（單 seed）、C2（= R6 複用，mfb off, no-rcs，單 seed=42；R6 config 與「FULL 去掉 MFB」完全相同，**免費複用**）。
 - rider/moto/bike per-class IoU 欄位由 eval 輸出直接填；ACDC 訓練集像素頻率（rider/moto/bike `[X.XXX]%`）由 `_ACDC_CLASS_FREQ` 導出填正文。
 - 呼應第 4.5 節長尾失效 → 維持。
 
 ### 3.3 4.9.4 消融總結 — `tab:ablation_summary`【保留 + 吸收 §2】
-- 8 列（R1–R8）；僅 FULL(R8) 標 mean±std（3-seed），其餘單 seed。
+- 7 列（R1–R7）；僅 FULL(R7) 標 mean±std（3-seed），其餘單 seed。
 - 逐列趨勢段落吸收 §2 的 per-class 解碼與 LRH 論述。
 
 ### 3.4 4.9 節開頭段【微調】
 - 原文為「每組消融僅切換單一模組」（leave-one-out）。現結構為**累積（R 系列）+ leave-one-out（4.9.1/4.9.3 的 A1/A2/C1/C2）並存**。開頭段補一句說明兩種消融並用：累積式觀察邊際貢獻（4.9.4），leave-one-out 在完整框架下隔離單一模組（4.9.1、4.9.3）。
-- 補述 seed：僅完整框架（FULL=R8）以三組隨機種子重複，報平均與標準差；其餘各 run 單 seed=42。
+- 補述 seed：僅完整框架（FULL=R7）以三組隨機種子重複，報平均與標準差；其餘各 run 單 seed=42。
 
 ---
 
@@ -75,36 +75,6 @@
 
 > 原 4.9.2 解碼端消融刪除後，4.9.3→4.9.2、4.9.4→4.9.3 順序遞補（或保留原節號僅刪中間，依排版偏好）。
 
-### 4a. 累積表 R8 列（新增）
-
-`tab:ablation_summary` 新增 R8 列，緊接 R7 之後：
-
-| Run | 相對前列新增 | mIoU | Δ |
-|-----|------------|------|---|
-| R7 | +MFB（= 舊 FULL；RCS 控制組） | [XX.XX] | +[X.XX] |
-| **R8 = FULL** | **+RCS** | **[XX.XX] ± [X.XX]** | **+[X.XX]** |
-
-R7→R8 的 Δ 來自 Rare-Class Sampler（RCS）對長尾類別的採樣修正。R8 標 mean±std（3 seeds）。
-
-### 4b. RCS 方法描述要求（4.9.3 消融總結中補一段）
-
-論文 4.9.3 節討論 R7→R8 時須包含以下要素：
-
-- 採樣機率：P(c) = softmax((1 − f(c)) / T)，T = 0.01
-- 流程：先依 P(c) 抽類別，再從含該類別的影像中均勻抽取（sample-class-then-image）
-- f(c)：訓練集 1600 張影像的類別出現頻率，由 `scripts/precompute_class_presence.py` 預計算
-- 可重現性：透過固定 seed 保證（與訓練 seed 一致）
-
-### 4c. 長尾證據（使用 R7→R8 差分）
-
-4.9.3 消融總結及 4.9.2 loss 表討論中，以 **R7→R8 的 bus/moto/bicycle per-class IoU 變化**作為 RCS 改善長尾類別的直接證據：
-
-- bus IoU：R7=[XX.X]% → R8=[XX.X]%（Δ=[+X.X]%）
-- motorcycle IoU：R7=[XX.X]% → R8=[XX.X]%（Δ=[+X.X]%）
-- bicycle IoU：R7=[XX.X]% → R8=[XX.X]%（Δ=[+X.X]%）
-
-> `[XX.X]` 欄位待 `aggregate_ablation.py` 輸出後填入。若 R7→R8 某類別增益為負，**據實陳述，不調整**（誠實性原則，§5.4 of design spec）。
-
 ---
 
 ## 5. 改寫檢核清單
@@ -114,9 +84,9 @@ R7→R8 的 Δ 來自 Rare-Class Sampler（RCS）對長尾類別的採樣修正�
 - [ ] 第 1.2.2 節呼應 → 搬到累積表 R3→R4 討論（§2）
 - [ ] LRH（R4→R5）段誠實標註：僅報 mIoU 有限增益，未量測 boundary（§2）
 - [ ] 4.9.1 adapter 表填值；僅 FULL 列標 mean±std；A2 補「不改變容量」一句（§3.1）
-- [ ] 4.9.3 loss 表填值；C2 獨立 run（mfb off, rcs on, seed=42）；rider/moto/bike IoU + 像素頻率（§3.2）
-- [ ] 4.9.4 累積表填值；僅 FULL(R8) 標 mean±std；吸收解碼論述（§3.3）
-- [ ] 開頭段補「累積 + leave-one-out 並用」與 seed 說明（§3.4）
+- [ ] 4.9.3 loss 表填值；C2 = R6 複用（mfb off, no-rcs, seed=42）；rider/moto/bike IoU + 像素頻率（§3.2）
+- [ ] 4.9.4 累積表填值；僅 FULL(R7) 標 mean±std；7 列（R1–R7）；吸收解碼論述（§3.3）
+- [ ] 開頭段補「累積 + leave-one-out 並用」與 seed 說明（§3.4）；長尾證據來自 loss 表 FULL vs C2（MFB 效益），不依賴 RCS
 - [ ] 小節節號遞補（§4）
 - [ ] 全節數值與 `aggregate_ablation.py` 三張表輸出一致
 ```
