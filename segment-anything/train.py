@@ -246,8 +246,9 @@ def main():
                         help="CE/dice 是否套用 MFB 類別權重；--no-mfb = uniform")
     parser.add_argument("--ref", action=argparse.BooleanOptionalAction, default=True,
                         help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
-    parser.add_argument("--rcs", action=argparse.BooleanOptionalAction, default=True,
-                        help="Rare Class Sampling：依稀有類過取樣訓練影像（--no-rcs 關閉=純 shuffle）")
+    parser.add_argument("--rcs", action=argparse.BooleanOptionalAction, default=False,
+                        help="Rare Class Sampling：依稀有類過取樣訓練影像（預設關閉；對照實驗顯示 MFB-only 較佳，"
+                             "RCS 已從 FULL 移除，見 docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md）")
     parser.add_argument("--rcs_temp", type=float, default=0.01,
                         help="RCS 溫度 T（DAFormer 預設 0.01）")
     parser.add_argument("--class_presence", type=str, default=None,

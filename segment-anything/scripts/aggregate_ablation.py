@@ -64,7 +64,7 @@ def fmt_cell(mean, std=0.0):
 def load_runs(runs_root, results_filename='e1_results.json'):
     """掃描 runs_root 下所有子目錄，依 RunID 分組彙整結果。
 
-    目錄命名規則：<RunID>_seed<N>（如 R1_seed42、R8_seed1234；FULL=R8）。
+    目錄命名規則：<RunID>_seed<N>（如 R1_seed42、R7_seed1234；FULL=R7）。
     同一 RunID 的多個 seed 結果被收集到列表中，供後續計算 mean±std。
 
     Args:
@@ -162,9 +162,9 @@ def _delta_str(row_mean, full_mean):
 def build_summary_table(runs):
     """建構 tab:ablation_summary 的 LaTeX tabular body。
 
-    列順序：R1, R2, R3, R4, R5, R6, R7, R8（FULL = R8，+RCS 行）
-    欄位：All mIoU (%), Δ (vs FULL=R8, pp)
-    R1 & R8 顯示 mean±std（若有多個 seed）；其他顯示 mean。
+    列順序：R1, R2, R3, R4, R5, R6, R7（FULL = R7，MFB-only）
+    欄位：All mIoU (%), Δ (vs FULL=R7, pp)
+    R7(FULL) 顯示 mean±std（若有多個 seed）；其他顯示 mean。
 
     Args:
         runs: load_runs() 的回傳值。
@@ -172,21 +172,21 @@ def build_summary_table(runs):
     Returns:
         str，LaTeX 資料列（每列以 \\\\ 結尾）。
     """
-    row_order = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8']
+    row_order = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7']
     missing = [r for r in row_order if r not in runs]
     if missing:
         return f"% tab:ablation_summary: missing runs {', '.join(missing)}\n"
 
-    full_mean, _ = _agg_overall(runs, 'R8')
-    # R1 & R8(FULL) 顯示 mean±std；其餘只顯示 mean
-    multi_seed_rows = {'R1', 'R8'}
+    full_mean, _ = _agg_overall(runs, 'R7')
+    # R7(FULL) 顯示 mean±std；其餘只顯示 mean
+    multi_seed_rows = {'R7'}
 
     lines = []
     for rid in row_order:
         m, s = _agg_overall(runs, rid)
         use_std = rid in multi_seed_rows and s > 0.0
         cell = fmt_cell(m, s if use_std else 0.0)
-        delta = "---" if rid == 'R8' else _delta_str(m, full_mean)
+        delta = "---" if rid == 'R7' else _delta_str(m, full_mean)
         lines.append(f"{rid} & {cell} & {delta} \\\\")
 
     return "\n".join(lines) + "\n"
@@ -195,9 +195,9 @@ def build_summary_table(runs):
 def build_adapter_table(runs):
     """建構 tab:adapter_ablation 的 LaTeX tabular body。
 
-    列順序：FULL(=R8), A1, A2
-    欄位：Fog, Rain, Snow, Night, All (%), Δ (vs FULL=R8)
-    FULL(R8) & A2 顯示 mean±std（若有多個 seed）。
+    列順序：FULL(=R7), A1, A2
+    欄位：Fog, Rain, Snow, Night, All (%), Δ (vs FULL=R7)
+    FULL(R7) 顯示 mean±std（若有多個 seed）；A2 單 seed。
 
     Args:
         runs: load_runs() 的回傳值。
@@ -207,17 +207,17 @@ def build_adapter_table(runs):
     """
     # 列定義：(顯示名稱, 實際 RunID, 是否顯示 std)
     row_defs = [
-        ('FULL', 'R8', True),
+        ('FULL', 'R7', True),
         ('A1',   'A1', False),
-        ('A2',   'A2', True),
+        ('A2',   'A2', False),
     ]
     required = [rid for _, rid, _ in row_defs]
     missing = [r for r in required if r not in runs]
     if missing:
-        missing_display = ['FULL(R8)' if r == 'R8' else r for r in missing]
+        missing_display = ['FULL(R7)' if r == 'R7' else r for r in missing]
         return f"% tab:adapter_ablation: missing runs {', '.join(missing_display)}\n"
 
-    full_mean, _ = _agg_overall(runs, 'R8')
+    full_mean, _ = _agg_overall(runs, 'R7')
     conditions = ['fog', 'rain', 'snow', 'night']
 
     lines = []
@@ -242,10 +242,10 @@ def build_adapter_table(runs):
 def build_loss_table(runs):
     """建構 tab:loss_ablation 的 LaTeX tabular body。
 
-    列順序：FULL(=R8), C1, C2
-    C2 讀取自己的 run dir（C2_seed*），不再重用 R6。
+    列順序：FULL(=R7), C1, C2
+    C2(取消MFB) = R6（同 config，免費複用）。
     欄位：All mIoU (%), rider IoU, motorcycle IoU, bicycle IoU, Δ All
-    FULL(R8) 顯示 mean±std（若有多個 seed）。
+    FULL(R7) 顯示 mean±std（若有多個 seed）。
 
     Args:
         runs: load_runs() 的回傳值。
@@ -255,17 +255,17 @@ def build_loss_table(runs):
     """
     # 列定義：(顯示名稱, 實際 RunID, 是否顯示 std)
     row_defs = [
-        ('FULL', 'R8', True),
+        ('FULL', 'R7', True),
         ('C1',   'C1', False),
-        ('C2',   'C2', False),
+        ('C2',   'R6', False),   # C2(取消MFB) = R6（同 config，免費複用）
     ]
     required = [rid for _, rid, _ in row_defs]
     missing = [r for r in required if r not in runs]
     if missing:
-        missing_display = ['FULL(R8)' if r == 'R8' else r for r in missing]
+        missing_display = ['FULL(R7)' if r == 'R7' else ('C2(=R6)' if r == 'R6' else r) for r in missing]
         return f"% tab:loss_ablation: missing runs {', '.join(missing_display)}\n"
 
-    full_mean, _ = _agg_overall(runs, 'R8')
+    full_mean, _ = _agg_overall(runs, 'R7')
 
     lines = []
     for display_id, rid, use_std_flag in row_defs:
