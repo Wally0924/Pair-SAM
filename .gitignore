@@ -218,3 +218,4 @@ segment-anything/inference_viz_acdc*/
 docs
 submissions
 segment-anything/outputs_ablation/
+segment-anything/outputs_recipe/
