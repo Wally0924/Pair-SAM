@@ -193,6 +193,10 @@ def main():
     parser.add_argument("--lovasz_weight", type=float, default=1.0,
                         help="Lovász-Softmax Loss 權重（0.0=停用，退化為純 CE；建議從 0.5 開始實驗）。"
                              "Lovász 直接優化 mIoU 的可微近似，梯度方向與評估指標完全對齊。")
+    parser.add_argument("--lovasz_start_epoch", type=int, default=0,
+                        help="Lovász 延後啟動：前 N 個 epoch（0-based）停用 Lovász，僅以 CE 預訓，"
+                             "第 N 個 epoch（顯示為第 N+1 epoch）起加入 Lovász 微調 mIoU。"
+                             "0=從頭啟用（預設，向後相容）。對應 Berman et al. 2018 的 CE 預訓→Lovász fine-tune 協定。")
     parser.add_argument("--warmup_gate_epochs", type=int, default=3,
                         help="前 N epoch 凍結 vgg_injector.gates，讓 main decoder 先穩定")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
@@ -287,6 +291,7 @@ def main():
     with open(os.path.join(args.output_dir, "ablation_config.json"), "w") as f:
         json.dump({**abl_cfg, "seed": args.seed,
                    "lovasz_weight": args.lovasz_weight,
+                   "lovasz_start_epoch": args.lovasz_start_epoch,
                    "dice_weight": args.dice_weight,
                    "rcs": args.rcs,
                    "rcs_temp": args.rcs_temp,

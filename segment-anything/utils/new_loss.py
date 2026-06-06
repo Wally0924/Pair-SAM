@@ -109,6 +109,26 @@ def lovasz_softmax(probs: torch.Tensor, labels: torch.Tensor,
     return _lovasz_softmax_flat(probs_flat, labels_flat, classes=classes)
 
 
+def lovasz_weight_for_epoch(epoch_index: int, start_epoch: int,
+                            target_weight: float) -> float:
+    """依當前 epoch 決定生效的 Lovász 權重（延後啟動排程）。
+
+    前 start_epoch 個 epoch（epoch_index < start_epoch）停用 Lovász（回傳 0.0），
+    讓 CE 先把分割學到合理水準，再於 epoch_index >= start_epoch 起加入 Lovász
+    微調 mIoU —— 對應 Berman et al. (CVPR 2018) 原論文「先 CE 預訓、後接 Lovász
+    fine-tune」的協定。start_epoch=0 → 從頭啟用，完全向後相容。
+
+    Args:
+        epoch_index:   0-based 的當前 epoch 索引。
+        start_epoch:   Lovász 開始生效的 epoch 索引（前幾個 epoch 停用）。
+        target_weight: 啟用後的目標權重（即 --lovasz_weight）。
+
+    Returns:
+        該 epoch 實際生效的 Lovász 權重。
+    """
+    return target_weight if epoch_index >= start_epoch else 0.0
+
+
 # =============================================================================
 # ContextLoss
 # =============================================================================

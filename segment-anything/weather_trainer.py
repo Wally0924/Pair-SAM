@@ -11,7 +11,7 @@ import math
 import random
 
 from segment_anything.modeling import WeatherSAM 
-from utils.new_loss import ContextLoss, MaskLoss, ACDC_CLASS_WEIGHTS
+from utils.new_loss import ContextLoss, MaskLoss, ACDC_CLASS_WEIGHTS, lovasz_weight_for_epoch
 
 class AverageMeter:
     """計算並儲存當前值與平均值。"""
@@ -109,6 +109,9 @@ class WeatherSAMTrainer:
             use_mfb=use_mfb,
         ).to(self.device)
         self.mask_loss_fn = MaskLoss(dice_weight=dice_w)
+        # Lovász 延後啟動排程：保留目標權重，前 lovasz_start_epoch 個 epoch 停用
+        self.lovasz_target = lovasz_w
+        self.lovasz_start_epoch = getattr(args, 'lovasz_start_epoch', 0)
         # Gate warmup：識別 gate 參數，前 warmup_gate_epochs 個 epoch 凍結
         self.warmup_gate_epochs = getattr(args, 'warmup_gate_epochs', 3)
         self._gate_params = [
@@ -315,6 +318,14 @@ class WeatherSAMTrainer:
             status = "frozen" if _gate_frozen else "trainable"
             print(f"   [Gate Warmup] epoch {epoch_index+1}: gate params {status} "
                   f"(warmup ends at epoch {self.warmup_gate_epochs})")
+
+        # Lovász 延後啟動：依當前 epoch 設定生效權重（start=0 時等同舊行為）
+        self.context_loss_fn.lovasz_weight = lovasz_weight_for_epoch(
+            epoch_index, self.lovasz_start_epoch, self.lovasz_target)
+        if self.lovasz_start_epoch > 0:
+            _lov_state = "active" if self.context_loss_fn.lovasz_weight > 0 else "disabled"
+            print(f"   [Lovász Schedule] epoch {epoch_index+1}: {_lov_state} "
+                  f"(starts at epoch {self.lovasz_start_epoch + 1})")
 
         self.model.train()
         losses = {
