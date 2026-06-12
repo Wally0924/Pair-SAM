@@ -176,7 +176,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv15",)
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=80, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
     parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")

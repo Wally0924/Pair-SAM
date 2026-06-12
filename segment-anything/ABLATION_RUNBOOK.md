@@ -97,9 +97,9 @@ R7_seed42（FULL）已在 Phase 2 完成。剩下 11 個。**建議順序：先�
 - [ ] A1（後置注入）、C1（純 CE）
 - [ ] **C2 = R6（同 config 複用，無需新 run）**
 
-> **一次跑完全部的捷徑**：上述 12 個 run 的精確指令都在 `run_ablation.sh`。若 Phase 2 已單獨跑了 R7_seed42，直接整檔執行會重跑它（覆寫、浪費一次）。建議二選一：
-> - **(A) 逐行貼**：打開 `run_ablation.sh`，跳過 R7_seed42 那行，其餘逐一/分批貼到終端機（可背景跑）。
-> - **(B) 整檔跑**：先 `rm -rf outputs_ablation/R7_seed42`，再 `bash run_ablation.sh`（讓它從頭一致地跑完 12 個，含 eval + 彙整）。
+> **分批捷徑**：12 個 run 的精確指令拆在兩個冪等 script（已完成的 run 自動略過，不重跑）：
+> - **Batch 1**：`bash run_ablation_batch1.sh` —— A2/R1/R6/C1（端點與控制組優先；跑完即可先看 loss 表與 A2 落差）
+> - **Batch 2**：`bash run_ablation_batch2.sh` —— R2/R3/R4/R5/A1，結束自動全量 eval + 彙整 3 張表
 
 **背景執行建議**（單一 run）：
 ```bash
@@ -113,7 +113,7 @@ nohup python train.py <flags> \
 
 ## Phase 4 — 逐 run 評估
 
-若用 `bash run_ablation.sh`（捷徑 B），最後已自動 eval + 彙整，跳到 Phase 6 檢查。
+若用 batch script（`run_ablation_batch1.sh` / `run_ablation_batch2.sh`），最後已自動 eval + 彙整，跳到 Phase 6 檢查。
 
 若手動逐行跑（捷徑 A），對每個完成的 run 執行：
 - [ ] ```bash
@@ -163,7 +163,7 @@ nohup python train.py <flags> \
 |------|---------|------|
 | smoke | `train.py --epochs 1 ... --output_dir /tmp/smoke_full` + eval + aggregate | 管線跑通 |
 | 關卡 | FULL(R7) seed42 完整訓練 | val mIoU ≈ 67.26% |
-| 主體 | `run_ablation.sh`（或逐行）跑滿 12 run | 各 run 出 `weather_sam_best_latest.pth` + `ablation_config.json` |
+| 主體 | `run_ablation_batch1.sh` → `run_ablation_batch2.sh` 跑滿 12 run | 各 run 出 `weather_sam_best_latest.pth` + `ablation_config.json` |
 | eval | `eval_e1_acdc_val_full.py --ckpt ... --out .../e1_results.json` | 每 run 出 JSON |
 | 彙整 | `aggregate_ablation.py --runs_root outputs_ablation` | `ablation_tables.tex`（3 表） |
 | 改寫 | 依 paper-rewrite 指引 | 填數值、刪 decoder 表 |
