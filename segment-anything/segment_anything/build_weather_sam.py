@@ -28,7 +28,7 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
     """[ablation] 依 config dict 建構 WeatherSAM，統一 train 與 eval 的建模路徑。
 
     cfg keys: model_type, use_vgg_adapter(bool), inject('pre'/'post'),
-              decoder('unified'/'per_class'), lrh(bool), mfb(bool), ref(bool)
+              decoder('unified'/'per_class'), lrh(bool), mfb(bool), ref(bool), cond(bool)
     注意：mfb 屬 loss 端（在 trainer 設定），不在模型建構處理。
     """
     if cfg.get('model_type', 'vit_h') == 'vit_b':
@@ -37,6 +37,7 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
         model = build_weather_sam_vit_h(checkpoint=checkpoint)
 
     model.use_lrh = bool(cfg.get('lrh', True))
+    model.use_cond = bool(cfg.get('cond', True))
     model.mask_decoder.decoder_mode = cfg.get('decoder', 'unified')
     model.vgg_injector.use_reference = bool(cfg.get('ref', True))
 

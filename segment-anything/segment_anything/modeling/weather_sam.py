@@ -58,6 +58,9 @@ class WeatherSAM(nn.Module):
         self.num_classes = num_classes
         # [ablation] LRH (context_fusion_head) 是否套用；訓練/評估組裝點依此 gate。預設 True = FULL 行為。
         self.use_lrh = True
+        # [ablation P1] condition embedding 是否辨別天氣條件；False 時固定共享索引 0
+        # （見 _encode_condition）。預設 True = FULL 行為。
+        self.use_cond = True
         # [Mask2Former-style] 輕量殘差精修：3×3 DW Conv + 1×1 PW Conv + residual
         self.context_fusion_head = ResidualDWConvFusion(num_classes=num_classes)
 
@@ -91,6 +94,19 @@ class WeatherSAM(nn.Module):
 
     def get_image_pe(self) -> torch.Tensor:
         return self.pe_layer
+
+    def _encode_condition(self, condition_id: torch.Tensor) -> torch.Tensor:
+        """[ablation P1] 將 condition_id 編碼為 L2-normalized location feature。
+
+        use_cond=False 時，把 condition_id 固定為共享索引 0，使 ConditionEncoder
+        退化為「與天氣條件無關的可學習常數向量」——保留參數路徑與可學習自由度，
+        只移除條件辨別資訊（隔離「資訊 vs 容量」，比照 A2 的零張量設計）。
+        """
+        if not self.use_cond:
+            condition_id = torch.zeros_like(condition_id)
+        cid = condition_id.to(self.device).unsqueeze(0)
+        loc_feats = self.condition_encoder(cid)
+        return F.normalize(loc_feats, p=2, dim=-1)
 
     def enable_vgg_adapter(self, mode: str = 'pre'):
         """啟用 MultiScaleCrossAttnInjector，在 ViT-H Block [7, 15, 23, 31] 各注冊一個 hook。
@@ -200,9 +216,7 @@ class WeatherSAM(nn.Module):
                 warnings.warn("condition_id not found in input, defaulting to 0 (fog). "
                               "Ensure ACDC CSV has condition_id column.", stacklevel=2)
                 condition_id = torch.tensor(0)
-            cid = condition_id.to(self.device).unsqueeze(0)
-            loc_feats = self.condition_encoder(cid)
-            loc_feats = F.normalize(loc_feats, p=2, dim=-1)
+            loc_feats = self._encode_condition(condition_id)
 
             k_prompts = sparse_embeddings.shape[0]
             loc_feats = loc_feats.unsqueeze(1)

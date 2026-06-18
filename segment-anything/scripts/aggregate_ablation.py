@@ -61,7 +61,7 @@ def fmt_cell(mean, std=0.0):
 # 資料載入
 # ---------------------------------------------------------------------------
 
-def load_runs(runs_root, results_filename='e1_results.json'):
+def load_runs(runs_root, results_filename='e1_results.json', only_seed=None):
     """掃描 runs_root 下所有子目錄，依 RunID 分組彙整結果。
 
     目錄命名規則：<RunID>_seed<N>（如 R1_seed42、R7_seed1234；FULL=R7）。
@@ -91,7 +91,13 @@ def load_runs(runs_root, results_filename='e1_results.json'):
         # 解析 RunID：取 _seed 之前的部分
         if '_seed' not in entry:
             continue
-        run_id, _ = entry.rsplit('_seed', 1)
+        run_id, seed_str = entry.rsplit('_seed', 1)
+
+        # only_seed：僅納入指定 seed 的目錄。用於「FULL 整條取單一最佳 seed」——
+        # R7 多 seed 中只保留該 seed（其餘 run 本就單 seed=42），std 退化為 0，
+        # fmt_cell 自動不輸出 ±，且 Δ 改以該 seed 的 FULL 為基準。
+        if only_seed is not None and seed_str != str(only_seed):
+            continue
 
         cfg_path = os.path.join(entry_path, 'ablation_config.json')
         res_path = os.path.join(entry_path, results_filename)
@@ -303,9 +309,12 @@ def main():
                         help='每個 run 目錄內的結果 JSON 檔名（預設：e1_results.json）。')
     parser.add_argument('--out', default='ablation_tables.tex',
                         help='輸出 LaTeX 檔案路徑（預設：ablation_tables.tex）。')
+    parser.add_argument('--only_seed', type=int, default=None,
+                        help='僅納入指定 seed 的 run 目錄（如 42）；用於 FULL 整條取單一最佳 seed，不報 mean±std。')
     args = parser.parse_args()
 
-    runs = load_runs(args.runs_root, results_filename=args.results_filename)
+    runs = load_runs(args.runs_root, results_filename=args.results_filename,
+                     only_seed=args.only_seed)
 
     found_ids = sorted(runs.keys())
     print(f"[aggregate_ablation] 找到 {len(runs)} 個 RunID：{found_ids}")

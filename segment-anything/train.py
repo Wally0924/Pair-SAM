@@ -250,6 +250,8 @@ def main():
                         help="CE/dice 是否套用 MFB 類別權重；--no-mfb = uniform")
     parser.add_argument("--ref", action=argparse.BooleanOptionalAction, default=True,
                         help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
+    parser.add_argument("--cond", action=argparse.BooleanOptionalAction, default=True,
+                        help="condition embedding 是否辨別天氣條件；--no-cond = 固定共享索引（P1 消融）")
     parser.add_argument("--rcs", action=argparse.BooleanOptionalAction, default=False,
                         help="Rare Class Sampling：依稀有類過取樣訓練影像（預設關閉；對照實驗顯示 MFB-only 較佳，"
                              "RCS 已從 FULL 移除，見 docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md）")
@@ -258,7 +260,7 @@ def main():
     parser.add_argument("--class_presence", type=str, default=None,
                         help="class_presence.json 路徑（預設取 train_csv 同目錄）")
 
-    # NOTE: --use_condition_embedding 已移除；模型現在固定使用 condition_encoder（ACDC 模式）
+    # NOTE: --use_condition_embedding 已移除；condition_encoder 恆建構，由 --cond/--no-cond 控制是否辨別天氣條件（P1 消融）
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -280,6 +282,7 @@ def main():
         lrh=args.lrh,
         mfb=args.mfb,
         ref=args.ref,
+        cond=args.cond,
     )
     model = build_weather_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
     print(f"[Ablation] config = {abl_cfg}")

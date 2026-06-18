@@ -18,6 +18,7 @@
 | A2 移除 reference 語意 | **零張量取代 reference 特徵**（保 adapter 參數量不變，精確隔離「資訊 vs 容量」） |
 | 補充指標 | **只加 per-class IoU**（rider/moto/bike，eval 已免費輸出）；**不實作 Boundary metric** |
 | 開關實作風格 | **延伸現有 argparse + `run_ablation.sh` 釘住每條指令**（不引入 YAML config 系統） |
+| P1 condition embedding 語意（2026-06-12 增補） | **共享單一 embedding 取代 per-condition embedding**（condition_id 固定為同一索引，保 ConditionEncoder 參數路徑不變，比照 A2「資訊 vs 容量」隔離原則）；結果以**正文敘述**呈現，不新增表 |
 
 ### 表格範圍的取捨依據
 
@@ -53,17 +54,19 @@
 | **A2** | adapter 表 | 移除 reference（零張量） | pre | CE+Lov+Dice | on | 1 |
 | **C1** | loss 表 | 純 CE | pre | **CE only (0/0)** | on | 1 |
 | **C2** | loss 表 | 取消 MFB | — | — | — | — |
+| **P1**（2026-06-12 增補） | 正文（prompt 消融） | 移除 condition embedding（共享單一 embedding） | pre | CE+Lov+Dice | on | 1 |
 
 > A2 額外帶 `--no-ref`（其餘 = R7）。**C2 = R6（同 config 複用，免費複用）**：R6 = pre/unified/lrh/full-loss/no-mfb，與「FULL 去掉 MFB」完全相同，無需獨立 run。
+> P1 額外帶 `--no-cond`（其餘 = R7），於 12 個主 run 完成後執行；動機：ConditionEncoder 為自研可訓練組件，現有矩陣無法回答「天氣條件嵌入是否有貢獻」。TextEncoder（CLIP）屬繼承的 query 載體設計，**不消融**，正文以一句陳述帶過。
 
-**unique configs**：R1–R7, A1, A2, C1 = **10**（C2 複用 R6）。
-**訓練次數合計**：R1–R6(6) + R7(3 seeds) + A1(1) + A2(1) + C1(1) = **12 次訓練**。
+**unique configs**：R1–R7, A1, A2, C1, P1 = **11**（C2 複用 R6）。
+**訓練次數合計**：R1–R6(6) + R7(3 seeds) + A1(1) + A2(1) + C1(1) + P1(1) = **13 次訓練**。
 
 > **RCS 已移除**：比較實驗（`docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md`）顯示 MFB-only = 67.26% 優於 MFB+RCS = 62.97% 及 RCS-only = 61.39%，故 RCS 從 FULL 中剔除。`--rcs`/`--rcs_temp` 開關仍保留於程式碼（預設 off），但不屬於 FULL config。
 
 ---
 
-## 2. 需實作的程式開關（5 處）
+## 2. 需實作的程式開關（5 處 + 2026-06-12 增補 §2.7）
 
 所有開關以 argparse flag 暴露，預設值 = FULL 設定（向後相容，不改變現行訓練行為）。
 
@@ -100,6 +103,13 @@
 - `--use_vgg_adapter` / `--no-use_vgg_adapter`：R1 用。
 - `--lovasz_weight 0 --dice_weight 0`：退化純 CE（R1–R5）。
 
+### 2.7 `--cond {on,off}` — 🟡 移除 condition 資訊（P1 專用，2026-06-12 增補）
+- **現況**：[weather_sam.py](../../segment-anything/segment_anything/modeling/weather_sam.py) forward 中 `condition_id`（fog=0/rain=1/snow=2/night=3）→ `condition_encoder(cid)` → L2 normalize → `location_embeddings` 併入 prompt encoder 的 sparse 端。ConditionEncoder 屬可訓練模組（trainer `main_lr_modules`）。
+- **改動**：`--cond off` 時，forward 內將所有樣本的 `condition_id` **固定為同一共享索引（0）**，embedding 退化為「與天氣條件無關的可學習常數向量」。以 `model.use_cond`（bool）為單一真值來源，比照 `use_lrh` / `use_reference` 模式。
+  - **理由**：保留 ConditionEncoder 的參數路徑與可學習 bias 自由度，只移除「條件辨別資訊」——與 A2 零張量設計同一隔離原則（資訊 vs 容量）。不採「零化 loc_feats」：那會同時拿走可學習常數，混淆歸因。
+- **觸及**：weather_sam.py（屬性 + forward 單點）、build_weather_sam.py（config 傳遞）、train.py（flag + `ablation_config.json` 記錄 `cond` 欄）、eval 依 config 自動重建（§3 機制既有，僅多一鍵）。
+- **測試**（比照 5.1）：(a) `--cond off` 時換不同 `condition_id` 輸出不變；(b) `--cond on` 時對 `condition_id` 敏感；(c) 兩者參數量相同。
+
 ---
 
 ## 3. Config 一致性機制（學術可信度核心）
@@ -134,6 +144,7 @@
 - `--mfb off`：ContextLoss 的 CE 權重為 uniform（等同無 weight）。
 - `--ref off`：injector 對 reference 內容不敏感（換不同 reference 影像，輸出不變）；參數量與 `--ref on` 相同。
 - `--inject post`：hook 註冊在 forward hook（後置）而非 pre_hook。
+- `--cond off`（2026-06-12 增補）：對 `condition_id` 不敏感（換不同條件，輸出不變）；on 時敏感；參數量相同（見 §2.7）。
 
 ### 5.2 整合 smoke 測試
 - 10 個 unique config 各跑 **0–1 epoch smoke**，確認：能跑通、`ablation_config.json` 正確落地、eval 能據 config 重建並算出數字。
@@ -156,6 +167,7 @@
 3. R2–R6 累積中間列。
 4. A1（後置注入）、C1（純CE）— 補齊 adapter / loss 表的 leave-one-out 變體。
 5. 全跑完 → `aggregate_ablation.py` 產出 3 張表 `.tex` + 正文數值。
+6. **P1（`--no-cond`，2026-06-12 增補）— 12 個主 run 完成後追加**；開關實作（§2.7）亦在主 run 跑完後才動手，避免訓練中途改動程式路徑。結果以正文敘述（FULL vs P1 的 overall / per-condition mIoU），不進三張主表。
 
 **並行**：12 次訓練彼此獨立，若有第二張卡可平行。
 
