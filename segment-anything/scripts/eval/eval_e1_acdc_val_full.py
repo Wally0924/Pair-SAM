@@ -44,10 +44,13 @@ def main():
     ap.add_argument('--ckpt', required=True, help='該 run 的 checkpoint 路徑')
     ap.add_argument('--config', default=None, help='ablation_config.json（預設取 ckpt 同目錄）')
     ap.add_argument('--out', default=None, help='輸出 JSON 路徑（預設沿用原 OUTPUT_ROOT）')
+    ap.add_argument('--csv', default=None,
+                    help='val CSV 路徑（預設 ACDC val；指定可評估其他資料集，如 Dark Zurich val）')
+    ap.add_argument('--name', default='ACDC', help='資料集名稱，僅用於輸出標題')
     args = ap.parse_args()
     model, cfg = load_weather_sam_from_ablation(args.ckpt, args.config, device=DEVICE)
     print(f"[eval] loaded run config: {cfg}")
-    loader = build_acdc_val_loader()
+    loader = build_acdc_val_loader(args.csv) if args.csv else build_acdc_val_loader()
 
     # 5 個混淆矩陣：overall + 4 conditions
     cm_overall = torch.zeros((NUM_CLASSES, NUM_CLASSES), dtype=torch.long)
@@ -151,7 +154,7 @@ def main():
     # ── 輸出 Markdown ──
     md_path = json_path.with_suffix('.md')
     lines = []
-    lines.append('# E1: WeatherSAM v15 (E27) — ACDC val Evaluation')
+    lines.append(f'# E1: WeatherSAM — {args.name} val Evaluation')
     lines.append('')
     lines.append(f'**Checkpoint:** `{Path(args.ckpt).name}`')
     lines.append(f'**Date:** {datetime.now().strftime("%Y-%m-%d")}')
