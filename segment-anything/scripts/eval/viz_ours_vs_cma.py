@@ -353,7 +353,8 @@ def select_picks(df: pd.DataFrame, picks_arg: str | None,
 # ── 繪圖 ───────────────────────────────────────────────────
 def render(sub: pd.DataFrame, out_path: Path, annotate: str = 'full',
            pred_dir: Path | None = None, has_seg: bool = False,
-           has_refign: bool = False, show_row_label: bool = True):
+           has_refign: bool = False, show_row_label: bool = True,
+           ours_title: str = 'CARef-SAM (Ours)'):
     """annotate: 'full'=總 mIoU；'static'=靜態 mIoU；'none'=不標（皆顯示為 "mIoU"）。
     方法欄順序：[SegFormer] | CMA | [Refign] | Ours。show_row_label=False 時隱藏最左列標籤。"""
     import matplotlib
@@ -368,10 +369,10 @@ def render(sub: pd.DataFrame, out_path: Path, annotate: str = 'full',
     col_titles = ['Input (Adverse)', 'Reference (Clear)', 'Ground Truth']
     if has_seg:
         col_titles.append('SegFormer')
-    col_titles.append('CMA')
     if has_refign:
         col_titles.append('Refign')
-    col_titles.append('Ours (WeatherSAM)')
+    col_titles.append('CMA')
+    col_titles.append(ours_title)
     ncols = len(col_titles)
 
     # 每格 16:9，欄寬 4.2 吋 → 高 2.36；底部留 legend 一條
@@ -401,11 +402,11 @@ def render(sub: pd.DataFrame, out_path: Path, annotate: str = 'full',
         if has_seg:
             methods.append(('SegFormer', _color_png(row['seg_result_path']),
                             row.get('seg_static'), row.get('seg_miou'), 'black'))
-        methods.append(('CMA', _color_png(row['colored_result_path']),
-                        row.get('cma_static'), row['cma_miou'], 'black'))
         if has_refign:
             methods.append(('Refign', _color_png(row['refign_result_path']),
                             row.get('refign_static'), row.get('refign_miou'), 'black'))
+        methods.append(('CMA', _color_png(row['colored_result_path']),
+                        row.get('cma_static'), row['cma_miou'], 'black'))
         ours = np.load(pred_dir / row['filename'].replace('.png', '.npy'))  # Ours 快取，免二次推論
         methods.append(('Ours', colorize_19class(ours),
                         row.get('ours_static'), row['ours_miou'], 'darkgreen'))
@@ -482,6 +483,7 @@ def main():
     ap.add_argument('--no_row_label', action='store_true', help='隱藏最左側列標籤（如 DZ 圖）')
     ap.add_argument('--ours_must_lead', action='store_true',
                     help='挑圖時要求 Ours static 領先所有 baseline（SegFormer/CMA/Refign），按領先幅度排序')
+    ap.add_argument('--ours_title', default='CARef-SAM (Ours)', help='Ours 欄位標題')
     ap.add_argument('--tag', default='', help='輸出/快取檔名後綴，用於區隔不同資料集（如 _darkzurich）')
     ap.add_argument('--topk', type=int, default=None,
                     help='跨全集挑前 N 張（不分天氣），用於單一天氣資料集（如 Dark Zurich）')
@@ -532,7 +534,8 @@ def main():
     else:
         annotate = args.annotate
     render(sub, out_fig, annotate=annotate, pred_dir=pred_dir, has_seg=has_seg,
-           has_refign=has_refign, show_row_label=not args.no_row_label)
+           has_refign=has_refign, show_row_label=not args.no_row_label,
+           ours_title=args.ours_title)
 
 
 if __name__ == '__main__':
