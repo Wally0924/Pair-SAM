@@ -88,6 +88,13 @@ class WeatherSAM(nn.Module):
         )
         self._adapter_hook_handles: list = []
 
+        # [ablation B] adapter 變體：'reference'（預設，跨視角參考注入）或
+        # 'sam_adapter'（同影像 SAM-Adapter 基線）。後者由 build_weather_sam_from_config
+        # 換掉 self.vgg_injector，並把 _adapter_reference_free 設為 True，使 forward
+        # 完全跳過 UAWarpC 參考對齊（不讀 clear_image）。
+        self.adapter_variant: str = 'reference'
+        self._adapter_reference_free: bool = False
+
     @property
     def device(self) -> Any:
         return self.pixel_mean.device
@@ -175,6 +182,7 @@ class WeatherSAM(nn.Module):
         # 因此可在 SAM Encoder 之前安全執行，不存在循環依賴。
         _vgg_ref_aligned = None
         if (self.use_vgg_adapter
+                and not self._adapter_reference_free
                 and "image_embedding" not in batched_input[0]
                 and all("image" in x for x in batched_input)
                 and all("clear_image" in x for x in batched_input)):

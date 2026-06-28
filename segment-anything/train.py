@@ -252,6 +252,9 @@ def main():
                         help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
     parser.add_argument("--cond", action=argparse.BooleanOptionalAction, default=True,
                         help="condition embedding 是否辨別天氣條件；--no-cond = 固定共享索引（P1 消融）")
+    parser.add_argument("--adapter_variant", choices=["reference", "sam_adapter"], default="reference",
+                        help="[ablation B] reference=跨視角參考注入（FULL）；"
+                             "sam_adapter=同影像 SAM-Adapter 基線（不使用參考，forward 跳過 UAWarpC 對齊）")
     parser.add_argument("--rcs", action=argparse.BooleanOptionalAction, default=False,
                         help="Rare Class Sampling：依稀有類過取樣訓練影像（預設關閉；對照實驗顯示 MFB-only 較佳，"
                              "RCS 已從 FULL 移除，見 docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md）")
@@ -283,6 +286,7 @@ def main():
         mfb=args.mfb,
         ref=args.ref,
         cond=args.cond,
+        adapter_variant=args.adapter_variant,
     )
     model = build_weather_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
     print(f"[Ablation] config = {abl_cfg}")

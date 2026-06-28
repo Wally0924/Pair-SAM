@@ -220,3 +220,6 @@ submissions
 segment-anything/outputs_ablation/
 segment-anything/outputs_recipe/
 segment-anything/outputs_darkzurich/
+
+# 論文撰寫工作區（master/conference 草稿），不進 code repo
+paper/

@@ -4,7 +4,7 @@ from functools import partial
 
 from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CMAAlignment, TextEncoder, WeatherSAM, MaskDecoder
 
-def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
+def build_weather_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='reference'):
     return _build_weather_sam(
         encoder_embed_dim=768,
         encoder_depth=12,
@@ -12,9 +12,10 @@ def build_weather_sam_vit_b(num_classes=19, checkpoint=None):
         encoder_global_attn_indexes=[2, 5, 8, 11],
         num_classes=num_classes,
         checkpoint=checkpoint,
+        adapter_variant=adapter_variant,
     )
 
-def build_weather_sam_vit_h(num_classes=19, checkpoint=None):
+def build_weather_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='reference'):
     return _build_weather_sam(
         encoder_embed_dim=1280,
         encoder_depth=32,
@@ -22,6 +23,7 @@ def build_weather_sam_vit_h(num_classes=19, checkpoint=None):
         encoder_global_attn_indexes=[7, 15, 23, 31],
         num_classes=num_classes,
         checkpoint=checkpoint,
+        adapter_variant=adapter_variant,
     )
 
 def build_weather_sam_from_config(cfg: dict, checkpoint=None):
@@ -31,10 +33,14 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
               decoder('unified'/'per_class'), lrh(bool), mfb(bool), ref(bool), cond(bool)
     注意：mfb 屬 loss 端（在 trainer 設定），不在模型建構處理。
     """
+    # [ablation B] adapter 變體穿進 builder，使 SAM-Adapter 注入器在「載入 checkpoint 之前」
+    # 就建好，否則 _build 會先以參考注入器載入、隨後被換掉而丟失已訓練的 adapter 權重
+    # （eval/resume 時會載入失敗 → 注入器變隨機）。
+    variant = cfg.get('adapter_variant', 'reference')
     if cfg.get('model_type', 'vit_h') == 'vit_b':
-        model = build_weather_sam_vit_b(checkpoint=checkpoint)
+        model = build_weather_sam_vit_b(checkpoint=checkpoint, adapter_variant=variant)
     else:
-        model = build_weather_sam_vit_h(checkpoint=checkpoint)
+        model = build_weather_sam_vit_h(checkpoint=checkpoint, adapter_variant=variant)
 
     model.use_lrh = bool(cfg.get('lrh', True))
     model.use_cond = bool(cfg.get('cond', True))
@@ -60,6 +66,7 @@ def _build_weather_sam(
     encoder_global_attn_indexes,
     num_classes=19,
     checkpoint=None,
+    adapter_variant='reference',
 ):
     prompt_embed_dim = 256
     image_size = 1024
@@ -120,6 +127,15 @@ def _build_weather_sam(
         text_encoder=text_encoder,
         num_classes=num_classes,
     )
+
+    # 2b. [ablation B] 在載入 checkpoint 之前換好注入器，確保 sam_adapter 的已訓練
+    # 權重（vgg_injector.adapters.*）能被下方 state_dict 過濾正確匹配並載入。
+    if adapter_variant == 'sam_adapter':
+        from .modeling.sam_adapter_injector import SameImageAdapterInjector
+        _vit_dim = sam.image_encoder.patch_embed.proj.out_channels
+        sam.vgg_injector = SameImageAdapterInjector(vit_dim=_vit_dim)
+        sam.adapter_variant = 'sam_adapter'
+        sam._adapter_reference_free = True
 
     # 3. 載入預訓練權重 (如果有提供)
     if checkpoint is not None:
