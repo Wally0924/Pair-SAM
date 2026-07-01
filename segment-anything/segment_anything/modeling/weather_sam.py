@@ -202,7 +202,20 @@ class WeatherSAM(nn.Module):
             img_ref_batch = torch.stack(
                 [x["clear_image"] for x in batched_input], dim=0
             ).to(self.device)
-            _vgg_ref_aligned = self.fusion_module.pre_align(img_curr_batch, img_ref_batch)
+            _grid = self.image_encoder.img_size // self.image_encoder.patch_embed.proj.stride[0]
+            _vgg_ref_aligned = self.fusion_module.pre_align(
+                img_curr_batch, img_ref_batch, out_size=(_grid, _grid))
+            # l2 是 stride-8（1/8 解析度），應比 ViT 格點（1/16）高 2×；
+            # pre_align 以 out_size 統一輸出，需在此補充上採樣使 l2 達 (2h, 2w)。
+            _l2 = _vgg_ref_aligned['l2']
+            if _l2.shape[-2:] == (_grid, _grid):
+                _vgg_ref_aligned = {
+                    'l2':  F.interpolate(_l2, scale_factor=2, mode='bilinear',
+                                         align_corners=False),
+                    'l3':  _vgg_ref_aligned['l3'],
+                    'mask': F.interpolate(_vgg_ref_aligned['mask'], scale_factor=2,
+                                          mode='nearest'),
+                }
             # pre_align 在 no_grad 下會產生大量 VGG 中間特徵（1024×1024 雙圖）
             # 釋放 CUDA allocator cache，為後續 ViT-H global attention (1 GiB) 騰出空間
             torch.cuda.empty_cache()
@@ -213,7 +226,7 @@ class WeatherSAM(nn.Module):
         else:
             input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
             if self.use_vgg_adapter and _vgg_ref_aligned is not None:
-                _grid = self.image_encoder.img_size // self.image_encoder.patch_embed.proj.stride[0]
+                # _grid was computed in Stage 0 (pre_align branch) and is always set here
                 self.vgg_injector.set_features(_vgg_ref_aligned, _grid, _grid)
             image_embeddings = self.image_encoder(input_images)
 
