@@ -100,3 +100,65 @@ class Injector(nn.Module):
         delta = self.attn(q, ref_pts, feat, spatial_shapes, lsi)
         gate = F.softplus(self.gate)
         return x_tokens + gate * delta                   # 殘差保留 ViT 梯度
+
+
+class DWConv(nn.Module):
+    """逐尺度深度卷積：把 concat 的 3 尺度 token 拆回各自 2D grid 各做 DWConv 再串回。"""
+    def __init__(self, dim=1280):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, 3, 1, 1, bias=True, groups=dim)
+
+    def forward(self, x, scale_hw):
+        B, N, C = x.shape
+        outs, start = [], 0
+        for (H_, W_) in scale_hw:
+            n = H_ * W_
+            xi = x[:, start:start + n, :].transpose(1, 2).view(B, C, H_, W_)
+            outs.append(self.dwconv(xi).flatten(2).transpose(1, 2))
+            start += n
+        return torch.cat(outs, dim=1)
+
+
+class ConvFFN(nn.Module):
+    def __init__(self, dim=1280, hidden_ratio=0.25):
+        super().__init__()
+        hidden = int(dim * hidden_ratio)
+        self.fc1 = nn.Linear(dim, hidden)
+        self.dwconv = DWConv(hidden)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden, dim)
+
+    def forward(self, x, scale_hw):
+        x = self.fc1(x)
+        x = self.dwconv(x, scale_hw)
+        x = self.act(x)
+        x = self.fc2(x)
+        return x
+
+
+class Extractor(nn.Module):
+    """ViT-Adapter Extractor（可變形）。Q=c，K/V=ViT.detach()，+ ConvFFN 逐尺度精修 c。"""
+    def __init__(self, dim=1280, n_heads=8, n_points=4, deform_ratio=0.5,
+                 with_cffn=True, drop_path=0.):
+        super().__init__()
+        self.query_norm = nn.LayerNorm(dim)
+        self.feat_norm = nn.LayerNorm(dim)
+        self.attn = MSDeformAttn(d_model=dim, n_levels=1, n_heads=n_heads,
+                                 n_points=n_points, ratio=deform_ratio)
+        self.with_cffn = with_cffn
+        if with_cffn:
+            self.ffn = ConvFFN(dim=dim)
+            self.ffn_norm = nn.LayerNorm(dim)
+            self.drop_path = nn.Dropout(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, c, x_tokens, extract_inputs, scale_hw):
+        ref_pts, spatial_shapes, lsi = extract_inputs
+        ref_pts = ref_pts.to(c.device)
+        if ref_pts.shape[0] != c.shape[0]:
+            ref_pts = ref_pts.expand(c.shape[0], -1, -1, -1)
+        feat = self.feat_norm(x_tokens.detach())         # ViT 當固定語境，不回灌梯度
+        attn = self.attn(self.query_norm(c), ref_pts, feat, spatial_shapes, lsi)
+        c = c + attn
+        if self.with_cffn:
+            c = c + self.drop_path(self.ffn(self.ffn_norm(c), scale_hw))
+        return c
