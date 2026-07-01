@@ -162,3 +162,63 @@ class Extractor(nn.Module):
         if self.with_cffn:
             c = c + self.drop_path(self.ffn(self.ffn_norm(c), scale_hw))
         return c
+
+
+class DeformAdapter(nn.Module):
+    """雙向可變形 adapter 協調器：管理多尺度 c 狀態、4 injector + 3 extractor、hook 工廠。
+    非侵入：透過 ViT block 的 forward pre/post hook 加殘差，不改 encoder 結構。"""
+    INJECT_BLOCKS = [0, 8, 16, 24]
+    EXTRACT_BLOCKS = [7, 15, 23]
+
+    def __init__(self, vit_dim=1280, l2_channels=256, l3_channels=512,
+                 n_heads=8, deform_ratio=0.5, use_reference=True):
+        super().__init__()
+        self.rpm = ReferencePriorModule(l2_channels, l3_channels, dim=vit_dim,
+                                        use_reference=use_reference)
+        self.injectors = nn.ModuleList([
+            Injector(dim=vit_dim, n_heads=n_heads, n_levels=3, deform_ratio=deform_ratio)
+            for _ in range(len(self.INJECT_BLOCKS))])
+        self.extractors = nn.ModuleList([
+            Extractor(dim=vit_dim, n_heads=n_heads, deform_ratio=deform_ratio)
+            for _ in range(len(self.EXTRACT_BLOCKS))])
+        self.use_reference = use_reference
+
+        self._c = None
+        self._conf = None
+        self._inject_inputs = None
+        self._extract_inputs = None
+        self._scale_hw = None
+        self._last_gate_val = float(F.softplus(torch.tensor(_DEFAULT_GATE_INIT)))
+        self._last_inject_cos_sim = 1.0
+
+    def set_features(self, feats, h, w):
+        device = feats['l2'].device
+        self._c, self._conf = self.rpm(feats)
+        self._inject_inputs, self._extract_inputs = deform_inputs(h, w, device)
+        self._scale_hw = [(h * 2, w * 2), (h, w), (h // 2, w // 2)]
+
+    def _make_inject_pre_hook(self, stage_idx):
+        def hook(module, inp):
+            if self._c is None:
+                return None                      # 未 set_features：原樣放行
+            x = inp[0]
+            B, H, W, C = x.shape
+            tokens = x.reshape(B, H * W, C)
+            out = self.injectors[stage_idx](tokens, self._c, self._conf, self._inject_inputs)
+            with torch.no_grad():
+                self._last_gate_val = float(F.softplus(self.injectors[stage_idx].gate).item())
+                self._last_inject_cos_sim = float(
+                    F.cosine_similarity(tokens, out, dim=-1).mean().item())
+            return (out.reshape(B, H, W, C),)
+        return hook
+
+    def _make_extract_post_hook(self, stage_idx):
+        def hook(module, inp, output):
+            if self._c is None:
+                return output                    # 未 set_features：不更新 c
+            B, H, W, C = output.shape
+            vit_tokens = output.reshape(B, H * W, C)
+            self._c = self.extractors[stage_idx](
+                self._c, vit_tokens, self._extract_inputs, self._scale_hw)
+            return output  # 不改 ViT 輸出
+        return hook
