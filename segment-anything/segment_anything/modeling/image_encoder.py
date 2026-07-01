@@ -7,6 +7,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as _grad_checkpoint
 
 from typing import Optional, Tuple, Type
 
@@ -108,8 +109,17 @@ class ImageEncoderViT(nn.Module):
         if self.pos_embed is not None:
             x = x + self.pos_embed
 
+        # [stage-1 pretrain] 全量 fine-tune ViT-H 時 activation 佔用是 24GB OOM 主因，
+        # 尤其 4 個 global attention block 的 4096² attention matrix。開啟 gradient
+        # checkpointing 後只保留 block 邊界張量，反向時重算 activation，記憶體大幅下降。
+        # 以屬性 gate（預設 False，透過 getattr 讀取），不改 __init__ 與 builder 簽名，
+        # 因此 Stage-2 現有 forward 行為完全不受影響；僅在 self.training 時生效。
+        use_ckpt = getattr(self, "use_checkpoint", False) and self.training
         for blk in self.blocks:
-            x = blk(x)
+            if use_ckpt:
+                x = _grad_checkpoint(blk, x, use_reentrant=False)
+            else:
+                x = blk(x)
 
         x = self.neck(x.permute(0, 3, 1, 2))
 

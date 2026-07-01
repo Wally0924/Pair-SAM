@@ -44,6 +44,36 @@ def _build_median_freq_weights(freq: torch.Tensor, cap: float = 10.0) -> torch.T
 ACDC_CLASS_WEIGHTS: torch.Tensor = _build_median_freq_weights(_ACDC_CLASS_FREQ)
 
 
+# Cityscapes 訓練集實測 class pixel frequency（2975 張 labelTrainIds，5.521B valid pixels）
+# 統計指令：cv2 imread labelTrainIds (GRAYSCALE) → np.bincount(minlength=256)[:19] → 正規化
+# 與 ACDC 分佈差異大：road 0.369（ACDC 0.156）、sky 0.040（ACDC 0.337）、car 0.070（ACDC 0.019）。
+# 供 Stage-1 Cityscapes encoder pretrain 使用，避免沿用 ACDC 頻率錯配稀有類梯度加權。
+_CITYSCAPES_CLASS_FREQ = torch.tensor([
+    0.368810,  # road
+    0.060869,  # sidewalk
+    0.228196,  # building
+    0.006559,  # wall
+    0.008783,  # fence  ← median
+    0.012276,  # pole
+    0.002085,  # traffic light
+    0.005529,  # traffic sign
+    0.159174,  # vegetation
+    0.011587,  # terrain
+    0.040115,  # sky
+    0.012173,  # person
+    0.001349,  # rider
+    0.070011,  # car
+    0.002676,  # truck
+    0.002354,  # bus
+    0.002330,  # train
+    0.000986,  # motorcycle
+    0.004139,  # bicycle
+])
+
+# Cityscapes 版 MFB 權重（同 sqrt-smoothed、cap=10、均值=1）
+CITYSCAPES_CLASS_WEIGHTS: torch.Tensor = _build_median_freq_weights(_CITYSCAPES_CLASS_FREQ)
+
+
 # =============================================================================
 # Lovász-Softmax Loss（嵌入實作，無需外部套件）
 # 來源：Berman et al., CVPR 2018 — "The Lovász-Softmax Loss"
@@ -145,13 +175,16 @@ class ContextLoss(nn.Module):
     """
     def __init__(self, ce_weight: float = 1.0, num_classes: int = 19,
                  label_smoothing: float = 0.0, lovasz_weight: float = 0.0,
-                 use_mfb: bool = True):
+                 use_mfb: bool = True, class_weights: torch.Tensor = None):
         super().__init__()
         self.ce_weight     = ce_weight
         self.lovasz_weight = lovasz_weight
         self.use_mfb       = use_mfb
 
-        class_weights = _build_median_freq_weights(_ACDC_CLASS_FREQ)
+        # class_weights=None 時沿用 ACDC MFB（維持既有 ACDC trainer 行為）；
+        # Stage-1 Cityscapes pretrain 傳入 CITYSCAPES_CLASS_WEIGHTS 以對齊其類別分佈。
+        if class_weights is None:
+            class_weights = _build_median_freq_weights(_ACDC_CLASS_FREQ)
         self.register_buffer('class_weights', class_weights)
         ce_weight_arg = self.class_weights if use_mfb else None  # [ablation] off = uniform
         self.ce_loss_fn = nn.CrossEntropyLoss(
