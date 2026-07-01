@@ -729,6 +729,17 @@ def test_block_indices():
     assert len(a.injectors) == 4 and len(a.extractors) == 3
 
 
+def test_hooks_passthrough_when_no_features():
+    """未呼叫 set_features（_c is None）時，hook 必須原樣放行、不崩潰。
+    對應 forward 走 image_embedding 預算路徑、或 adapter 停用時。"""
+    a = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, n_heads=4)
+    x = torch.randn(1, 4, 4, 32)
+    pre = a._make_inject_pre_hook(0)(None, (x,))
+    assert pre is None or torch.equal(pre[0], x)   # 不修改輸入
+    post = a._make_extract_post_hook(0)(None, None, x)
+    assert torch.equal(post, x)
+
+
 def test_inject_pre_hook_shape_preserved():
     a, h, dim = _adapter()
     hook = a._make_inject_pre_hook(0)
@@ -800,6 +811,8 @@ class DeformAdapter(nn.Module):
 
     def _make_inject_pre_hook(self, stage_idx):
         def hook(module, inp):
+            if self._c is None:
+                return None                      # 未 set_features：原樣放行
             x = inp[0]
             B, H, W, C = x.shape
             tokens = x.reshape(B, H * W, C)
@@ -813,6 +826,8 @@ class DeformAdapter(nn.Module):
 
     def _make_extract_post_hook(self, stage_idx):
         def hook(module, inp, output):
+            if self._c is None:
+                return output                    # 未 set_features：不更新 c
             B, H, W, C = output.shape
             vit_tokens = output.reshape(B, H * W, C)
             self._c = self.extractors[stage_idx](
@@ -929,8 +944,15 @@ def _tiny_encoder(dim=32, depth=32, img=64, patch=16):
 
 
 def test_forward_output_shape_unchanged_with_adapter():
-    enc = _tiny_encoder()
     grid = 64 // 16
+    x = torch.randn(1, 3, 64, 64)
+
+    # 形狀基準：乾淨 encoder（無 hook）
+    with torch.no_grad():
+        out_noadapter = _tiny_encoder()(x)
+
+    # 掛 adapter 的 encoder
+    enc = _tiny_encoder()
     ad = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, n_heads=4)
     handles = []
     for s, b in enumerate(ad.INJECT_BLOCKS):
@@ -938,21 +960,15 @@ def test_forward_output_shape_unchanged_with_adapter():
     for s, b in enumerate(ad.EXTRACT_BLOCKS):
         handles.append(enc.blocks[b].register_forward_hook(ad._make_extract_post_hook(s)))
 
-    x = torch.randn(1, 3, 64, 64)
-    out_noadapter = _tiny_encoder_forward_ref(enc, x)  # 形狀基準
     ad.set_features({'l2': torch.randn(1, 8, grid * 2, grid * 2),
                      'l3': torch.randn(1, 16, grid, grid),
                      'mask': torch.rand(1, 1, grid * 2, grid * 2)}, grid, grid)
-    out = enc(x)
+    with torch.no_grad():
+        out = enc(x)
     for h in handles:
         h.remove()
     assert out.shape == out_noadapter.shape
     assert torch.isfinite(out).all()
-
-
-def _tiny_encoder_forward_ref(enc, x):
-    with torch.no_grad():
-        return enc(x)
 ```
 
 - [ ] **Step 2: 執行確認失敗**
