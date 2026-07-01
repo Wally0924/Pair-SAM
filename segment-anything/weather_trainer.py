@@ -10,8 +10,20 @@ import matplotlib.pyplot as plt
 import math
 import random
 
-from segment_anything.modeling import WeatherSAM 
+from segment_anything.modeling import WeatherSAM
 from utils.new_loss import ContextLoss, MaskLoss, ACDC_CLASS_WEIGHTS, lovasz_weight_for_epoch
+
+
+def _is_gate_param(name: str) -> bool:
+    """Adapter gate parameter across all adapter variants.
+
+    Legacy MultiScaleCrossAttnInjector / SameImageAdapterInjector expose gates as a
+    ParameterList → 'vgg_injector.gates.<i>'. The DeformAdapter (A3) holds a bare
+    nn.Parameter per injector → 'vgg_injector.injectors.<i>.gate'. Match both.
+    """
+    return ('vgg_injector.gates' in name) or (
+        'vgg_injector.injectors' in name and name.endswith('.gate'))
+
 
 class AverageMeter:
     """計算並儲存當前值與平均值。"""
@@ -116,7 +128,7 @@ class WeatherSAMTrainer:
         self.warmup_gate_epochs = getattr(args, 'warmup_gate_epochs', 3)
         self._gate_params = [
             p for n, p in model.named_parameters()
-            if 'vgg_injector.gates' in n
+            if _is_gate_param(n)
         ]
         # MaskLoss 加權平均用：稀少類（rider/motorcycle/bicycle）獲得更高梯度權重
         self._mask_cls_w = (ACDC_CLASS_WEIGHTS if use_mfb
