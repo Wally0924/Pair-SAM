@@ -164,6 +164,7 @@ class CMAAlignment(nn.Module):
         img_ref: torch.Tensor,           # (B, 3, H, W) clear reference image, values in [0, 255]
         out_size: tuple = (64, 64),      # target feature map spatial size
         conf_threshold: float = 0.2,     # hard mask threshold (matches CMA paper Sec 3.3)
+        l2_native: bool = False,         # if True, return l2 at 2×out_size (genuine stride-8)
     ) -> dict:
         """
         Run VGG feature extraction + UAWarpC alignment BEFORE the ViT encoder.
@@ -233,6 +234,27 @@ class CMAAlignment(nn.Module):
         self._last_valid_ratio    = float(validity_mask.float().mean().item())
         self._last_flow           = flow1.cpu()           # (B, 2, out_H, out_W)
         self._last_confidence_map = confidence.cpu()      # (B, 1, out_H, out_W)
+
+        # Step 9 (opt-in): native stride-8 l2 at 2×out_size
+        if l2_native:
+            l2H, l2W = out_H * 2, out_W * 2
+            f_l2 = feats_ref[2]                                # native stride-8 (256ch)
+            if f_l2.shape[-2:] != (l2H, l2W):
+                f_l2 = F.interpolate(f_l2, size=(l2H, l2W), mode='bilinear', align_corners=False)
+            # CRITICAL: warp() uses pixel-unit flow (vgrid = pixel_grid + flo).
+            # Upsampling the flow from out_size to 2×out_size doubles the grid resolution,
+            # so displacement VALUES must be scaled ×2 to preserve the same physical shift.
+            # Omitting ×2 silently halves the alignment displacement → misaligned reference.
+            flow_l2 = F.interpolate(
+                flow1, size=(l2H, l2W), mode='bilinear', align_corners=False) * 2.0
+            f_l2_warped, _ = warp(f_l2, flow_l2, return_mask=True)
+            hard_mask_l2 = F.interpolate(hard_mask, size=(l2H, l2W), mode='nearest')
+            l2_out = f_l2_warped * hard_mask_l2              # (B, 256, 2h, 2w)
+            return {
+                'l2':   l2_out,                # (B, 256, 2×out_H, 2×out_W) genuine stride-8
+                'l3':   f_ref_warped_l3_masked, # (B, 512, out_H, out_W)
+                'mask': hard_mask_l2,           # (B, 1, 2×out_H, 2×out_W) — RPM pools down
+            }
 
         return {
             'l2':   f_ref_warped_l2_masked,   # (B, 256, out_H, out_W)

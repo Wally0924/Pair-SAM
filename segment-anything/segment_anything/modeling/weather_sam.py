@@ -204,18 +204,9 @@ class WeatherSAM(nn.Module):
             ).to(self.device)
             _grid = self.image_encoder.img_size // self.image_encoder.patch_embed.proj.stride[0]
             _vgg_ref_aligned = self.fusion_module.pre_align(
-                img_curr_batch, img_ref_batch, out_size=(_grid, _grid))
-            # l2 是 stride-8（1/8 解析度），應比 ViT 格點（1/16）高 2×；
-            # pre_align 以 out_size 統一輸出，需在此補充上採樣使 l2 達 (2h, 2w)。
-            _l2 = _vgg_ref_aligned['l2']
-            if _l2.shape[-2:] == (_grid, _grid):
-                _vgg_ref_aligned = {
-                    'l2':  F.interpolate(_l2, scale_factor=2, mode='bilinear',
-                                         align_corners=False),
-                    'l3':  _vgg_ref_aligned['l3'],
-                    'mask': F.interpolate(_vgg_ref_aligned['mask'], scale_factor=2,
-                                          mode='nearest'),
-                }
+                img_curr_batch, img_ref_batch, out_size=(_grid, _grid), l2_native=True)
+            # pre_align(l2_native=True) returns l2 at (2*_grid, 2*_grid) — genuine stride-8.
+            # No post-hoc upsample needed; flow was scaled ×2 inside pre_align.
             # pre_align 在 no_grad 下會產生大量 VGG 中間特徵（1024×1024 雙圖）
             # 釋放 CUDA allocator cache，為後續 ViT-H global attention (1 GiB) 騰出空間
             torch.cuda.empty_cache()
