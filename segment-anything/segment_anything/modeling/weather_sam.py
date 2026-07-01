@@ -10,7 +10,7 @@ from .weather_mask_decoder import MaskDecoder
 from .fusion import CMAAlignment
 from .text_encoder import TextEncoder
 from .fusion_head import ResidualDWConvFusion
-from .vgg_adapter import MultiScaleCrossAttnInjector
+from .deform_adapter import DeformAdapter
 
 class WeatherSAM(nn.Module):
     """
@@ -77,14 +77,14 @@ class WeatherSAM(nn.Module):
         self.pe_layer = nn.Parameter(torch.zeros(1, embed_dim, *image_embedding_size))
         nn.init.normal_(self.pe_layer, std=0.02)
 
-        # [multi-stage] WarpedVGG Adapter：在 ViT-H Block 7/15/23/31（4 個 global attention block）
-        # 分段注入對齊後的晴天參考 VGG 特徵，讓 early/mid/late 各層都能感知補償信號。
+        # [multi-stage] WarpedVGG Adapter：雙向可變形 DeformAdapter (A3)，
+        # inject @ INJECT_BLOCKS=[0,8,16,24]，extract @ EXTRACT_BLOCKS=[7,15,23]。
         # use_vgg_adapter=False 時完全跳過，hook 未註冊，不影響現有 forward 行為。
         self.use_vgg_adapter: bool = False
         _vit_dim = image_encoder.patch_embed.proj.out_channels
-        self.vgg_injector = MultiScaleCrossAttnInjector(
+        self.vgg_injector = DeformAdapter(
             vit_dim=_vit_dim, l2_channels=256, l3_channels=512,
-            d_attn=256, pool_size=32, num_heads=4,
+            n_heads=8, deform_ratio=0.5, use_reference=True,
         )
         self._adapter_hook_handles: list = []
 
@@ -116,52 +116,62 @@ class WeatherSAM(nn.Module):
         return F.normalize(loc_feats, p=2, dim=-1)
 
     def enable_vgg_adapter(self, mode: str = 'pre'):
-        """啟用 MultiScaleCrossAttnInjector，在 ViT-H Block [7, 15, 23, 31] 各注冊一個 hook。
+        """啟用 DeformAdapter（A3）：inject @ INJECT_BLOCKS，extract @ EXTRACT_BLOCKS。
 
         Args:
-            mode: 'pre'（預設）在 block 自注意力前注入，補償信號參與 Q/K/V 計算；
-                  'post' 在 block 自注意力後注入，保留原 post-hook 行為供消融實驗使用。
+            mode: 保留參數以維持外部呼叫者相容性（_eval_common, build, trainer）；
+                  DeformAdapter 固定使用 pre-inject + post-extract 雙向 hook，mode 已無效。
 
-        4 個注入點對應 ViT-H 的 global attention blocks，使 encoder early/mid/late
-        各段都能感知對齊後的晴天參考特徵。每次呼叫前先移除舊 hook 避免重複注入。
+        每次呼叫前先移除舊 hook 避免重複注入。
         """
-        if mode not in ('pre', 'post'):
-            raise ValueError(f"[WeatherSAM] mode must be 'pre' or 'post', got {mode!r}")
-
         for handle in self._adapter_hook_handles:
             handle.remove()
         self._adapter_hook_handles = []
 
-        all_inject_blocks = self.vgg_injector.INJECT_BLOCKS
         n_blocks = len(self.image_encoder.blocks)
-        inject_blocks = [b for b in all_inject_blocks if b < n_blocks]
-        if len(inject_blocks) != len(all_inject_blocks):
-            warnings.warn(
-                f"[WeatherSAM] Some INJECT_BLOCKS out of range for {n_blocks}-block encoder; "
-                f"using {inject_blocks} instead of {all_inject_blocks}.",
-                stacklevel=2,
-            )
-        for stage_idx, block_idx in enumerate(inject_blocks):
-            target_block = self.image_encoder.blocks[block_idx]
-            if mode == 'pre':
-                handle = target_block.register_forward_pre_hook(
-                    self.vgg_injector._make_pre_hook(stage_idx)
+        for s, blk_idx in enumerate(self.vgg_injector.INJECT_BLOCKS):
+            if blk_idx >= n_blocks:
+                warnings.warn(
+                    f"[WeatherSAM] INJECT_BLOCKS[{s}]={blk_idx} out of range "
+                    f"for {n_blocks}-block encoder; skipped.",
+                    stacklevel=2,
                 )
-            else:
-                handle = target_block.register_forward_hook(
-                    self.vgg_injector._make_hook(stage_idx)
+                continue
+            h = self.image_encoder.blocks[blk_idx].register_forward_pre_hook(
+                self.vgg_injector._make_inject_pre_hook(s))
+            self._adapter_hook_handles.append(h)
+        for s, blk_idx in enumerate(self.vgg_injector.EXTRACT_BLOCKS):
+            if blk_idx >= n_blocks:
+                warnings.warn(
+                    f"[WeatherSAM] EXTRACT_BLOCKS[{s}]={blk_idx} out of range "
+                    f"for {n_blocks}-block encoder; skipped.",
+                    stacklevel=2,
                 )
-            self._adapter_hook_handles.append(handle)
+                continue
+            h = self.image_encoder.blocks[blk_idx].register_forward_hook(
+                self.vgg_injector._make_extract_post_hook(s))
+            self._adapter_hook_handles.append(h)
 
         self.use_vgg_adapter = True
-        print(f'[WeatherSAM] MultiStage WarpedVGG Adapter enabled at ViT Blocks {inject_blocks} (mode={mode!r}).')
+        print(f'[WeatherSAM] Deform Adapter enabled: inject@{self.vgg_injector.INJECT_BLOCKS}, '
+              f'extract@{self.vgg_injector.EXTRACT_BLOCKS}.')
+
+    # Alias for new API used by brief / future callers
+    def enable_deform_adapter(self):
+        """enable_vgg_adapter の別名（新 API）。"""
+        self.enable_vgg_adapter()
 
     def disable_vgg_adapter(self):
-        """停用 MultiScale WarpedVGG Adapter，移除所有已注冊的 hook。"""
+        """停用 Deform Adapter，移除所有已注冊的 hook。"""
         for handle in self._adapter_hook_handles:
             handle.remove()
         self._adapter_hook_handles = []
         self.use_vgg_adapter = False
+
+    # Alias for new API used by brief / future callers
+    def disable_deform_adapter(self):
+        """disable_vgg_adapter の別名（新 API）。"""
+        self.disable_vgg_adapter()
 
     def forward(
         self,
@@ -203,7 +213,8 @@ class WeatherSAM(nn.Module):
         else:
             input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
             if self.use_vgg_adapter and _vgg_ref_aligned is not None:
-                self.vgg_injector.set_features(_vgg_ref_aligned)
+                _grid = self.image_encoder.img_size // self.image_encoder.patch_embed.proj.stride[0]
+                self.vgg_injector.set_features(_vgg_ref_aligned, _grid, _grid)
             image_embeddings = self.image_encoder(input_images)
 
         # --- 階段 2：批次提示編碼與遮罩解碼 (Prompt Encoding & Mask Decoding) ---

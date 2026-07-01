@@ -45,7 +45,9 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
     model.use_lrh = bool(cfg.get('lrh', True))
     model.use_cond = bool(cfg.get('cond', True))
     model.mask_decoder.decoder_mode = cfg.get('decoder', 'unified')
-    model.vgg_injector.use_reference = bool(cfg.get('ref', True))
+    _use_ref = bool(cfg.get('ref', True))
+    model.vgg_injector.use_reference = _use_ref
+    model.vgg_injector.rpm.use_reference = _use_ref  # propagate to RPM for ablation
 
     if cfg.get('use_vgg_adapter', True):
         model.enable_vgg_adapter(mode=cfg.get('inject', 'pre'))
