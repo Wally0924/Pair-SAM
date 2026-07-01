@@ -77,3 +77,26 @@ class ReferencePriorModule(nn.Module):
         else:
             conf = torch.ones(B, c.shape[1], 1, device=c.device, dtype=c.dtype)
         return c, conf
+
+
+class Injector(nn.Module):
+    """ViT-Adapter Injector（可變形）。Q=ViT.detach()，K/V=多尺度 c（信心加權），softplus gate。"""
+    def __init__(self, dim=1280, n_heads=8, n_points=4, n_levels=3,
+                 deform_ratio=0.5, gate_init=_DEFAULT_GATE_INIT):
+        super().__init__()
+        self.query_norm = nn.LayerNorm(dim)
+        self.feat_norm = nn.LayerNorm(dim)
+        self.attn = MSDeformAttn(d_model=dim, n_levels=n_levels, n_heads=n_heads,
+                                 n_points=n_points, ratio=deform_ratio)
+        self.gate = nn.Parameter(torch.tensor(gate_init, dtype=torch.float32))
+
+    def forward(self, x_tokens, c, conf, inject_inputs):
+        ref_pts, spatial_shapes, lsi = inject_inputs
+        ref_pts = ref_pts.to(x_tokens.device)
+        if ref_pts.shape[0] != x_tokens.shape[0]:
+            ref_pts = ref_pts.expand(x_tokens.shape[0], -1, -1, -1)
+        q = self.query_norm(x_tokens.detach())          # detach：不讓 adapter 梯度重塑 ViT
+        feat = self.feat_norm(c) * conf                  # 信心加權 value（決策③）
+        delta = self.attn(q, ref_pts, feat, spatial_shapes, lsi)
+        gate = F.softplus(self.gate)
+        return x_tokens + gate * delta                   # 殘差保留 ViT 梯度
