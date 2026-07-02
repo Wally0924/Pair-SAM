@@ -185,6 +185,11 @@ class DeformAdapter(nn.Module):
         self._inject_inputs = None
         self._extract_inputs = None
         self._scale_hw = None
+        # gradient checkpointing 會在 backward 重放 hook；重放時 self._c 已被後續
+        # extractor 改寫，直接讀會使重算 forward 偏離原 forward → 梯度錯誤。
+        # 因此每 stage 首次觸發時快照當下的 c，重放一律讀快照（逐位元重現）。
+        self._inject_c = [None] * len(self.INJECT_BLOCKS)
+        self._extract_c = [None] * len(self.EXTRACT_BLOCKS)
         # telemetry（trainer 讀取；介面與 legacy adapter 對齊）
         self._num_stages = len(self.INJECT_BLOCKS)
         self._stage_gate_vals = [0.0] * self._num_stages   # gamma.abs().mean() per stage
@@ -197,6 +202,8 @@ class DeformAdapter(nn.Module):
         self._c, self._conf = self.rpm(feats)
         self._inject_inputs, self._extract_inputs = deform_inputs(h, w, device)
         self._scale_hw = [(h * 2, w * 2), (h, w), (h // 2, w // 2)]
+        self._inject_c = [None] * len(self.INJECT_BLOCKS)   # 新 forward → 快照重置
+        self._extract_c = [None] * len(self.EXTRACT_BLOCKS)
 
     def _make_inject_pre_hook(self, stage_idx):
         def hook(module, inp):
@@ -205,7 +212,10 @@ class DeformAdapter(nn.Module):
             x = inp[0]
             B, H, W, C = x.shape
             tokens = x.reshape(B, H * W, C)
-            out = self.injectors[stage_idx](tokens, self._c, self._conf, self._inject_inputs)
+            if self._inject_c[stage_idx] is None:
+                self._inject_c[stage_idx] = self._c        # 首次觸發：快照
+            c_in = self._inject_c[stage_idx]               # 重放讀快照，非現時 _c
+            out = self.injectors[stage_idx](tokens, c_in, self._conf, self._inject_inputs)
             with torch.no_grad():
                 gate_val = float(self.injectors[stage_idx].gamma.abs().mean().item())
                 cos_sim = float(F.cosine_similarity(tokens, out, dim=-1).mean().item())
@@ -222,7 +232,15 @@ class DeformAdapter(nn.Module):
                 return output                    # 未 set_features：不更新 c
             B, H, W, C = output.shape
             vit_tokens = output.reshape(B, H * W, C)
-            self._c = self.extractors[stage_idx](
-                self._c, vit_tokens, self._extract_inputs, self._scale_hw)
+            first = self._extract_c[stage_idx] is None
+            if first:
+                self._extract_c[stage_idx] = self._c       # 首次觸發：快照輸入
+            # 重放時必須以相同輸入重跑 extractor（checkpoint 依 op 順序回填
+            # saved tensors），但只有首次觸發才推進 _c 狀態
+            c_new = self.extractors[stage_idx](
+                self._extract_c[stage_idx], vit_tokens,
+                self._extract_inputs, self._scale_hw)
+            if first:
+                self._c = c_new
             return output  # 不改 ViT 輸出
         return hook
