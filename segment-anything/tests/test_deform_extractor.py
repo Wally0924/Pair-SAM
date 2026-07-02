@@ -5,8 +5,10 @@ from segment_anything.modeling.deform_adapter import (
 
 
 def _setup(dim=32, h=4):
-    rpm = ReferencePriorModule(l2_channels=8, l3_channels=16, dim=dim)
-    c, _ = rpm({'l2': torch.randn(1, 8, h * 2, h * 2), 'l3': torch.randn(1, 16, h, h)})
+    rpm = ReferencePriorModule(l2_channels=8, l3_channels=16, l4_channels=16, dim=dim)
+    c, _ = rpm({'l2': torch.randn(1, 8, h * 2, h * 2),
+                'l3': torch.randn(1, 16, h, h),
+                'l4': torch.randn(1, 16, h // 2, h // 2)})
     _, ext_in = deform_inputs(h, h, torch.device('cpu'))
     scale_hw = [(h * 2, h * 2), (h, h), (h // 2, h // 2)]
     x = torch.randn(1, h * h, dim)

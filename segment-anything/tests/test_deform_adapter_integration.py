@@ -25,7 +25,8 @@ def test_forward_output_shape_unchanged_with_adapter():
 
     # 掛 adapter 的 encoder
     enc = _tiny_encoder()
-    ad = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, n_heads=4)
+    ad = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, l4_channels=16,
+                       n_heads=4)
     handles = []
     for s, b in enumerate(ad.INJECT_BLOCKS):
         handles.append(enc.blocks[b].register_forward_pre_hook(ad._make_inject_pre_hook(s)))
@@ -34,6 +35,7 @@ def test_forward_output_shape_unchanged_with_adapter():
 
     ad.set_features({'l2': torch.randn(1, 8, grid * 2, grid * 2),
                      'l3': torch.randn(1, 16, grid, grid),
+                     'l4': torch.randn(1, 16, grid // 2, grid // 2),
                      'mask': torch.rand(1, 1, grid * 2, grid * 2)}, grid, grid)
     with torch.no_grad():
         out = enc(x)

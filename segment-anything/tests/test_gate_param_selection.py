@@ -1,6 +1,8 @@
-"""TDD test for _is_gate_param helper in weather_trainer.
+"""Tests for the _is_gate_param helper in weather_trainer.
 
-RED phase: tests are written before the fix exists.
+Gate warmup 只涵蓋 legacy adapter 的 softplus gates。DeformAdapter (A3) 的
+per-channel gamma 為零初始化（ViT-Adapter 原設定），零初始化本身即內建 warmup，
+凍結在 0 反而使 attention 前幾個 epoch 收不到梯度，因此必須被排除。
 """
 import os
 import sys
@@ -26,13 +28,7 @@ from weather_trainer import _is_gate_param
 
 class TestIsGateParamPredicate:
 
-    # --- should return True ---
-
-    def test_deform_adapter_injector_0_gate(self):
-        assert _is_gate_param('vgg_injector.injectors.0.gate') is True
-
-    def test_deform_adapter_injector_3_gate(self):
-        assert _is_gate_param('vgg_injector.injectors.3.gate') is True
+    # --- should return True (legacy softplus gates need warmup freeze) ---
 
     def test_legacy_gates_0(self):
         """Legacy MultiScaleCrossAttnInjector / SameImageAdapterInjector ParameterList."""
@@ -43,6 +39,13 @@ class TestIsGateParamPredicate:
 
     # --- should return False ---
 
+    def test_deform_adapter_gamma_excluded(self):
+        """DeformAdapter gamma 零初始化，凍結它會讓 attention 收不到梯度 → 排除。"""
+        assert _is_gate_param('vgg_injector.injectors.0.gamma') is False
+
+    def test_deform_adapter_gamma_3_excluded(self):
+        assert _is_gate_param('vgg_injector.injectors.3.gamma') is False
+
     def test_k_projs_weight(self):
         assert _is_gate_param('vgg_injector.k_projs.0.weight') is False
 
@@ -50,7 +53,6 @@ class TestIsGateParamPredicate:
         assert _is_gate_param('image_encoder.blocks.0.norm1.weight') is False
 
     def test_injectors_non_gate_weight(self):
-        """A param whose name contains 'injectors' but is NOT the bare gate."""
         assert _is_gate_param('vgg_injector.injectors.0.attn.value_proj.weight') is False
 
     def test_injectors_attn_in_proj(self):
@@ -59,12 +61,12 @@ class TestIsGateParamPredicate:
 
 # ---------------------------------------------------------------------------
 # Integration test: build a real DeformAdapter, attach it as `vgg_injector`
-# on a throwaway Module, and confirm exactly 4 gate params are captured.
+# on a throwaway Module, and confirm NO params are captured by the warmup.
 # ---------------------------------------------------------------------------
 
 class TestDeformAdapterGateCapture:
 
-    def test_exactly_four_gates_captured(self):
+    def test_no_deform_adapter_params_captured(self):
         from segment_anything.modeling.deform_adapter import DeformAdapter
 
         # Small dims to keep the test lightweight (no GPU needed for param scan)
@@ -72,6 +74,7 @@ class TestDeformAdapterGateCapture:
             vit_dim=64,       # small embedding dim
             l2_channels=32,
             l3_channels=64,
+            l4_channels=64,
             n_heads=2,
             deform_ratio=0.5,
         )
@@ -80,32 +83,20 @@ class TestDeformAdapterGateCapture:
         parent = nn.Module()
         parent.vgg_injector = adapter
 
-        gate_params = [
-            p for n, p in parent.named_parameters()
-            if _is_gate_param(n)
-        ]
-
-        # DeformAdapter has 4 Injectors, each with one bare nn.Parameter gate
-        assert len(gate_params) == 4, (
-            f"Expected 4 gate params, got {len(gate_params)}. "
-            f"Gate param names: {[n for n, p in parent.named_parameters() if _is_gate_param(n)]}"
+        captured = [n for n, _ in parent.named_parameters() if _is_gate_param(n)]
+        assert captured == [], (
+            f"DeformAdapter params must be excluded from gate warmup, got: {captured}"
         )
 
-    def test_gate_param_names_are_correct(self):
-        """Verify the actual names we capture look as expected."""
+    def test_gamma_params_exist_and_zero_init(self):
+        """gamma 仍存在（4 個 injector 各一個 per-channel 向量）且零初始化。"""
         from segment_anything.modeling.deform_adapter import DeformAdapter
 
-        adapter = DeformAdapter(vit_dim=64, l2_channels=32, l3_channels=64, n_heads=2)
-        parent = nn.Module()
-        parent.vgg_injector = adapter
-
-        captured_names = [n for n, _ in parent.named_parameters() if _is_gate_param(n)]
-        expected_names = [
-            'vgg_injector.injectors.0.gate',
-            'vgg_injector.injectors.1.gate',
-            'vgg_injector.injectors.2.gate',
-            'vgg_injector.injectors.3.gate',
-        ]
-        assert captured_names == expected_names, (
-            f"Captured: {captured_names}\nExpected: {expected_names}"
-        )
+        adapter = DeformAdapter(vit_dim=64, l2_channels=32, l3_channels=64,
+                                l4_channels=64, n_heads=2)
+        gammas = [(n, p) for n, p in adapter.named_parameters()
+                  if n.endswith('.gamma')]
+        assert len(gammas) == 4
+        for n, p in gammas:
+            assert p.shape == (64,), f"{n} 應為 per-channel 向量"
+            assert p.abs().max().item() == 0.0, f"{n} 應零初始化"

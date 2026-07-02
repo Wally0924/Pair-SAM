@@ -4,16 +4,19 @@ from segment_anything.modeling.deform_adapter import DeformAdapter
 
 
 def _adapter(dim=32, h=4):
-    a = DeformAdapter(vit_dim=dim, l2_channels=8, l3_channels=16, n_heads=4)
+    a = DeformAdapter(vit_dim=dim, l2_channels=8, l3_channels=16, l4_channels=16,
+                      n_heads=4)
     feats = {'l2': torch.randn(1, 8, h * 2, h * 2),
              'l3': torch.randn(1, 16, h, h),
+             'l4': torch.randn(1, 16, h // 2, h // 2),
              'mask': torch.rand(1, 1, h * 2, h * 2)}
     a.set_features(feats, h, h)
     return a, h, dim
 
 
 def test_block_indices():
-    a = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, n_heads=4)
+    a = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, l4_channels=16,
+                      n_heads=4)
     assert a.INJECT_BLOCKS == [0, 8, 16, 24]
     assert a.EXTRACT_BLOCKS == [7, 15, 23]
     assert len(a.injectors) == 4 and len(a.extractors) == 3
@@ -22,7 +25,8 @@ def test_block_indices():
 def test_hooks_passthrough_when_no_features():
     """未呼叫 set_features（_c is None）時，hook 必須原樣放行、不崩潰。
     對應 forward 走 image_embedding 預算路徑、或 adapter 停用時。"""
-    a = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, n_heads=4)
+    a = DeformAdapter(vit_dim=32, l2_channels=8, l3_channels=16, l4_channels=16,
+                      n_heads=4)
     x = torch.randn(1, 4, 4, 32)
     pre = a._make_inject_pre_hook(0)(None, (x,))
     assert pre is None or torch.equal(pre[0], x)   # 不修改輸入
@@ -55,4 +59,6 @@ def test_full_four_stage_sequence_runs():
         a._make_inject_pre_hook(s)(None, (x,))
         if s < 3:
             a._make_extract_post_hook(s)(None, None, torch.randn(1, h, h, dim))
-    assert a._last_gate_val > 0.0
+    # gamma 零初始化 → 初始注入為恆等：gate telemetry = 0、cos_sim = 1
+    assert a._last_gate_val == 0.0
+    assert abs(a._last_inject_cos_sim - 1.0) < 1e-5

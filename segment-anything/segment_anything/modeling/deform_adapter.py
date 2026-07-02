@@ -1,12 +1,9 @@
 """WeatherSAM 雙向可變形 Adapter（A3）。SPM → UAWarpC 參考；Injector + Extractor。"""
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .ops.ms_deform_attn import MSDeformAttn
-
-_DEFAULT_GATE_INIT = math.log(math.exp(0.05) - 1)  # softplus(x) ≈ 0.05
 
 
 def get_reference_points(spatial_shapes, device):
@@ -39,23 +36,24 @@ def deform_inputs(h, w, device):
 
 class ReferencePriorModule(nn.Module):
     """取代 ViT-Adapter SPM：把 UAWarpC 對齊的 VGG 參考轉成 3 尺度 token 流。
-    1/8 ← l2；1/16 ← l3；1/32 ← l3 stride-2 降採（決策②）。"""
-    def __init__(self, l2_channels=256, l3_channels=512, dim=1280, use_reference=True):
+    1/8 ← l2（conv3）；1/16 ← l3（conv4）；1/32 ← l4（conv5，真 stride-32）。"""
+    def __init__(self, l2_channels=256, l3_channels=512, l4_channels=512,
+                 dim=1280, use_reference=True):
         super().__init__()
         self.dim = dim
         self.use_reference = use_reference
         self.proj_c2 = nn.Conv2d(l2_channels, dim, kernel_size=1)
         self.proj_c3 = nn.Conv2d(l3_channels, dim, kernel_size=1)
-        self.down_c4 = nn.Conv2d(l3_channels, dim, kernel_size=3, stride=2, padding=1)
+        self.proj_c4 = nn.Conv2d(l4_channels, dim, kernel_size=1)
         self.level_embed = nn.Parameter(torch.zeros(3, dim))
         nn.init.normal_(self.level_embed, std=0.02)
 
     def forward(self, feats):
-        l2 = feats['l2']; l3 = feats['l3']
+        l2 = feats['l2']; l3 = feats['l3']; l4 = feats['l4']
         B = l2.shape[0]
         c2 = self.proj_c2(l2)                    # (B,dim,H8,W8)
         c3 = self.proj_c3(l3)                    # (B,dim,H16,W16)
-        c4 = self.down_c4(l3)                    # (B,dim,H32,W32)
+        c4 = self.proj_c4(l4)                    # (B,dim,H32,W32)
 
         def _flat(x):
             return x.flatten(2).transpose(1, 2)  # (B, H*W, dim)
@@ -80,15 +78,16 @@ class ReferencePriorModule(nn.Module):
 
 
 class Injector(nn.Module):
-    """ViT-Adapter Injector（可變形）。Q=ViT.detach()，K/V=多尺度 c（信心加權），softplus gate。"""
+    """ViT-Adapter Injector（可變形）。Q=ViT.detach()，K/V=多尺度 c（信心加權）。
+    gamma 依原論文 per-channel 零初始化：初始為恆等映射，不擾動 SAM 預訓練分布。"""
     def __init__(self, dim=1280, n_heads=8, n_points=4, n_levels=3,
-                 deform_ratio=0.5, gate_init=_DEFAULT_GATE_INIT):
+                 deform_ratio=0.5):
         super().__init__()
         self.query_norm = nn.LayerNorm(dim)
         self.feat_norm = nn.LayerNorm(dim)
         self.attn = MSDeformAttn(d_model=dim, n_levels=n_levels, n_heads=n_heads,
                                  n_points=n_points, ratio=deform_ratio)
-        self.gate = nn.Parameter(torch.tensor(gate_init, dtype=torch.float32))
+        self.gamma = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x_tokens, c, conf, inject_inputs):
         ref_pts, spatial_shapes, lsi = inject_inputs
@@ -98,8 +97,7 @@ class Injector(nn.Module):
         q = self.query_norm(x_tokens.detach())          # detach：不讓 adapter 梯度重塑 ViT
         feat = self.feat_norm(c) * conf                  # 信心加權 value（決策③）
         delta = self.attn(q, ref_pts, feat, spatial_shapes, lsi)
-        gate = F.softplus(self.gate)
-        return x_tokens + gate * delta                   # 殘差保留 ViT 梯度
+        return x_tokens + self.gamma * delta             # 殘差保留 ViT 梯度
 
 
 class DWConv(nn.Module):
@@ -139,7 +137,7 @@ class ConvFFN(nn.Module):
 class Extractor(nn.Module):
     """ViT-Adapter Extractor（可變形）。Q=c，K/V=ViT.detach()，+ ConvFFN 逐尺度精修 c。"""
     def __init__(self, dim=1280, n_heads=8, n_points=4, deform_ratio=0.5,
-                 with_cffn=True, drop_path=0.):
+                 with_cffn=True):
         super().__init__()
         self.query_norm = nn.LayerNorm(dim)
         self.feat_norm = nn.LayerNorm(dim)
@@ -149,7 +147,6 @@ class Extractor(nn.Module):
         if with_cffn:
             self.ffn = ConvFFN(dim=dim)
             self.ffn_norm = nn.LayerNorm(dim)
-            self.drop_path = nn.Dropout(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, c, x_tokens, extract_inputs, scale_hw):
         ref_pts, spatial_shapes, lsi = extract_inputs
@@ -160,7 +157,7 @@ class Extractor(nn.Module):
         attn = self.attn(self.query_norm(c), ref_pts, feat, spatial_shapes, lsi)
         c = c + attn
         if self.with_cffn:
-            c = c + self.drop_path(self.ffn(self.ffn_norm(c), scale_hw))
+            c = c + self.ffn(self.ffn_norm(c), scale_hw)
         return c
 
 
@@ -171,10 +168,10 @@ class DeformAdapter(nn.Module):
     EXTRACT_BLOCKS = [7, 15, 23]
 
     def __init__(self, vit_dim=1280, l2_channels=256, l3_channels=512,
-                 n_heads=8, deform_ratio=0.5, use_reference=True):
+                 l4_channels=512, n_heads=8, deform_ratio=0.5, use_reference=True):
         super().__init__()
-        self.rpm = ReferencePriorModule(l2_channels, l3_channels, dim=vit_dim,
-                                        use_reference=use_reference)
+        self.rpm = ReferencePriorModule(l2_channels, l3_channels, l4_channels,
+                                        dim=vit_dim, use_reference=use_reference)
         self.injectors = nn.ModuleList([
             Injector(dim=vit_dim, n_heads=n_heads, n_levels=3, deform_ratio=deform_ratio)
             for _ in range(len(self.INJECT_BLOCKS))])
@@ -188,7 +185,11 @@ class DeformAdapter(nn.Module):
         self._inject_inputs = None
         self._extract_inputs = None
         self._scale_hw = None
-        self._last_gate_val = float(F.softplus(torch.tensor(_DEFAULT_GATE_INIT)))
+        # telemetry（trainer 讀取；介面與 legacy adapter 對齊）
+        self._num_stages = len(self.INJECT_BLOCKS)
+        self._stage_gate_vals = [0.0] * self._num_stages   # gamma.abs().mean() per stage
+        self._stage_cos_sims = [1.0] * self._num_stages
+        self._last_gate_val = 0.0            # gamma.abs().mean()：零初始化起步
         self._last_inject_cos_sim = 1.0
 
     def set_features(self, feats, h, w):
@@ -206,9 +207,12 @@ class DeformAdapter(nn.Module):
             tokens = x.reshape(B, H * W, C)
             out = self.injectors[stage_idx](tokens, self._c, self._conf, self._inject_inputs)
             with torch.no_grad():
-                self._last_gate_val = float(F.softplus(self.injectors[stage_idx].gate).item())
-                self._last_inject_cos_sim = float(
-                    F.cosine_similarity(tokens, out, dim=-1).mean().item())
+                gate_val = float(self.injectors[stage_idx].gamma.abs().mean().item())
+                cos_sim = float(F.cosine_similarity(tokens, out, dim=-1).mean().item())
+                self._stage_gate_vals[stage_idx] = gate_val
+                self._stage_cos_sims[stage_idx] = cos_sim
+                self._last_gate_val = sum(self._stage_gate_vals) / self._num_stages
+                self._last_inject_cos_sim = sum(self._stage_cos_sims) / self._num_stages
             return (out.reshape(B, H, W, C),)
         return hook
 

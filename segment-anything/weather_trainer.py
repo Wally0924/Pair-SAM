@@ -18,11 +18,12 @@ def _is_gate_param(name: str) -> bool:
     """Adapter gate parameter across all adapter variants.
 
     Legacy MultiScaleCrossAttnInjector / SameImageAdapterInjector expose gates as a
-    ParameterList → 'vgg_injector.gates.<i>'. The DeformAdapter (A3) holds a bare
-    nn.Parameter per injector → 'vgg_injector.injectors.<i>.gate'. Match both.
+    ParameterList → 'vgg_injector.gates.<i>' — softplus(init≈0.05)，需要 warmup 凍結。
+    DeformAdapter (A3) 的 injector gate 已改為 per-channel 零初始化 gamma
+    ('vgg_injector.injectors.<i>.gamma'，ViT-Adapter 原設定)：零初始化本身即內建
+    warmup，凍結在 0 反而使 attention 前幾個 epoch 收不到梯度，故刻意不納入。
     """
-    return ('vgg_injector.gates' in name) or (
-        'vgg_injector.injectors' in name and name.endswith('.gate'))
+    return 'vgg_injector.gates' in name
 
 
 class AverageMeter:

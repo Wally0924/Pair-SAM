@@ -10,8 +10,10 @@ from .cma_utils import warp, estimate_probability_of_confidence_interval
 # =============================================================================
 # VGG16AlignmentBackbone
 #
-# 為 UAWarpCHead 提供多尺度 VGG16 特徵，回傳 4 個尺度的特徵列表：
-#   [stride2(64ch), stride4(128ch), stride8(256ch), stride16(512ch)]
+# 為 UAWarpCHead 提供多尺度 VGG16 特徵，回傳 5 個尺度的特徵列表：
+#   [stride2(64ch), stride4(128ch), stride8(256ch), stride16(512ch), stride32(512ch)]
+# stride32（conv5）不參與 UAWarpCHead，供 DeformAdapter RPM 的真 1/32 尺度使用；
+# CMA checkpoint 含 conv5 權重（features.24/26/28），load_cma_weights 一併載入。
 #
 # UAWarpCHead 使用 in_index=[2,3]，即取 stride8 與 stride16 兩個尺度：
 #   - stride8  → 對 256×256 輸入為 32×32（UAWarpC level-3 constraint）
@@ -28,13 +30,15 @@ class VGG16AlignmentBackbone(nn.Module):
         self.level1 = nn.Sequential(*feats[5:10])  # stride 4, 128ch
         self.level2 = nn.Sequential(*feats[10:17]) # stride 8, 256ch  ← in_index[0]=2
         self.level3 = nn.Sequential(*feats[17:24]) # stride 16, 512ch ← in_index[1]=3
+        self.level4 = nn.Sequential(*feats[24:31]) # stride 32, 512ch（conv5，RPM 1/32）
 
     def forward(self, x: torch.Tensor):
         f0 = self.level0(x)
         f1 = self.level1(f0)
         f2 = self.level2(f1)
         f3 = self.level3(f2)
-        return [f0, f1, f2, f3]
+        f4 = self.level4(f3)
+        return [f0, f1, f2, f3, f4]
 
     def load_cma_weights(self, vgg_state_dict: dict):
         """載入從 CMA checkpoint 抽取的 alignment_backbone 權重。
@@ -62,6 +66,7 @@ class VGG16AlignmentBackbone(nn.Module):
         self.level1.load_state_dict(nn.Sequential(*feats[5:10]).state_dict(), strict=False)
         self.level2.load_state_dict(nn.Sequential(*feats[10:17]).state_dict(), strict=False)
         self.level3.load_state_dict(nn.Sequential(*feats[17:24]).state_dict(), strict=False)
+        self.level4.load_state_dict(nn.Sequential(*feats[24:31]).state_dict(), strict=False)
         print('[VGG16AlignmentBackbone] ✅ Loaded CMA alignment_backbone weights.')
 
 
@@ -181,6 +186,9 @@ class CMAAlignment(nn.Module):
                 'l3': (B, 512, out_H, out_W)
                     Warped VGG level-3 (512ch, stride-16) features from the clear
                     reference image, aligned to the adverse-weather image viewpoint.
+                'l4': (B, 512, out_H//2, out_W//2)
+                    Warped VGG level-4 (conv5, 512ch, genuine stride-32) features,
+                    warped with the same flow downsampled ×0.5 (pixel-unit scaling).
             Positions where confidence < conf_threshold are zeroed out (hard mask).
         """
         out_H, out_W = out_size
@@ -229,6 +237,19 @@ class CMAAlignment(nn.Module):
         f_ref_warped_l3_masked = f_ref_warped_l3 * hard_mask  # (B, 512, out_H, out_W)
         f_ref_warped_l2_masked = f_ref_warped_l2 * hard_mask  # (B, 256, out_H, out_W)
 
+        # Step 7b: VGG level-4（conv5，真 stride-32）→ 半解析度 warp。
+        # flow 是 pixel-unit：grid 縮小一半，位移數值也要 ×0.5（與 l2_native ×2 同一套邏輯）。
+        l4H, l4W = out_H // 2, out_W // 2
+        f_vgg_ref_l4 = feats_ref[4]  # (B, 512, H/32, W/32)
+        if f_vgg_ref_l4.shape[-2:] != (l4H, l4W):
+            f_vgg_ref_l4 = F.interpolate(f_vgg_ref_l4, size=(l4H, l4W),
+                                          mode='bilinear', align_corners=False)
+        flow_l4 = F.interpolate(
+            flow1, size=(l4H, l4W), mode='bilinear', align_corners=False) * 0.5
+        f_ref_warped_l4, _ = warp(f_vgg_ref_l4, flow_l4, return_mask=True)
+        hard_mask_l4 = F.interpolate(hard_mask, size=(l4H, l4W), mode='nearest')
+        f_ref_warped_l4_masked = f_ref_warped_l4 * hard_mask_l4  # (B, 512, h/2, w/2)
+
         # Step 8: Update diagnostic attributes
         self._last_conf_mean      = float(confidence.mean().item())
         self._last_valid_ratio    = float(validity_mask.float().mean().item())
@@ -253,12 +274,14 @@ class CMAAlignment(nn.Module):
             return {
                 'l2':   l2_out,                # (B, 256, 2×out_H, 2×out_W) genuine stride-8
                 'l3':   f_ref_warped_l3_masked, # (B, 512, out_H, out_W)
+                'l4':   f_ref_warped_l4_masked, # (B, 512, out_H/2, out_W/2) genuine stride-32
                 'mask': hard_mask_l2,           # (B, 1, 2×out_H, 2×out_W) — RPM pools down
             }
 
         return {
             'l2':   f_ref_warped_l2_masked,   # (B, 256, out_H, out_W)
             'l3':   f_ref_warped_l3_masked,   # (B, 512, out_H, out_W)
+            'l4':   f_ref_warped_l4_masked,   # (B, 512, out_H/2, out_W/2) genuine stride-32
             'mask': hard_mask,                 # (B, 1,   out_H, out_W) — 1=valid, 0=ignore
         }
 
