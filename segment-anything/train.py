@@ -181,7 +181,7 @@ def main():
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
     parser.add_argument("--batch_size", type=int, default=1, help="每次前向傳播的 Batch size（ViT-H global attention 需大量 VRAM，建議 1）")
-    parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps，預設 1×8=8)")
+    parser.add_argument("--accumulate_steps", type=int, default=4, help="梯度累積步數 (等效 batch_size = batch_size * steps，預設 1×4=4)")
     parser.add_argument("--lr", type=float, default=5e-5, help="學習率")
     parser.add_argument("--max_norm", type=float, default=1.0, help="梯度裁剪的 Max norm。")
 
@@ -289,6 +289,9 @@ def main():
         adapter_variant=args.adapter_variant,
     )
     model = build_weather_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
+    # Gradient checkpointing：ViT-H 1024² 不開會存滿 32 blocks activation（>21GB，OOM）。
+    # 僅在 self.training 時生效，數值等價，memcheck 實測峰值 10.07GB / 0.79s per step。
+    model.image_encoder.use_checkpoint = True
     print(f"[Ablation] config = {abl_cfg}")
     if args.use_vgg_adapter:
         print(f"[Config] WarpedVGG Adapter enabled (inject={args.inject}, "
