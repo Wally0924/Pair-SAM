@@ -201,6 +201,12 @@ def main():
                         help="前 N epoch 凍結 vgg_injector.gates，讓 main decoder 先穩定")
     # parser.add_argument("--iou_weight", type=float, default=3.0, help="IoU MSE Loss 權重")  # [Mask2Former] 已移除
 
+    # --- [M2F] Set-prediction loss 超參（decoder='m2f' 時生效；Mask2Former 官方設定）---
+    parser.add_argument("--cls_weight", type=float, default=2.0, help="[M2F] 分類 CE 權重")
+    parser.add_argument("--bce_weight", type=float, default=5.0, help="[M2F] mask BCE 權重")
+    parser.add_argument("--no_object_weight", type=float, default=0.1, help="[M2F] no-object 類 CE 權重")
+    parser.add_argument("--num_points", type=int, default=12544, help="[M2F] point sampling 點數")
+
     # --- Dense Gate LR ---
     # [testv14] gate_lr_scale 已移除（dense_gate 已隨 dense_ref 路徑下架）
 
@@ -242,8 +248,9 @@ def main():
     # --- [ablation] 消融開關（預設值 = FULL，向後相容）---
     parser.add_argument("--inject", choices=["pre", "post"], default="pre",
                         help="WarpedVGG Adapter 注入位置：pre=block 自注意力前；post=後")
-    parser.add_argument("--decoder", choices=["unified", "per_class"], default="unified",
-                        help="解碼模式：unified=統一查詢；per_class=逐類別獨立解碼")
+    parser.add_argument("--decoder", choices=["unified", "per_class", "m2f"], default="m2f",
+                        help="解碼模式：m2f=SimpleFPN+Mask2Former decoder（新主線）；"
+                             "unified/per_class=legacy 動態核 decoder（ablation 對照）")
     parser.add_argument("--lrh", action=argparse.BooleanOptionalAction, default=True,
                         help="是否套用 LRH (ResidualDWConvFusion)；--no-lrh 關閉")
     parser.add_argument("--mfb", action=argparse.BooleanOptionalAction, default=True,
