@@ -168,7 +168,6 @@ class CMAAlignment(nn.Module):
         img_curr: torch.Tensor,          # (B, 3, H, W) adverse weather image, values in [0, 255]
         img_ref: torch.Tensor,           # (B, 3, H, W) clear reference image, values in [0, 255]
         out_size: tuple = (64, 64),      # target feature map spatial size
-        conf_threshold: float = 0.2,     # hard mask threshold (matches CMA paper Sec 3.3)
         l2_native: bool = False,         # if True, return l2 at 2×out_size (genuine stride-8)
     ) -> dict:
         """
@@ -189,7 +188,9 @@ class CMAAlignment(nn.Module):
                 'l4': (B, 512, out_H//2, out_W//2)
                     Warped VGG level-4 (conv5, 512ch, genuine stride-32) features,
                     warped with the same flow downsampled ×0.5 (pixel-unit scaling).
-            Positions where confidence < conf_threshold are zeroed out (hard mask).
+            Features are returned un-zeroed; the continuous confidence map (with
+            boundary validity baked in) is returned as 'mask' for soft, CMA-style
+            weighting downstream in the Injector (feat × conf).
         """
         out_H, out_W = out_size
 
@@ -232,10 +233,9 @@ class CMAAlignment(nn.Module):
         confidence = estimate_probability_of_confidence_interval(uncertainty1)  # (B, 1, out_H, out_W)
         confidence = confidence * validity_mask.unsqueeze(1).float()
 
-        # Step 7: Hard mask — matches CMA paper Sec 3.3 (conf < 0.2 → zero out)
-        hard_mask = (confidence >= conf_threshold).float()  # (B, 1, out_H, out_W)
-        f_ref_warped_l3_masked = f_ref_warped_l3 * hard_mask  # (B, 512, out_H, out_W)
-        f_ref_warped_l2_masked = f_ref_warped_l2 * hard_mask  # (B, 256, out_H, out_W)
+        # Step 7: CMA-style soft gating（取代逐像素硬歸零）。特徵原樣輸出，連續
+        # confidence（Step 6 已乘 validity，無對應像素為 0）作為 'mask' 交給 RPM→Injector，
+        # 由 injector 端 feat×conf 做單一軟加權（等同 CMA Sec 3.3 confidence-weighted pooling）。
 
         # Step 7b: VGG level-4（conv5，真 stride-32）→ 半解析度 warp。
         # flow 是 pixel-unit：grid 縮小一半，位移數值也要 ×0.5（與 l2_native ×2 同一套邏輯）。
@@ -246,9 +246,7 @@ class CMAAlignment(nn.Module):
                                           mode='bilinear', align_corners=False)
         flow_l4 = F.interpolate(
             flow1, size=(l4H, l4W), mode='bilinear', align_corners=False) * 0.5
-        f_ref_warped_l4, _ = warp(f_vgg_ref_l4, flow_l4, return_mask=True)
-        hard_mask_l4 = F.interpolate(hard_mask, size=(l4H, l4W), mode='nearest')
-        f_ref_warped_l4_masked = f_ref_warped_l4 * hard_mask_l4  # (B, 512, h/2, w/2)
+        f_ref_warped_l4, _ = warp(f_vgg_ref_l4, flow_l4, return_mask=True)  # 原樣，軟加權在 injector
 
         # Step 8: Update diagnostic attributes
         self._last_conf_mean      = float(confidence.mean().item())
@@ -269,20 +267,21 @@ class CMAAlignment(nn.Module):
             flow_l2 = F.interpolate(
                 flow1, size=(l2H, l2W), mode='bilinear', align_corners=False) * 2.0
             f_l2_warped, _ = warp(f_l2, flow_l2, return_mask=True)
-            hard_mask_l2 = F.interpolate(hard_mask, size=(l2H, l2W), mode='nearest')
-            l2_out = f_l2_warped * hard_mask_l2              # (B, 256, 2h, 2w)
+            # 連續 confidence 上採至最細尺度（2×），供 RPM 逐尺度 pool 下去做軟加權
+            conf_l2 = F.interpolate(confidence, size=(l2H, l2W),
+                                    mode='bilinear', align_corners=False)
             return {
-                'l2':   l2_out,                # (B, 256, 2×out_H, 2×out_W) genuine stride-8
-                'l3':   f_ref_warped_l3_masked, # (B, 512, out_H, out_W)
-                'l4':   f_ref_warped_l4_masked, # (B, 512, out_H/2, out_W/2) genuine stride-32
-                'mask': hard_mask_l2,           # (B, 1, 2×out_H, 2×out_W) — RPM pools down
+                'l2':   f_l2_warped,           # (B, 256, 2×out_H, 2×out_W) genuine stride-8
+                'l3':   f_ref_warped_l3,       # (B, 512, out_H, out_W)
+                'l4':   f_ref_warped_l4,       # (B, 512, out_H/2, out_W/2) genuine stride-32
+                'mask': conf_l2,               # (B, 1, 2×out_H, 2×out_W) 連續信心，RPM pools down
             }
 
         return {
-            'l2':   f_ref_warped_l2_masked,   # (B, 256, out_H, out_W)
-            'l3':   f_ref_warped_l3_masked,   # (B, 512, out_H, out_W)
-            'l4':   f_ref_warped_l4_masked,   # (B, 512, out_H/2, out_W/2) genuine stride-32
-            'mask': hard_mask,                 # (B, 1,   out_H, out_W) — 1=valid, 0=ignore
+            'l2':   f_ref_warped_l2,          # (B, 256, out_H, out_W)
+            'l3':   f_ref_warped_l3,          # (B, 512, out_H, out_W)
+            'l4':   f_ref_warped_l4,          # (B, 512, out_H/2, out_W/2) genuine stride-32
+            'mask': confidence,               # (B, 1,   out_H, out_W) 連續信心 [0,1]（軟加權）
         }
 
 

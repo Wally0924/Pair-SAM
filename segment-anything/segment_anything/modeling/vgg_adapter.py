@@ -20,7 +20,7 @@ class MultiScaleCrossAttnInjector(nn.Module):
       - Gate: softplus(init≈0.05) + trainer gate warmup 保護穩定性
 
     Confidence-aware 處理（相對 v5 主結構的補強）：
-      - VGG l2/l3 已在 fusion.pre_align 中乘過 hard_mask（conf < 0.2 歸零）
+      - fusion.pre_align 現回傳原始 warp 特徵 + 連續 confidence 於 'mask'（CMA 式軟閘，不再硬歸零）
       - 但 average pool 會稀釋有效特徵，且 attention 仍會 attend 到零位置
       - 修正：(1) weighted pool = avg(f*m) / avg(m)，消除零位置稀釋
               (2) key_padding_mask：valid_ratio < mask_threshold 的 cell 從 attention 排除
