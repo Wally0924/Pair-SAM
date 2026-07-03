@@ -11,7 +11,7 @@ import math
 import random
 
 from segment_anything.modeling import WeatherSAM
-from utils.new_loss import ContextLoss, MaskLoss, ACDC_CLASS_WEIGHTS, lovasz_weight_for_epoch
+from utils.new_loss import ContextLoss, MaskLoss, lovasz_weight_for_epoch
 
 
 def _is_gate_param(name: str) -> bool:
@@ -131,10 +131,6 @@ class WeatherSAMTrainer:
             p for n, p in model.named_parameters()
             if _is_gate_param(n)
         ]
-        # MaskLoss 加權平均用：稀少類（rider/motorcycle/bicycle）獲得更高梯度權重
-        self._mask_cls_w = (ACDC_CLASS_WEIGHTS if use_mfb
-                            else torch.ones_like(ACDC_CLASS_WEIGHTS)).to(self.device)
-        
         # init_scale 從 8192 降至 2048：fp16 overflow 閾值從 8.0 提升至 32.0
         # （threshold = fp16_max / init_scale = 65504 / 2048 ≈ 32）
         # 搭配 cross_attns fp32 強制，大幅降低 gradient NaN 風險
@@ -347,7 +343,7 @@ class WeatherSAMTrainer:
             "ce_weighted":      AverageMeter(),  # MFB 加權 CE（與 total 中實際貢獻一致）
             "lovasz":           AverageMeter(),  # Lovász-Softmax（0=停用）
             "dice": AverageMeter(),              # unweighted dice 平均
-            "dice_weighted":    AverageMeter(),  # MFB 加權 dice（與 total 中實際貢獻一致）
+            "dice_weighted":    AverageMeter(),  # dice MFB 已移除，恆等於 unweighted（保留欄位）
             "conf_mean":        AverageMeter(),  # UAWarpC 置信度全局均值 [0, 1]
             "valid_ratio":      AverageMeter(),  # warp 邊界內有效像素比例 [0, 1]
             "pred_conf_mean":   AverageMeter(),  # 19-class softmax max probability
@@ -432,13 +428,11 @@ class WeatherSAMTrainer:
                             low_res_logits_upscaled, target_masks_k, valid_mask_k
                         )
                         min_mask_loss = mask_total_loss.squeeze(1)   # (K,)
-                        # 加權平均：稀少類（rider/motorcycle/bicycle）獲得更高梯度貢獻
-                        cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
-                        sample_total_loss += (min_mask_loss * cls_w).sum() / cls_w.sum()
+                        # plain mean：per-class dice 已按類別大小歸一，等權平均即類別平衡
+                        # （MFB 僅作用於 CE，dice 端不再加權）
+                        sample_total_loss += min_mask_loss.mean()
                         acc_dice  = dice.squeeze(1).mean().item()
-                        # MFB-weighted dice（反映 dice 對 total_loss 的實際貢獻）
-                        with torch.no_grad():
-                            acc_dice_w = float(((dice.squeeze(1) * cls_w).sum() / cls_w.sum()).item())
+                        acc_dice_w = acc_dice  # dice 無加權後與 unweighted 相同（保留 CSV 欄位）
 
                     # ── Stage 3: 前 5 epoch detach，避免初期 mask gradient 衝擊低層 ViT ──
                     if num_prompts > 0:
@@ -946,10 +940,9 @@ class WeatherSAMTrainer:
                             low_res_logits_upscaled, target_masks_k, valid_mask_k
                         )
                         min_mask_loss = mask_total_loss.squeeze(1)
-                        cls_w = self._mask_cls_w[torch.tensor(class_ids_out, device=self.device)]
-                        sample_total_loss = sample_total_loss + (min_mask_loss * cls_w).sum() / cls_w.sum()
+                        sample_total_loss = sample_total_loss + min_mask_loss.mean()
                         acc_dice   = float(dice.squeeze(1).mean().item())
-                        acc_dice_w = float(((dice.squeeze(1) * cls_w).sum() / cls_w.sum()).item())
+                        acc_dice_w = acc_dice  # dice 無加權後與 unweighted 相同（保留 CSV 欄位）
 
                     # ── Stage 3 & 4: 所有 19 類別固定存在，直接使用（不需 -10 填充）──
                     if num_prompts > 0:
