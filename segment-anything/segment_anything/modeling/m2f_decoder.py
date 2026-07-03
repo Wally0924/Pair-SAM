@@ -289,7 +289,7 @@ class M2FDecoder(nn.Module):
         self.num_classes = num_classes
         self.num_heads = nheads
         self.num_layers = dec_layers
-        self.num_feature_levels = 3
+        self.num_feature_levels = 3  # [WeatherSAM adaptation 1] 固定 3 尺度，不走 detectron2 config
 
         # 上游同名成員（transformer_self_attention_layers 等三組 ModuleList）
         self.transformer_self_attention_layers = nn.ModuleList()
@@ -309,7 +309,7 @@ class M2FDecoder(nn.Module):
         self.decoder_norm = nn.LayerNorm(hidden_dim)
         self.pe_layer = PositionEmbeddingSine(hidden_dim // 2, normalize=True)
 
-        self.query_feat = nn.Embedding(num_classes, hidden_dim)
+        self.query_feat = nn.Embedding(num_classes, hidden_dim)  # [WeatherSAM adaptation 2] num_queries = num_classes
         # [WeatherSAM adaptation 4] +1 slot = condition token 的 PE
         self.query_embed = nn.Embedding(num_classes + 1, hidden_dim)
         self.level_embed = nn.Embedding(self.num_feature_levels, hidden_dim)
@@ -335,7 +335,8 @@ class M2FDecoder(nn.Module):
         return outputs_class, outputs_mask, attn_mask
 
     def forward(self, feats, mask_features, text_feat=None, cond_token=None):
-        # ── 主體對齊上游 forward；[WeatherSAM adaptation 3/4/5] 標註處為改動 ──
+        # [WeatherSAM adaptation 5] 簽名改為 (feats, mask_features, text_feat, cond_token)
+        # ── 主體對齊上游 forward；無 self.mask_classification 分支（[WeatherSAM adaptation 6]，本專案恆為 True）──
         B = mask_features.shape[0]
         src, pos, size_list = [], [], []
         for i in range(self.num_feature_levels):
