@@ -35,6 +35,8 @@ class WeatherSAM(nn.Module):
         num_classes: int = 19,
         pixel_mean: List[float] = [123.675, 116.28, 103.53],
         pixel_std: List[float] = [58.395, 57.12, 57.375],
+        simple_fpn: nn.Module = None,
+        m2f_decoder: nn.Module = None,
     ) -> None:
         super().__init__()
         self.image_encoder = image_encoder
@@ -42,6 +44,9 @@ class WeatherSAM(nn.Module):
         self.mask_decoder = mask_decoder
         self.fusion_module = fusion_module
         self.text_encoder = text_encoder
+        self.simple_fpn = simple_fpn
+        self.m2f_decoder = m2f_decoder
+        self.decoder_arch = 'legacy'  # 'm2f' 由 builder 依 cfg 切換
 
         # ConditionEncoder：天氣條件 Embedding（fog=0, rain=1, snow=2, night=3）
         self.condition_encoder = nn.Embedding(4, 256)
@@ -223,6 +228,47 @@ class WeatherSAM(nn.Module):
 
         # --- 階段 2：批次提示編碼與遮罩解碼 (Prompt Encoding & Mask Decoding) ---
         for i, image_record in enumerate(batched_input):
+            # ── [M2F] 新 decoder 路徑：SimpleFPN 多尺度 + masked-attention decoder ──
+            if self.decoder_arch == 'm2f':
+                texts = image_record["text_prompts"]  # 19 個類別名（dataloader 依 id 排序）
+                text_feat = self.text_encoder(texts).squeeze(1)          # (19, 256)
+                condition_id = image_record.get("condition_id", None)
+                if condition_id is None:
+                    condition_id = torch.tensor(0)
+                # _encode_condition 已含 use_cond ablation gate（P1）
+                cond_tok = self._encode_condition(condition_id).unsqueeze(1)  # (1, 1, 256)
+
+                feats, mask_features = self.simple_fpn(image_embeddings[i].unsqueeze(0))
+                dec_out = self.m2f_decoder(feats, mask_features, text_feat, cond_tok)
+
+                # 語意圖 = Σ_q p(class) · sigmoid(mask)：M2F 官方 semantic_inference
+                # （見 Mask2Former repo mask2former/maskformer_model.py::semantic_inference）
+                sem_lr = torch.einsum(
+                    "bqc,bqhw->bchw",
+                    dec_out["pred_logits"].softmax(dim=-1)[..., :-1],
+                    dec_out["pred_masks"].sigmoid(),
+                )  # (1, 19, 256, 256)
+                # 上游公式是 query 維度的加權和，非跨類別 softmax，數學上不保證 <=1
+                # （只有已訓練、mask 互斥的模型才會近似成立）；clamp 只在此處強制契約，
+                # 不影響 pred_logits/pred_masks/aux_outputs（Task 5 loss 走 dec_out 原始值）。
+                sem_lr = sem_lr.clamp(0.0, 1.0)
+
+                result = {
+                    "pred_logits": dec_out["pred_logits"],
+                    "pred_masks": dec_out["pred_masks"],
+                    "aux_outputs": dec_out["aux_outputs"],
+                    "low_res_logits": sem_lr,
+                    "class_ids": list(range(self.num_classes)),
+                }
+                if not self.training:
+                    result["masks"] = self.postprocess_masks(
+                        sem_lr,
+                        input_size=image_record["original_size"],
+                        original_size=image_record["original_size"],
+                    )
+                outputs.append(result)
+                continue
+
             # A. 文字編碼 (Text Encoding)
             texts = image_record["text_prompts"]
 

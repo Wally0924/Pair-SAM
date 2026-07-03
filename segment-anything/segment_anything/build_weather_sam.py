@@ -44,7 +44,12 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
 
     model.use_lrh = bool(cfg.get('lrh', True))
     model.use_cond = bool(cfg.get('cond', True))
-    model.mask_decoder.decoder_mode = cfg.get('decoder', 'unified')
+    _dec = cfg.get('decoder', 'unified')
+    if _dec == 'm2f':
+        model.decoder_arch = 'm2f'
+        model.use_lrh = False  # LRH/fusion head 屬 legacy 組裝路徑，m2f 不經過
+    else:
+        model.mask_decoder.decoder_mode = _dec
     _use_ref = bool(cfg.get('ref', True))
     model.vgg_injector.use_reference = _use_ref
     model.vgg_injector.rpm.use_reference = _use_ref  # propagate to RPM for ablation
@@ -120,6 +125,10 @@ def _build_weather_sam(
         freeze=True
     )
 
+    from .modeling import SimpleFPN, M2FDecoder
+    simple_fpn = SimpleFPN(dim=prompt_embed_dim)
+    m2f_decoder = M2FDecoder(num_classes=num_classes, hidden_dim=prompt_embed_dim)
+
     # 2. 組合 WeatherSAM
     sam = WeatherSAM(
         image_encoder=image_encoder,
@@ -128,6 +137,8 @@ def _build_weather_sam(
         fusion_module=fusion_module,
         text_encoder=text_encoder,
         num_classes=num_classes,
+        simple_fpn=simple_fpn,
+        m2f_decoder=m2f_decoder,
     )
 
     # 2b. [ablation B] 在載入 checkpoint 之前換好注入器，確保 sam_adapter 的已訓練
