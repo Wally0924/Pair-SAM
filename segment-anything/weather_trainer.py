@@ -122,6 +122,21 @@ class WeatherSAMTrainer:
             use_mfb=use_mfb,
         ).to(self.device)
         self.mask_loss_fn = MaskLoss(dice_weight=dice_w)
+        # ── [M2F] decoder='m2f' 時改用 set-prediction loss，Stage 1-5 全跳過 ──
+        self.use_m2f = getattr(args, 'decoder', 'unified') == 'm2f'
+        if self.use_m2f:
+            from utils.m2f_loss import M2FSetLoss
+            self.m2f_loss_fn = M2FSetLoss(
+                num_classes=19,
+                cls_weight=getattr(args, 'cls_weight', 2.0),
+                bce_weight=getattr(args, 'bce_weight', 5.0),
+                dice_weight=dice_w,   # 沿用 --dice_weight（m2f 建議 5.0，launch script 設定）
+                no_object_weight=getattr(args, 'no_object_weight', 0.1),
+                num_points=getattr(args, 'num_points', 12544),
+            ).to(self.device)
+            print(f"📉 [M2F] SetLoss (cls: {self.m2f_loss_fn.cls_weight}, "
+                  f"bce: {self.m2f_loss_fn.bce_weight}, dice: {dice_w}, "
+                  f"points: {self.m2f_loss_fn.num_points}) — CSV 欄位映射 ce←cls, lovasz←bce")
         # Lovász 延後啟動排程：保留目標權重，前 lovasz_start_epoch 個 epoch 停用
         self.lovasz_target = lovasz_w
         self.lovasz_start_epoch = getattr(args, 'lovasz_start_epoch', 0)
@@ -143,26 +158,39 @@ class WeatherSAMTrainer:
         # ── 主幹適配模組 (main LR) ──
         # [testv14] ref_to_dense / dense_gate 已移除，跨條件補償改由 WarpedVGG Adapter
         # 在 ViT Encoder 內部完成（獨立 param group，見下方）。
-        main_lr_modules = [
-            self.model.condition_encoder,
-            self.model.text_encoder.projection,
-            self.model.context_fusion_head,
-        ]
+        if self.use_m2f:
+            # [M2F] context_fusion_head / legacy mask_decoder 不參訓；
+            # 新模組（from scratch）走 decoder group（建議 --decoder_lr_scale 1.0）
+            main_lr_modules = [
+                self.model.condition_encoder,
+                self.model.text_encoder.projection,
+            ]
+            decoder_lr_modules = [
+                self.model.simple_fpn,
+                self.model.m2f_decoder,
+            ]
+            decoder_transformer_modules = []
+        else:
+            main_lr_modules = [
+                self.model.condition_encoder,
+                self.model.text_encoder.projection,
+                self.model.context_fusion_head,
+            ]
 
-        # ── MaskDecoder 新增/重訓模組 (decoder LR) ──
-        # 這些模組直接產生 class mask logits，使用 decoder_lr_scale 與 main LR 解耦。
-        decoder_lr_modules = [
-            self.model.mask_decoder.output_upscaling,
-            self.model.mask_decoder.class_mask_tokens,
-            self.model.mask_decoder.class_hypernetworks_mlps,
-        ]
+            # ── MaskDecoder 新增/重訓模組 (decoder LR) ──
+            # 這些模組直接產生 class mask logits，使用 decoder_lr_scale 與 main LR 解耦。
+            decoder_lr_modules = [
+                self.model.mask_decoder.output_upscaling,
+                self.model.mask_decoder.class_mask_tokens,
+                self.model.mask_decoder.class_hypernetworks_mlps,
+            ]
 
-        # ── 解凍 MaskDecoder Transformer (極低 LR) ──
-        # transformer 在 SAM clean-image feature 上預訓練，fused feature 分布已偏移
-        # 以極低 LR (1/100) fine-tune，讓 transformer 適應 weather fused feature 的分布
-        decoder_transformer_modules = [
-            self.model.mask_decoder.transformer,
-        ]
+            # ── 解凍 MaskDecoder Transformer (極低 LR) ──
+            # transformer 在 SAM clean-image feature 上預訓練，fused feature 分布已偏移
+            # 以極低 LR (1/100) fine-tune，讓 transformer 適應 weather fused feature 的分布
+            decoder_transformer_modules = [
+                self.model.mask_decoder.transformer,
+            ]
 
         for module in main_lr_modules:
             for param in module.parameters():
@@ -180,7 +208,8 @@ class WeatherSAMTrainer:
         for param in self.model.fusion_module.parameters():
             param.requires_grad = False
 
-        self.model.pe_layer.requires_grad = True
+        if not self.use_m2f:
+            self.model.pe_layer.requires_grad = True  # legacy image PE；m2f 路徑不使用
 
         # ── [可選] 解凍 ViT-H Image Encoder 最後 N 個 Block ──
         # 目的：讓 encoder 的高階語意嵌入層（Block 30-31）學會區分
@@ -393,6 +422,30 @@ class WeatherSAMTrainer:
                 first_batch_class_ids = None          # List[int], active classes
                 
                 for i in range(batch_size):
+                    if self.use_m2f:
+                        gt_mask_i = gt_masks[i].unsqueeze(0).long()
+                        if batch['invalid_mask'][i].any():
+                            gt_mask_i = gt_mask_i.clone()
+                            gt_mask_i[batch['invalid_mask'][i].to(self.device).unsqueeze(0)] = 255
+
+                        m2f_loss, m2f_log = self.m2f_loss_fn(outputs[i], gt_mask_i)
+                        total_loss = total_loss + m2f_loss
+                        # CSV 欄位重用：ce←cls、lovasz←bce、dice←dice（見 init 註解）
+                        sample_ce_sum += m2f_log['cls']
+                        sample_ce_w_sum += m2f_log['cls']
+                        sample_lovasz_sum += m2f_log['bce']
+                        sample_dice_sum += m2f_log['dice']
+                        sample_dice_w_sum += m2f_log['dice']
+
+                        if i == 0:
+                            first_batch_logits = outputs[i]['low_res_logits'].squeeze(0)
+                            first_batch_gt = gt_mask_i.squeeze(0).detach()
+                            first_batch_per_class_logits = outputs[i]['pred_masks'].squeeze(0).detach().cpu()
+                            first_batch_class_ids = list(outputs[i]['class_ids'])
+                            if 'image' in batch:
+                                first_batch_image = batch['image'][0].detach()
+                        continue
+
                     # [Mask2Former] 新輸出格式
                     low_res_logits = outputs[i]['low_res_logits'].squeeze(0)  # (K, 256, 256)
                     class_ids_out  = outputs[i]['class_ids']                  # List[int], len=K
@@ -906,6 +959,35 @@ class WeatherSAMTrainer:
                 total_loss = torch.tensor(0.0, device=self.device)
 
                 for i in range(batch_size):
+                    if self.use_m2f:
+                        gt_mask_i = gt_masks[i].unsqueeze(0).long()
+                        if batch['invalid_mask'][i].any():
+                            gt_mask_i = gt_mask_i.clone()
+                            gt_mask_i[batch['invalid_mask'][i].to(self.device).unsqueeze(0)] = 255
+
+                        m2f_loss, m2f_log = self.m2f_loss_fn(outputs[i], gt_mask_i)
+                        sample_total_loss = m2f_loss
+                        total_loss = total_loss + sample_total_loss
+                        sample_ce_sum += m2f_log['cls']
+                        sample_ce_w_sum += m2f_log['cls']
+                        sample_lovasz_sum += m2f_log['bce']
+                        sample_dice_sum += m2f_log['dice']
+                        sample_dice_w_sum += m2f_log['dice']
+
+                        # mIoU 混淆矩陣：einsum 語意圖 argmax（與 legacy 路徑同一個 confusion 張量）
+                        sem_hr = self.model.postprocess_masks(
+                            outputs[i]['low_res_logits'],
+                            input_size=(1024, 1024), original_size=(1024, 1024),
+                        )  # (1, 19, 1024, 1024)
+                        pred = sem_hr.squeeze(0).float().argmax(dim=0)          # (1024, 1024)
+                        gt_flat = gt_mask_i.squeeze(0)
+                        vm = gt_flat != 255
+                        idx = gt_flat[vm] * num_classes + pred[vm]
+                        confusion += torch.bincount(
+                            idx.flatten().cpu(), minlength=num_classes ** 2
+                        ).view(num_classes, num_classes)
+                        continue
+
                     # [Mask2Former] 新輸出格式
                     low_res_logits = outputs[i]['low_res_logits'].squeeze(0)  # (K, 256, 256)
                     class_ids_out  = outputs[i]['class_ids']                  # List[int], len=K
