@@ -21,12 +21,12 @@ def test_extract_updates_c_shape_preserved():
     assert c2.shape == c.shape and torch.isfinite(c2).all()
 
 
-def test_vit_feat_detached_no_grad_to_vit():
-    """K/V=ViT.detach() → ∂sum(c')/∂x 應為 None 或全 0。"""
+def test_vit_feat_grad_flows_to_vit():
+    """端到端設計：K/V=ViT（不 detach）→ ∂sum(c')/∂x 應非 None 且非全 0。"""
     ext, c, _, ext_in, scale_hw = _setup()
     x = torch.randn(1, 16, 32, requires_grad=True)
     ext(c, x, ext_in, scale_hw).sum().backward()
-    assert x.grad is None or x.grad.abs().max().item() == 0.0
+    assert x.grad is not None and x.grad.abs().max().item() > 0.0
 
 
 def test_c_receives_gradient():

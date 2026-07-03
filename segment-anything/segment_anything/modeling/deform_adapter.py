@@ -78,7 +78,7 @@ class ReferencePriorModule(nn.Module):
 
 
 class Injector(nn.Module):
-    """ViT-Adapter Injector（可變形）。Q=ViT.detach()，K/V=多尺度 c（信心加權）。
+    """ViT-Adapter Injector（可變形）。Q=ViT（端到端梯度回流），K/V=多尺度 c（信心加權）。
     gamma 依原論文 per-channel 零初始化：初始為恆等映射，不擾動 SAM 預訓練分布。"""
     def __init__(self, dim=1280, n_heads=8, n_points=4, n_levels=3,
                  deform_ratio=0.5):
@@ -94,10 +94,10 @@ class Injector(nn.Module):
         ref_pts = ref_pts.to(x_tokens.device)
         if ref_pts.shape[0] != x_tokens.shape[0]:
             ref_pts = ref_pts.expand(x_tokens.shape[0], -1, -1, -1)
-        q = self.query_norm(x_tokens.detach())          # detach：不讓 adapter 梯度重塑 ViT
+        q = self.query_norm(x_tokens)                    # 端到端：Q 梯度回流至 ViT stream（ViT-Adapter 設計）
         feat = self.feat_norm(c) * conf                  # 信心加權 value（決策③）
         delta = self.attn(q, ref_pts, feat, spatial_shapes, lsi)
-        return x_tokens + self.gamma * delta             # 殘差保留 ViT 梯度
+        return x_tokens + self.gamma * delta             # 殘差 + Q 兩條路徑皆回流 ViT stream
 
 
 class DWConv(nn.Module):
@@ -135,7 +135,7 @@ class ConvFFN(nn.Module):
 
 
 class Extractor(nn.Module):
-    """ViT-Adapter Extractor（可變形）。Q=c，K/V=ViT.detach()，+ ConvFFN 逐尺度精修 c。"""
+    """ViT-Adapter Extractor（可變形）。Q=c，K/V=ViT（端到端梯度回流），+ ConvFFN 逐尺度精修 c。"""
     def __init__(self, dim=1280, n_heads=8, n_points=4, deform_ratio=0.5,
                  with_cffn=True):
         super().__init__()
@@ -153,7 +153,7 @@ class Extractor(nn.Module):
         ref_pts = ref_pts.to(c.device)
         if ref_pts.shape[0] != c.shape[0]:
             ref_pts = ref_pts.expand(c.shape[0], -1, -1, -1)
-        feat = self.feat_norm(x_tokens.detach())         # ViT 當固定語境，不回灌梯度
+        feat = self.feat_norm(x_tokens)                  # 端到端：K/V 梯度回流至 ViT stream（ViT-Adapter 設計）
         attn = self.attn(self.query_norm(c), ref_pts, feat, spatial_shapes, lsi)
         c = c + attn
         if self.with_cffn:
