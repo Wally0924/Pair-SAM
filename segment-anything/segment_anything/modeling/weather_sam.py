@@ -243,15 +243,17 @@ class WeatherSAM(nn.Module):
 
                 # 語意圖 = Σ_q p(class) · sigmoid(mask)：M2F 官方 semantic_inference
                 # （見 Mask2Former repo mask2former/maskformer_model.py::semantic_inference）
+                # 此為 query 維度的加權和，非跨類別 softmax：值域非負且有限，但 **不** 受
+                # 1 限制（真實上界 [0, num_queries]；per-class 值僅在訓練使 per-query mask
+                # 近乎互斥後才趨近 [0,1]）。下游只做 argmax（trainer mIoU 混淆矩陣，
+                # use_lrh=False 時 fused_logits 即此 sem_lr），argmax 對原始量值不變，
+                # 故不 clamp——比照上游 semantic_inference 不 clamp。clamp 會使多個 >1 的
+                # 類別塌成 1.0，破壞 argmax tie-break → 汙染 mIoU。
                 sem_lr = torch.einsum(
                     "bqc,bqhw->bchw",
                     dec_out["pred_logits"].softmax(dim=-1)[..., :-1],
                     dec_out["pred_masks"].sigmoid(),
                 )  # (1, 19, 256, 256)
-                # 上游公式是 query 維度的加權和，非跨類別 softmax，數學上不保證 <=1
-                # （只有已訓練、mask 互斥的模型才會近似成立）；clamp 只在此處強制契約，
-                # 不影響 pred_logits/pred_masks/aux_outputs（Task 5 loss 走 dec_out 原始值）。
-                sem_lr = sem_lr.clamp(0.0, 1.0)
 
                 result = {
                     "pred_logits": dec_out["pred_logits"],

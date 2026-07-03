@@ -43,8 +43,10 @@ def test_eval_mode_semantic_output(model):
     with torch.no_grad():
         out = model(_fake_input(model))[0]
     assert tuple(out["masks"].shape) == (1, 19, 1024, 1024)
-    # einsum 語意圖是機率組合，必須落在 [0, 1]
-    assert out["low_res_logits"].min() >= 0 and out["low_res_logits"].max() <= 1
+    # semantic map is a sum over queries of softmax·sigmoid → non-negative and finite,
+    # but NOT bounded by 1 (bound is [0, num_queries]); only argmax'd downstream.
+    assert out["low_res_logits"].min() >= 0
+    assert torch.isfinite(out["low_res_logits"]).all()
 
 
 def test_legacy_path_still_works():
