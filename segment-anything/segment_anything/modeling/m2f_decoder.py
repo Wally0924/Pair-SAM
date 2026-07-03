@@ -1,15 +1,19 @@
 # ============================================================================
-# Vendored from: facebookresearch/Mask2Former
+# Vendored from: https://github.com/facebookresearch/Mask2Former
 #   Files:
 #     mask2former/modeling/transformer_decoder/mask2former_transformer_decoder.py
 #       (SelfAttentionLayer, CrossAttentionLayer, FFNLayer, MLP,
 #        MultiScaleMaskedTransformerDecoder)
 #     mask2former/modeling/transformer_decoder/position_encoding.py
-#       (PositionEmbeddingSine — 原始出處為 facebookresearch/detr, Apache-2.0)
+#       (PositionEmbeddingSine — 原始出處為 https://github.com/facebookresearch/detr,
+#        Apache-2.0)
 #   Commit: 9b0651c6c1d5b3af2e6da0589b719c514ec0d69a
 #   License: MIT (Copyright (c) Facebook, Inc. and its affiliates.)
-#   Paper: Cheng et al., "Masked-attention Mask Transformer for Universal
-#          Image Segmentation" (Mask2Former), CVPR 2022. arXiv:2112.01527
+#   Papers:
+#     - Cheng et al., "Masked-attention Mask Transformer for Universal
+#       Image Segmentation" (Mask2Former), CVPR 2022. arXiv:2112.01527
+#     - Carion et al., "End-to-End Object Detection with Transformers" (DETR,
+#       source of PositionEmbeddingSine), ECCV 2020. arXiv:2005.12872
 #
 # [WeatherSAM adaptations]（完整清單；其餘逐行同上游）:
 #   1. 移除 detectron2 依賴：@configurable / TRANSFORMER_DECODER_REGISTRY /
