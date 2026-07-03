@@ -1,5 +1,5 @@
 # ============================================================================
-# Vendored from: facebookresearch/detectron2
+# Vendored from: https://github.com/facebookresearch/detectron2
 #   File: detectron2/modeling/backbone/vit.py, class SimpleFeaturePyramid
 #   Commit: 02b5c4e295e990042a714712c21dc79b731e8833
 #   License: Apache-2.0 (Copyright (c) Facebook, Inc. and its affiliates.)

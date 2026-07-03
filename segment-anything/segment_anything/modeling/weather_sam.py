@@ -230,6 +230,10 @@ class WeatherSAM(nn.Module):
         for i, image_record in enumerate(batched_input):
             # ── [M2F] 新 decoder 路徑：SimpleFPN 多尺度 + masked-attention decoder ──
             if self.decoder_arch == 'm2f':
+                assert self.simple_fpn is not None and self.m2f_decoder is not None, (
+                    "decoder_arch='m2f' requires simple_fpn and m2f_decoder to be built "
+                    "(use build_weather_sam_from_config with decoder='m2f')."
+                )
                 texts = image_record["text_prompts"]  # 19 個類別名（dataloader 依 id 排序）
                 text_feat = self.text_encoder(texts).squeeze(1)          # (19, 256)
                 condition_id = image_record.get("condition_id", None)
