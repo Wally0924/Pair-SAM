@@ -45,7 +45,7 @@ def seed_worker(worker_id):
 # ==========================================
 # 📊 1. 繪製圖表功能
 # ==========================================
-def plot_history(history, output_dir):
+def plot_history(history, output_dir, is_m2f=False):
     if not history:
         return
     df = pd.DataFrame(history)
@@ -53,13 +53,26 @@ def plot_history(history, output_dir):
 
     # 每個 loss 各自一個子圖，各有自己的 y 軸尺度
     # train_col = f'train_{key}'，val_col = f'val_{key}'；缺失欄位自動跳過
-    components = [
-        ('total',           'Total Loss',                     'k',         'Train Total',      'Val Total'),
-        ('ce',              'CE Loss (unweighted)',           'b',         'Train CE',         'Val CE'),
-        ('ce_weighted',     'CE Loss (MFB-weighted)',         'royalblue', 'Train CE_w',       'Val CE_w'),
-        ('lovasz',          'Lovász-Softmax Loss ↓',          'darkorange','Train Lovász',     'Val Lovász'),
-        ('dice',            'Dice Loss (unweighted)',         'g',         'Train Dice',       'Val Dice'),
-        ('dice_weighted',   'Dice Loss (MFB-weighted)',       'seagreen',  'Train Dice_w',     'Val Dice_w'),
+    # Loss 面板依 decoder 切換。m2f 路徑 CSV 欄位重用 ce←cls、lovasz←bce（見
+    # weather_trainer init 註解），故此處把面板標籤改回 M2F SetLoss 語彙，
+    # 並略去 legacy MFB 加權面板（m2f 無 MFB，ce_weighted/dice_weighted 為重複值）。
+    if is_m2f:
+        loss_components = [
+            ('total',   'Total Loss',           'k',          'Train Total', 'Val Total'),
+            ('ce',      'Class (CE) Loss ↓',    'b',          'Train Cls',   'Val Cls'),
+            ('lovasz',  'Mask BCE Loss ↓',      'darkorange', 'Train BCE',   'Val BCE'),
+            ('dice',    'Mask Dice Loss ↓',     'g',          'Train Dice',  'Val Dice'),
+        ]
+    else:
+        loss_components = [
+            ('total',         'Total Loss',                'k',         'Train Total', 'Val Total'),
+            ('ce',            'CE Loss (unweighted)',      'b',         'Train CE',    'Val CE'),
+            ('ce_weighted',   'CE Loss (MFB-weighted)',    'royalblue', 'Train CE_w',  'Val CE_w'),
+            ('lovasz',        'Lovász-Softmax Loss ↓',     'darkorange','Train Lovász','Val Lovász'),
+            ('dice',          'Dice Loss (unweighted)',    'g',         'Train Dice',  'Val Dice'),
+            ('dice_weighted', 'Dice Loss (MFB-weighted)',  'seagreen',  'Train Dice_w','Val Dice_w'),
+        ]
+    components = loss_components + [
         # ── 需求 1: mIoU（僅 val，train 欄位不存在會自動跳過）──
         ('miou',            'Val mIoU ↑ [0→1]',              'darkgreen', 'Train mIoU',       'Val mIoU'),
         ('conf_mean',       'UAWarpC Confidence Mean [0-1]',  'purple',    'Train Conf',       'Val Conf'),
@@ -83,6 +96,14 @@ def plot_history(history, output_dir):
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
     axes = axes.flatten()
 
+    # 每個面板 y 軸標籤依量值類型；未列出者預設 'Loss'（各 loss 面板）。
+    ylabels = {
+        'miou': 'mIoU', 'conf_mean': 'Confidence', 'valid_ratio': 'Ratio',
+        'pred_conf_mean': 'Confidence', 'pred_entropy': 'Entropy',
+        'logit_margin': 'Margin', 'grad_norm_main': 'Grad Norm',
+        'grad_norm_decoder': 'Grad Norm', 'scaler_scale': 'Scale',
+        'inject_cos_sim': 'Cos Sim', 'inject_gate': 'Gate',
+    }
     for ax, (key, title, color, train_label, val_label) in zip(axes, components):
         train_col = f'train_{key}'
         val_col   = f'val_{key}'
@@ -99,7 +120,7 @@ def plot_history(history, output_dir):
 
         ax.set_title(title, fontsize=11, fontweight='bold')
         ax.set_xlabel('Epoch', fontsize=9)
-        ax.set_ylabel('Loss', fontsize=9)
+        ax.set_ylabel(ylabels.get(key, 'Loss'), fontsize=9)
         ax.legend(fontsize=8)
         ax.grid(True, linestyle='--', alpha=0.5)
 
@@ -128,35 +149,62 @@ def print_training_config(args, device):
     print(f"🚀  WeatherSAM Training Configuration")
     print("="*60)
     
+    is_m2f = getattr(args, 'decoder', 'unified') == 'm2f'
+
     # 1. 系統與環境
     print(f"🖥️  System Info:")
     print(f"   • Device:            {device}")
     print(f"   • Model Type:        {args.model_type}")
+    print(f"   • Decoder:           {args.decoder}")
     print(f"   • Checkpoint:        {args.checkpoint if args.checkpoint else 'None (Scratch)'}")
     print(f"   • Output Dir:        {args.output_dir}")
-    
-    # 2. 訓練超參數
+
+    # 2. 架構（m2f 專屬）
+    if is_m2f:
+        unfreeze_n = getattr(args, 'unfreeze_encoder_blocks', 0)
+        enc_state = f"unfreeze last {unfreeze_n} blocks" if unfreeze_n > 0 else "fully frozen"
+        print(f"\n🏗️  Architecture (m2f):")
+        print(f"   • ViT-H Encoder:     {enc_state} (+ gradient checkpointing)")
+        print(f"   • VGG Adapter:       {'enabled' if getattr(args, 'use_vgg_adapter', False) else 'disabled'}")
+        print(f"   • Decode Path:       SimpleFPN → MSDeformAttn PixelDecoder → masked-attn Decoder")
+
+    # 3. 訓練超參數
     print(f"\n⚙️  Hyperparameters:")
     print(f"   • Epochs:            {args.epochs}")
-    print(f"   • Batch Size:        {args.batch_size}")
+    _acc = getattr(args, 'accumulate_steps', 4)
+    print(f"   • Batch Size:        {args.batch_size}  (accumulate {_acc} → eff. {args.batch_size * _acc})")
     print(f"   • Learning Rate:     {args.lr}")
+    print(f"   • Weight Decay:      {getattr(args, 'weight_decay', 1e-2)}")
     print(f"   • Max Norm (Clip):   {args.max_norm}")
+    print(f"   • LR Warmup:         {getattr(args, 'warmup_epochs', 5)} epochs (linear → cosine)")
+    if is_m2f:
+        print(f"   • Gate Warmup:       {getattr(args, 'warmup_gate_epochs', 3)} epochs")
     print(f"   • Early Stopping:    Patience {args.patience}, Min Delta {args.min_delta}")
-    
-    # 3. Decoupled Loss Weights
-    print(f"\n⚖️  Decoupled Loss Weights:")
-    print(f"   • CE Weight:         {args.ce_weight}")
-    print(f"   • Dice Weight:       {args.dice_weight}")
-    lovasz_w = getattr(args, 'lovasz_weight', 0.0)
-    print(f"   • Lovász Weight:     {lovasz_w}{'  (disabled)' if lovasz_w == 0.0 else '  ← mIoU-aligned'}")
-    # print(f"   • IoU Weight:        {args.iou_weight}")  # [Mask2Former] IoU MSE Loss 已移除
-    
-    # 4. Decoder LR
-    print(f"\n🔓  MaskDecoder LR Groups:")
-    print(f"   • Decoder LR Scale:      {args.decoder_lr_scale}  (mask head LR       = {args.lr * args.decoder_lr_scale:.2e})")
-    print(f"   • Transformer LR Scale:  {args.transformer_lr_scale}  (transformer LR    = {args.lr * args.transformer_lr_scale:.2e})")
-    
-    # 4. 路徑資訊
+
+    # 4. Loss 權重（依 decoder 切換）
+    if is_m2f:
+        print(f"\n⚖️  M2F SetLoss Weights (Mask2Former 官方):")
+        print(f"   • Class (CE):        {getattr(args, 'cls_weight', 2.0)}")
+        print(f"   • Mask (BCE):        {getattr(args, 'bce_weight', 5.0)}")
+        print(f"   • Dice:              {args.dice_weight}")
+        print(f"   • No-object (eos):   {getattr(args, 'no_object_weight', 0.1)}")
+        print(f"   • Point Samples:     {getattr(args, 'num_points', 12544)}")
+    else:
+        print(f"\n⚖️  Decoupled Loss Weights:")
+        print(f"   • CE Weight:         {args.ce_weight}")
+        print(f"   • Dice Weight:       {args.dice_weight}")
+        lovasz_w = getattr(args, 'lovasz_weight', 0.0)
+        print(f"   • Lovász Weight:     {lovasz_w}{'  (disabled)' if lovasz_w == 0.0 else '  ← mIoU-aligned'}")
+
+    # 5. LR Groups
+    print(f"\n🔓  LR Groups:")
+    print(f"   • Decoder LR Scale:      {args.decoder_lr_scale}  (LR = {args.lr * args.decoder_lr_scale:.2e})")
+    print(f"   • Transformer LR Scale:  {args.transformer_lr_scale}  (LR = {args.lr * args.transformer_lr_scale:.2e})")
+    if getattr(args, 'use_vgg_adapter', False):
+        _adp = getattr(args, 'adapter_lr_scale', 3.0)
+        print(f"   • Adapter LR Scale:      {_adp}  (LR = {args.lr * _adp:.2e})")
+
+    # 6. 路徑資訊
     print(f"\n📂  Paths:")
     print(f"   • Train CSV:         {args.train_csv}")
     print(f"   • Val CSV:           {args.val_csv}")
@@ -526,7 +574,7 @@ def main():
         print(f"               [grad] GN_main={gn_m:.3f}  GN_decoder={gn_d:.3f} | AMP scale={scale:.0f}")
         
         pd.DataFrame(history).to_csv(os.path.join(args.output_dir, "train_log.csv"), index=False)
-        plot_history(history, args.output_dir)
+        plot_history(history, args.output_dir, is_m2f=(getattr(args, 'decoder', 'unified') == 'm2f'))
         
         # ── 需求 1: 以 Val mIoU 作為 best model 與 early stopping 判斷基準（越高越好）──
         current_val_miou = val_metrics.get('miou', 0.0)

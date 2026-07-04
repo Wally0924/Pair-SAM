@@ -113,10 +113,13 @@ class WeatherSAMTrainer:
         label_smooth  = getattr(args, 'label_smoothing', 0.0)
         lovasz_w      = getattr(args, 'lovasz_weight',   0.0)
         use_mfb       = getattr(args, 'mfb',             True)
-        print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Dice: {dice_w}], "
-              f"Lovász: {lovasz_w}, LabelSmooth: {label_smooth})")
-        print(f"🔓 MaskDecoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
-        print(f"🔓 MaskDecoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
+        _is_m2f = getattr(args, 'decoder', 'unified') == 'm2f'
+        if not _is_m2f:
+            # legacy 專屬：m2f 路徑不使用 Decoupled Loss（真正的 loss 見下方 M2F SetLoss）
+            print(f"📉 Initializing Decoupled Losses (CE: {ce_w}, Mask[Dice: {dice_w}], "
+                  f"Lovász: {lovasz_w}, LabelSmooth: {label_smooth})")
+        print(f"🔓 Decoder LR scale: {decoder_lr_scale} (LR = {lr * decoder_lr_scale:.2e})")
+        print(f"🔓 Decoder Transformer LR scale: {transformer_lr_scale} (LR = {lr * transformer_lr_scale:.2e})")
         self.context_loss_fn = ContextLoss(
             ce_weight=ce_w, label_smoothing=label_smooth, lovasz_weight=lovasz_w,
             use_mfb=use_mfb,
@@ -608,21 +611,29 @@ class WeatherSAMTrainer:
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
 
-            pbar.set_postfix(
-                loss=f"{losses['total'].avg:.4f}",
-                ce=f"{losses['ce'].avg:.4f}",
-                dice=f"{losses['dice'].avg:.4f}",
-                ent=f"{losses['pred_entropy'].avg:.3f}",
-                margin=f"{losses['logit_margin'].avg:.3f}",
-                conf=f"{losses['conf_mean'].avg:.3f}",
-                valid=f"{losses['valid_ratio'].avg:.3f}",
-                head=f"{losses['head_delta_norm'].avg:.4f}",
-                inj_cos=f"{losses['inject_cos_sim'].avg:.4f}",
-                gate=f"{losses['inject_gate'].avg:.4f}",
-                gn_m=f"{losses['grad_norm_main'].avg:.3f}",
-                gn_d=f"{losses['grad_norm_decoder'].avg:.3f}",
-                scale=f"{losses['scaler_scale'].avg:.0f}",
-            )
+            # m2f 下 ce 欄存 cls、lovasz 欄存 bce（見 init CSV 欄位重用註解），
+            # postfix 標籤改回 M2F 語彙以免誤讀。
+            _pf = {"loss": f"{losses['total'].avg:.4f}"}
+            if self.use_m2f:
+                _pf["cls"] = f"{losses['ce'].avg:.4f}"
+                _pf["bce"] = f"{losses['lovasz'].avg:.4f}"
+                _pf["dice"] = f"{losses['dice'].avg:.4f}"
+            else:
+                _pf["ce"] = f"{losses['ce'].avg:.4f}"
+                _pf["dice"] = f"{losses['dice'].avg:.4f}"
+            _pf.update({
+                "ent": f"{losses['pred_entropy'].avg:.3f}",
+                "margin": f"{losses['logit_margin'].avg:.3f}",
+                "conf": f"{losses['conf_mean'].avg:.3f}",
+                "valid": f"{losses['valid_ratio'].avg:.3f}",
+                "head": f"{losses['head_delta_norm'].avg:.4f}",
+                "inj_cos": f"{losses['inject_cos_sim'].avg:.4f}",
+                "gate": f"{losses['inject_gate'].avg:.4f}",
+                "gn_m": f"{losses['grad_norm_main'].avg:.3f}",
+                "gn_d": f"{losses['grad_norm_decoder'].avg:.3f}",
+                "scale": f"{losses['scaler_scale'].avg:.0f}",
+            })
+            pbar.set_postfix(**_pf)
 
             if step_count > 0 and step_count % 500 == 0:
                 if first_batch_logits is not None:
@@ -1109,15 +1120,22 @@ class WeatherSAMTrainer:
             losses['pred_entropy'].update(float(sample_pred_entropy_sum) / float(batch_size), batch_size)
             losses['logit_margin'].update(float(sample_margin_sum) / float(batch_size), batch_size)
 
-            pbar.set_postfix(
-                loss=losses['total'].avg,
-                ce=losses['ce'].avg,
-                dice=losses['dice'].avg,
-                ent=f"{losses['pred_entropy'].avg:.3f}",
-                margin=f"{losses['logit_margin'].avg:.3f}",
-                conf=f"{losses['conf_mean'].avg:.3f}",
-                valid=f"{losses['valid_ratio'].avg:.3f}",
-            )
+            # m2f 下 ce 欄存 cls、lovasz 欄存 bce（見 init CSV 欄位重用註解）
+            _pf = {"loss": losses['total'].avg}
+            if self.use_m2f:
+                _pf["cls"] = losses['ce'].avg
+                _pf["bce"] = losses['lovasz'].avg
+                _pf["dice"] = losses['dice'].avg
+            else:
+                _pf["ce"] = losses['ce'].avg
+                _pf["dice"] = losses['dice'].avg
+            _pf.update({
+                "ent": f"{losses['pred_entropy'].avg:.3f}",
+                "margin": f"{losses['logit_margin'].avg:.3f}",
+                "conf": f"{losses['conf_mean'].avg:.3f}",
+                "valid": f"{losses['valid_ratio'].avg:.3f}",
+            })
+            pbar.set_postfix(**_pf)
 
         avg_metrics = {k: v.avg for k, v in losses.items()}
 

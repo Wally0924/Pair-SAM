@@ -16,10 +16,20 @@ cd "$(dirname "$0")/.."
 
 CITYSCAPES_ENC="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/cityscapes_pretrain/sam_vit_h_cityscapes_encoder_best.pth"
 
-conda run -n sam_env python train.py \
+# 輸出資料夾：沿用既有慣例（扁平放在 segment-anything/ 根層、outputs_ 前綴，
+# 如 outputs_ablation / outputs_recipe / outputs_darkzurich）。
+# checkpoint、ablation_config.json、debug 視覺化皆寫入此處。
+# 之後傳 --output_dir 仍可臨時覆蓋（"$@" 在最後，argparse 取最後值）。
+OUTPUT_DIR="outputs_m2f_cityscapes"
+
+# 直接呼叫 python（假設已 conda activate sam_env，此為使用者預設環境）。
+# python -u = 無緩衝輸出，啟動與進度條即時顯示。
+# 註：不用 conda run，因其會緩衝 stdout，啟動 30-60 秒畫面全空看似「卡住」。
+python -u train.py \
   --model_type vit_h \
   --decoder m2f \
   --checkpoint "$CITYSCAPES_ENC" \
+  --output_dir "$OUTPUT_DIR" \
   --use_vgg_adapter \
   --weight_decay 0.05 \
   --dice_weight 5.0 \
