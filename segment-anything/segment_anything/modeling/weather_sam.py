@@ -37,6 +37,7 @@ class WeatherSAM(nn.Module):
         pixel_std: List[float] = [58.395, 57.12, 57.375],
         simple_fpn: nn.Module = None,
         m2f_decoder: nn.Module = None,
+        pixel_decoder: nn.Module = None,
     ) -> None:
         super().__init__()
         self.image_encoder = image_encoder
@@ -46,6 +47,7 @@ class WeatherSAM(nn.Module):
         self.text_encoder = text_encoder
         self.simple_fpn = simple_fpn
         self.m2f_decoder = m2f_decoder
+        self.pixel_decoder = pixel_decoder
         self.decoder_arch = 'legacy'  # 'm2f' 由 builder 依 cfg 切換
 
         # ConditionEncoder：天氣條件 Embedding（fog=0, rain=1, snow=2, night=3）
@@ -230,9 +232,10 @@ class WeatherSAM(nn.Module):
         for i, image_record in enumerate(batched_input):
             # ── [M2F] 新 decoder 路徑：SimpleFPN 多尺度 + masked-attention decoder ──
             if self.decoder_arch == 'm2f':
-                assert self.simple_fpn is not None and self.m2f_decoder is not None, (
-                    "decoder_arch='m2f' requires simple_fpn and m2f_decoder to be built "
-                    "(use build_weather_sam_from_config with decoder='m2f')."
+                assert (self.simple_fpn is not None and self.m2f_decoder is not None
+                        and self.pixel_decoder is not None), (
+                    "decoder_arch='m2f' requires simple_fpn, pixel_decoder and m2f_decoder "
+                    "to be built (use build_weather_sam_from_config with decoder='m2f')."
                 )
                 texts = image_record["text_prompts"]  # 19 個類別名（dataloader 依 id 排序）
                 text_feat = self.text_encoder(texts).squeeze(1)          # (19, 256)
@@ -243,6 +246,8 @@ class WeatherSAM(nn.Module):
                 cond_tok = self._encode_condition(condition_id).unsqueeze(1)  # (1, 1, 256)
 
                 feats, mask_features = self.simple_fpn(image_embeddings[i].unsqueeze(0))
+                # ── [pixel decoder] SimpleFPN 偽多尺度 → MSDeformAttn 跨尺度融合 ──
+                feats, mask_features = self.pixel_decoder(feats, mask_features)
                 dec_out = self.m2f_decoder(feats, mask_features, text_feat, cond_tok)
 
                 # 語意圖 = Σ_q p(class) · sigmoid(mask)：M2F 官方 semantic_inference

@@ -125,8 +125,9 @@ def _build_weather_sam(
         freeze=True
     )
 
-    from .modeling import SimpleFPN, M2FDecoder
+    from .modeling import SimpleFPN, M2FDecoder, MSDeformAttnPixelDecoder
     simple_fpn = SimpleFPN(dim=prompt_embed_dim)
+    pixel_decoder = MSDeformAttnPixelDecoder(conv_dim=prompt_embed_dim, mask_dim=prompt_embed_dim)
     m2f_decoder = M2FDecoder(num_classes=num_classes, hidden_dim=prompt_embed_dim)
 
     # 2. 組合 WeatherSAM
@@ -139,6 +140,7 @@ def _build_weather_sam(
         num_classes=num_classes,
         simple_fpn=simple_fpn,
         m2f_decoder=m2f_decoder,
+        pixel_decoder=pixel_decoder,
     )
 
     # 2b. [ablation B] 在載入 checkpoint 之前換好注入器，確保 sam_adapter 的已訓練

@@ -10,6 +10,9 @@ from utils.m2f_loss import M2FSetLoss
 
 cfg = {"model_type": "vit_h", "use_vgg_adapter": True, "decoder": "m2f"}
 model = build_weather_sam_from_config(cfg).cuda().train()
+# 對齊真實訓練（train.py:301 / pretrain_cityscapes.py:109）：ViT-H block gradient
+# checkpointing。少了這行等於測「不切實際的無 checkpointing 設定」，必 OOM。
+model.image_encoder.use_checkpoint = True
 crit = M2FSetLoss().cuda()
 
 names = [n for n, _ in sorted(model.CLASS_MAP.items(), key=lambda kv: kv[1])]
