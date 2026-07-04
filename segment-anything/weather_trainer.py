@@ -276,7 +276,7 @@ class WeatherSAMTrainer:
             n = count_params(g['params'])
             print(f"   • [{g['name']}] {n:,} params ({n/1e6:.3f}M), LR={g['lr']:.2e}")
 
-        self.optimizer = optim.AdamW(param_groups, weight_decay=1e-2)
+        self.optimizer = optim.AdamW(param_groups, weight_decay=getattr(args, 'weight_decay', 1e-2))
 
         # ==========================================
         # [修改] 實作 Warmup + Cosine Decay 策略
