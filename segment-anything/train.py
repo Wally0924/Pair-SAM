@@ -228,7 +228,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv15",)
     
     # --- 訓練超參數 ---
-    parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
+    parser.add_argument("--epochs", type=int, default=30, help="總共訓練的 Epoch 數量")
     parser.add_argument("--patience", type=int, default=5, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
@@ -286,6 +286,10 @@ def main():
     parser.add_argument("--encoder_lr_scale", type=float, default=0.005,
                         help="解凍的 Image Encoder Block 相對主幹 LR 的縮放比例（預設 0.005 = 1/200 LR）。"
                              "極低 LR 確保語意嵌入緩慢調適，不破壞預訓練通用特徵。")
+    parser.add_argument("--freeze_decoder", action=argparse.BooleanOptionalAction, default=False,
+                        help="[M2F PEFT 天氣適應] 凍結 CS 端到端預訓練的 encoder+decoder，"
+                             "只訓 adapter(vgg_injector)+condition_encoder。搭配 "
+                             "run_m2f_cs_pretrain_e2e.sh 產出的權重使用。預設 False。")
 
     # --- 資料路徑 ---
     parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv",
@@ -372,7 +376,10 @@ def main():
                 "weight_decay": args.weight_decay,
                 "max_norm": args.max_norm,
                 "decoder_lr_scale": args.decoder_lr_scale,
-                "warmup_gate_epochs": args.warmup_gate_epochs}
+                "warmup_gate_epochs": args.warmup_gate_epochs,
+                "unfreeze_encoder_blocks": args.unfreeze_encoder_blocks,
+                "encoder_lr_scale": args.encoder_lr_scale,
+                "freeze_decoder": args.freeze_decoder}
     if args.decoder == 'm2f':
         # M2F SetLoss 超參（僅 m2f 路徑有意義）
         cfg_dump.update({"cls_weight": args.cls_weight,

@@ -164,16 +164,26 @@ class WeatherSAMTrainer:
         if self.use_m2f:
             # [M2F] context_fusion_head / legacy mask_decoder 不參訓；
             # 新模組（from scratch）走 decoder group（建議 --decoder_lr_scale 1.0）
-            main_lr_modules = [
-                self.model.condition_encoder,
-                self.model.text_encoder.projection,
-            ]
-            decoder_lr_modules = [
-                self.model.simple_fpn,
-                self.model.pixel_decoder,   # [fix] MSDeformAttn pixel decoder（5.3M）：原本漏列，
-                                            # 從 L158 全凍後未解凍 → 隨機初始化凍結在計算圖上（見 weather_sam L250）
-                self.model.m2f_decoder,
-            ]
+            if getattr(args, 'freeze_decoder', False):
+                # [PEFT 天氣適應] 凍結 CS 端到端預訓練的 encoder + decoder，只訓「額外
+                # 天氣模組」：adapter（vgg_injector，於下方 use_vgg_adapter 區塊解凍）+
+                # condition_encoder。simple_fpn/pixel_decoder/m2f_decoder/text projection
+                # 皆屬 source-trained 任務模型，一律凍結；梯度仍穿過它們回流 adapter
+                # （凍結 ≠ 斷梯度）。此為可切換 ablation 旗標，非寫死。
+                print("🧊 [freeze_decoder] encoder+decoder 凍結，只訓 adapter + condition（PEFT 天氣適應）")
+                main_lr_modules = [self.model.condition_encoder]
+                decoder_lr_modules = []
+            else:
+                main_lr_modules = [
+                    self.model.condition_encoder,
+                    self.model.text_encoder.projection,
+                ]
+                decoder_lr_modules = [
+                    self.model.simple_fpn,
+                    self.model.pixel_decoder,   # [fix] MSDeformAttn pixel decoder（5.3M）：原本漏列，
+                                                # 從 L158 全凍後未解凍 → 隨機初始化凍結在計算圖上（見 weather_sam L250）
+                    self.model.m2f_decoder,
+                ]
             decoder_transformer_modules = []
         else:
             main_lr_modules = [
