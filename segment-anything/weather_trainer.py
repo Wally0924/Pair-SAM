@@ -170,6 +170,8 @@ class WeatherSAMTrainer:
             ]
             decoder_lr_modules = [
                 self.model.simple_fpn,
+                self.model.pixel_decoder,   # [fix] MSDeformAttn pixel decoder（5.3M）：原本漏列，
+                                            # 從 L158 全凍後未解凍 → 隨機初始化凍結在計算圖上（見 weather_sam L250）
                 self.model.m2f_decoder,
             ]
             decoder_transformer_modules = []
@@ -551,6 +553,22 @@ class WeatherSAMTrainer:
                 loss_to_backward = total_loss / float(accumulation_steps)
 
             self.scaler.scale(loss_to_backward).backward()
+
+            # ── [防呆] 一次性梯度稽核：宣告 requires_grad=True 卻沒收到梯度的參數 ──
+            # 第一次 backward 後 grad is None ⟺ 該參數不在前向計算圖上（漏接/死路徑，
+            # 正污染 optimizer）。pixel_decoder 漏訓即屬此類；此檢查讓同類 bug 當場現形。
+            if not getattr(self, '_grad_audit_done', False):
+                self._grad_audit_done = True
+                _dead = sorted({
+                    n.split('.', 1)[0]
+                    for n, p in self.model.named_parameters()
+                    if p.requires_grad and p.grad is None
+                })
+                if _dead:
+                    print("⚠️  [Grad Audit] 下列頂層模組宣告可訓練卻未收到梯度"
+                          "（不在計算圖上／漏接，正污染 optimizer）：" + ", ".join(_dead))
+                else:
+                    print("✅ [Grad Audit] 所有可訓練參數皆有梯度回流，無漏接/死路徑。")
             
             step_count += 1
             
@@ -688,6 +706,14 @@ class WeatherSAMTrainer:
         ], dtype=torch.float32)
 
         with torch.no_grad():
+            # [fix] 對齊實際推論路徑（postprocess_masks：先 bilinear 上採樣、後 argmax）。
+            # 原本直接在 256×256 argmax 再放大顯示，邊界呈 4×4 色塊階梯（毛邊），
+            # 與 1024 GT 並排對比失真；此毛邊是顯示 artifact，非模型輸出品質。
+            if gt_mask is not None and logits.shape[-2:] != gt_mask.shape[-2:]:
+                logits = F.interpolate(
+                    logits.float().unsqueeze(0), size=gt_mask.shape[-2:],
+                    mode='bilinear', align_corners=False,
+                ).squeeze(0)
             probs = torch.softmax(logits.float(), dim=0)           # (C, H, W)
             pred  = probs.argmax(dim=0).cpu()                      # (H, W)
             conf  = probs.max(dim=0).values.cpu().numpy()          # (H, W) — max-softmax

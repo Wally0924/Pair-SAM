@@ -217,9 +217,8 @@ CLAUDE.md
 segment-anything/inference_viz_acdc*/
 docs
 submissions
-segment-anything/outputs_ablation/
-segment-anything/outputs_recipe/
-segment-anything/outputs_darkzurich/
+# 所有訓練輸出目錄一律不進 repo（涵蓋 m2f 與未來新 run，取代逐一列舉）
+segment-anything/outputs_*/
 
 # 論文撰寫工作區（master/conference 草稿），不進 code repo
 paper/

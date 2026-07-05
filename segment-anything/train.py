@@ -89,6 +89,10 @@ def plot_history(history, output_dir, is_m2f=False):
         ('inject_cos_sim',  'WarpedVGG Inject CosSim ↑ stable','purple',   'Train Inj CosSim', 'Val Inj CosSim'),
         ('inject_gate',     'WarpedVGG softplus(gate) ↑ learning','brown', 'Train Gate',       'Val Gate'),
     ]
+    if is_m2f:
+        # m2f 路徑不計算這三個 legacy 指標（CSV 欄位恆為 0），略去全零死面板
+        _m2f_dead = {'pred_conf_mean', 'pred_entropy', 'logit_margin'}
+        components = [c for c in components if c[0] not in _m2f_dead]
 
     n_plots = len(components)
     n_cols = 3
@@ -134,7 +138,7 @@ def plot_history(history, output_dir, is_m2f=False):
         axes[idx].set_visible(False)
 
     fig.suptitle('WeatherSAM Training Curves (Per-Component)', fontsize=13, fontweight='bold')
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.985])  # 預留 suptitle 空間，避免壓到首列面板標題
     save_path = os.path.join(output_dir, 'training_curve.png')
     plt.savefig(save_path, dpi=120)
     plt.close()
@@ -225,7 +229,7 @@ def main():
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=50, help="總共訓練的 Epoch 數量")
-    parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--patience", type=int, default=5, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
     parser.add_argument("--batch_size", type=int, default=1, help="每次前向傳播的 Batch size（ViT-H global attention 需大量 VRAM，建議 1）")
@@ -355,16 +359,32 @@ def main():
               f"lr_scale={args.adapter_lr_scale})")
 
     # 落地完整消融 config（含 seed 與 loss 權重），供 eval 重建模型與審計
+    cfg_dump = {**abl_cfg, "seed": args.seed,
+                "lovasz_weight": args.lovasz_weight,
+                "lovasz_start_epoch": args.lovasz_start_epoch,
+                "dice_weight": args.dice_weight,
+                "rcs": args.rcs,
+                "rcs_temp": args.rcs_temp,
+                "epochs": args.epochs,
+                "lr": args.lr,
+                "warmup_epochs": args.warmup_epochs,
+                # 通用優化超參（原白名單漏記，導致無法單憑本檔重現 run）
+                "weight_decay": args.weight_decay,
+                "max_norm": args.max_norm,
+                "decoder_lr_scale": args.decoder_lr_scale,
+                "warmup_gate_epochs": args.warmup_gate_epochs}
+    if args.decoder == 'm2f':
+        # M2F SetLoss 超參（僅 m2f 路徑有意義）
+        cfg_dump.update({"cls_weight": args.cls_weight,
+                         "bce_weight": args.bce_weight,
+                         "no_object_weight": args.no_object_weight,
+                         "num_points": args.num_points})
+        # 記錄「生效值」而非 CLI 旗標：builder 在 m2f 強制 use_lrh=False，
+        # 且 m2f 路徑無 MFB（ce_weighted≡ce）——避免審計時誤判本 run 有 LRH/MFB
+        cfg_dump["lrh"] = False
+        cfg_dump["mfb"] = False
     with open(os.path.join(args.output_dir, "ablation_config.json"), "w") as f:
-        json.dump({**abl_cfg, "seed": args.seed,
-                   "lovasz_weight": args.lovasz_weight,
-                   "lovasz_start_epoch": args.lovasz_start_epoch,
-                   "dice_weight": args.dice_weight,
-                   "rcs": args.rcs,
-                   "rcs_temp": args.rcs_temp,
-                   "epochs": args.epochs,
-                   "lr": args.lr,
-                   "warmup_epochs": args.warmup_epochs}, f, indent=2)
+        json.dump(cfg_dump, f, indent=2)
 
     # 2. 準備 DataLoader
     print("📂 Preparing data...")
