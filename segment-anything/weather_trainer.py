@@ -129,6 +129,9 @@ class WeatherSAMTrainer:
         self.use_m2f = getattr(args, 'decoder', 'unified') == 'm2f'
         if self.use_m2f:
             from utils.m2f_loss import M2FSetLoss
+            # [label-smoothing 開關] --m2f_label_smooth 開時套用 --label_smoothing 強度，關時為 0.0
+            _m2f_ls_on = getattr(args, 'm2f_label_smooth', False)
+            _m2f_ls = label_smooth if _m2f_ls_on else 0.0
             self.m2f_loss_fn = M2FSetLoss(
                 num_classes=19,
                 cls_weight=getattr(args, 'cls_weight', 2.0),
@@ -136,10 +139,13 @@ class WeatherSAMTrainer:
                 dice_weight=dice_w,   # 沿用 --dice_weight（m2f 建議 5.0，launch script 設定）
                 no_object_weight=getattr(args, 'no_object_weight', 0.1),
                 num_points=getattr(args, 'num_points', 12544),
+                label_smoothing=_m2f_ls,
             ).to(self.device)
             print(f"📉 [M2F] SetLoss (cls: {self.m2f_loss_fn.cls_weight}, "
                   f"bce: {self.m2f_loss_fn.bce_weight}, dice: {dice_w}, "
-                  f"points: {self.m2f_loss_fn.num_points}) — CSV 欄位映射 ce←cls, lovasz←bce")
+                  f"points: {self.m2f_loss_fn.num_points}, "
+                  f"label_smooth: {_m2f_ls if _m2f_ls_on else 'off'}) "
+                  f"— CSV 欄位映射 ce←cls, lovasz←bce")
         # Lovász 延後啟動排程：保留目標權重，前 lovasz_start_epoch 個 epoch 停用
         self.lovasz_target = lovasz_w
         self.lovasz_start_epoch = getattr(args, 'lovasz_start_epoch', 0)
@@ -649,12 +655,14 @@ class WeatherSAMTrainer:
             else:
                 _pf["ce"] = f"{losses['ce'].avg:.4f}"
                 _pf["dice"] = f"{losses['dice'].avg:.4f}"
+            if not self.use_m2f:
+                # ent/margin/head 為 legacy 指標，m2f 不計算（恆為 0），略去死欄位
+                _pf["ent"] = f"{losses['pred_entropy'].avg:.3f}"
+                _pf["margin"] = f"{losses['logit_margin'].avg:.3f}"
+                _pf["head"] = f"{losses['head_delta_norm'].avg:.4f}"
             _pf.update({
-                "ent": f"{losses['pred_entropy'].avg:.3f}",
-                "margin": f"{losses['logit_margin'].avg:.3f}",
                 "conf": f"{losses['conf_mean'].avg:.3f}",
                 "valid": f"{losses['valid_ratio'].avg:.3f}",
-                "head": f"{losses['head_delta_norm'].avg:.4f}",
                 "inj_cos": f"{losses['inject_cos_sim'].avg:.4f}",
                 "gate": f"{losses['inject_gate'].avg:.4f}",
                 "gn_m": f"{losses['grad_norm_main'].avg:.3f}",
@@ -1165,9 +1173,11 @@ class WeatherSAMTrainer:
             else:
                 _pf["ce"] = losses['ce'].avg
                 _pf["dice"] = losses['dice'].avg
+            if not self.use_m2f:
+                # ent/margin 為 legacy 指標，m2f 不計算（恆為 0），略去死欄位
+                _pf["ent"] = f"{losses['pred_entropy'].avg:.3f}"
+                _pf["margin"] = f"{losses['logit_margin'].avg:.3f}"
             _pf.update({
-                "ent": f"{losses['pred_entropy'].avg:.3f}",
-                "margin": f"{losses['logit_margin'].avg:.3f}",
                 "conf": f"{losses['conf_mean'].avg:.3f}",
                 "valid": f"{losses['valid_ratio'].avg:.3f}",
             })

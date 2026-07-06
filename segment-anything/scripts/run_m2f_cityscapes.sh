@@ -43,6 +43,8 @@ python -u train.py \
   --warmup_gate_epochs 0 \
   --decoder_lr_scale 1.0 \
   --lovasz_weight 0.0 \
+  --m2f_label_smooth \
+  --label_smoothing 0.05 \
   "$@"
 # warmup_epochs=5：保留 LR 暖身（從零訓練 MSDeformAttn/masked-attn decoder 需要，
 #                  移除 gate warmup 後更是唯一早期穩定保護）

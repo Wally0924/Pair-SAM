@@ -244,6 +244,9 @@ def main():
     parser.add_argument("--dice_weight",  type=float, default=1.0,
                         help="MaskLoss (Dice) 權重")
     parser.add_argument("--label_smoothing", type=float, default=0.05, help="CE label smoothing（建議 0.05）")
+    parser.add_argument("--m2f_label_smooth", action=argparse.BooleanOptionalAction, default=False,
+                        help="m2f cls loss 是否啟用 label smoothing（開關式；強度取自 --label_smoothing，"
+                             "預設 0.05）。治 cls 過度自信、抑制 val CE 後期回升；--no-m2f_label_smooth 關閉。")
     parser.add_argument("--lovasz_weight", type=float, default=1.0,
                         help="Lovász-Softmax Loss 權重（0.0=停用，退化為純 CE；建議從 0.5 開始實驗）。"
                              "Lovász 直接優化 mIoU 的可微近似，梯度方向與評估指標完全對齊。")
@@ -585,10 +588,15 @@ def main():
         pred_conf   = val_metrics.get('pred_conf_mean', 0.0)
         inj_cos     = val_metrics.get('inject_cos_sim', 1.0)
         inj_gate    = val_metrics.get('inject_gate', 0.0)
-        lov_val = val_metrics.get('lovasz', 0.0)
-        lov_str = f", Lovász:{lov_val:.4f}" if lov_val > 0.0 else ""
+        is_m2f = getattr(args, 'decoder', 'unified') == 'm2f'
         print(f"   [Epoch {epoch+1}] Train Total: {train_metrics['total']:.4f} | Val Total: {val_metrics['total']:.4f}")
-        print(f"               (CE:{val_metrics['ce']:.4f}{lov_str}, Dice:{val_metrics['dice']:.4f})")
+        if is_m2f:
+            # m2f 下 ce 欄存 cls、lovasz 欄存 bce（見 CSV 欄位重用註解），標籤改回 m2f 語彙以免誤讀
+            print(f"               (cls:{val_metrics['ce']:.4f}, bce:{val_metrics['lovasz']:.4f}, Dice:{val_metrics['dice']:.4f})")
+        else:
+            lov_val = val_metrics.get('lovasz', 0.0)
+            lov_str = f", Lovász:{lov_val:.4f}" if lov_val > 0.0 else ""
+            print(f"               (CE:{val_metrics['ce']:.4f}{lov_str}, Dice:{val_metrics['dice']:.4f})")
         print(f"               [Val mIoU] {val_miou*100:.2f}%")
         # Per-class IoU（縮寫格式，每類別顯示至小數點後一位）
         per_cls = val_metrics.get('per_class_iou', [])
@@ -596,7 +604,9 @@ def main():
             short = [f"{n[:5]}:{v*100:.1f}" for n, v in zip(_CLS_NAMES, per_cls)]
             print(f"               [per-cls] {' '.join(short)}")
         print(f"               [CMA] conf={conf_mean:.3f} | valid={valid_ratio:.3f}")
-        print(f"               [pred] conf={pred_conf:.3f} | entropy={pred_ent:.3f} | margin={pred_margin:.3f}")
+        if not is_m2f:
+            # pred conf/entropy/margin 為 legacy 指標，m2f 不計算（恆為 0），略去死面板
+            print(f"               [pred] conf={pred_conf:.3f} | entropy={pred_ent:.3f} | margin={pred_margin:.3f}")
         print(f"               [Adapter] inject_cos={inj_cos:.4f} gate={inj_gate:.4f}")
         print(f"               [grad] GN_main={gn_m:.3f}  GN_decoder={gn_d:.3f} | AMP scale={scale:.0f}")
         

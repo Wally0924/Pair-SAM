@@ -211,7 +211,7 @@ class M2FSetLoss(nn.Module):
     def __init__(self, num_classes=19, cls_weight=2.0, bce_weight=5.0,
                  dice_weight=5.0, no_object_weight=0.1, num_points=12544,
                  oversample_ratio=3.0, importance_sample_ratio=0.75,
-                 ignore_index=255):
+                 ignore_index=255, label_smoothing=0.0):
         super().__init__()
         self.num_classes = num_classes
         self.cls_weight = cls_weight
@@ -221,6 +221,9 @@ class M2FSetLoss(nn.Module):
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
         self.ignore_index = ignore_index
+        # [label-smoothing 開關] 0.0=關閉（等價原始 F.cross_entropy 行為）；
+        # >0=開啟並套用該強度，專治 cls 過度自信、抑制 val CE 後期回升。
+        self.label_smoothing = label_smoothing
         # 上游 SetCriterion.__init__ 的 empty_weight（eos_coef=no_object_weight）
         empty_weight = torch.ones(num_classes + 1)
         empty_weight[-1] = no_object_weight
@@ -243,8 +246,10 @@ class M2FSetLoss(nn.Module):
 
     def _loss_labels(self, out, labels):
         # 上游 SetCriterion.loss_labels 主體（B=1、固定匹配 → target_classes 即 labels）
+        # label_smoothing 與 empty_weight（class weight）可並存；0.0 時為 no-op。
         src_logits = out["pred_logits"][0].float()
-        return F.cross_entropy(src_logits, labels, self.empty_weight)
+        return F.cross_entropy(src_logits, labels, self.empty_weight,
+                               label_smoothing=self.label_smoothing)
 
     def _loss_masks(self, out, present, tgt, valid_f):
         # 上游 SetCriterion.loss_masks 主體：no_grad 點採樣 → point_sample → 兩個 loss
