@@ -229,7 +229,7 @@ def main():
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=30, help="總共訓練的 Epoch 數量")
-    parser.add_argument("--patience", type=int, default=5, help="提早停止 (Early stopping) 的耐心值")
+    parser.add_argument("--patience", type=int, default=10, help="提早停止 (Early stopping) 的耐心值")
     parser.add_argument("--min_delta", type=float, default=0.0005,
                         help="標記為顯著 mIoU 進步的門檻；任何 mIoU 新高都會重置 early stopping。")
     parser.add_argument("--batch_size", type=int, default=1, help="每次前向傳播的 Batch size（ViT-H global attention 需大量 VRAM，建議 1）")

@@ -51,8 +51,11 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
     else:
         model.mask_decoder.decoder_mode = _dec
     _use_ref = bool(cfg.get('ref', True))
-    model.vgg_injector.use_reference = _use_ref
-    model.vgg_injector.rpm.use_reference = _use_ref  # propagate to RPM for ablation
+    if hasattr(model.vgg_injector, 'rpm'):
+        model.vgg_injector.use_reference = _use_ref
+        model.vgg_injector.rpm.use_reference = _use_ref  # propagate to RPM for ablation
+    # else: sam_adapter 基線無 rpm 且恆 reference-free(use_reference=False 為其不變量),
+    #       不以 --ref 覆蓋;參考消融(--no-ref)僅對 reference 變體有意義
 
     if cfg.get('use_vgg_adapter', True):
         model.enable_vgg_adapter(mode=cfg.get('inject', 'pre'))

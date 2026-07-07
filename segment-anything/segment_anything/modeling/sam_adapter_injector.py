@@ -21,6 +21,7 @@ _DEFAULT_GATE_INIT = math.log(math.exp(0.05) - 1)  # softplus(x) ≈ 0.05
 
 class SameImageAdapterInjector(nn.Module):
     INJECT_BLOCKS: list = [7, 15, 23, 31]
+    EXTRACT_BLOCKS: list = []   # 基線無 extractor;A3 enable_vgg_adapter 的 extract 迴圈自然零次跳過
 
     def __init__(self, vit_dim: int = 1280, bottleneck: int = 1700,
                  gate_init: float = _DEFAULT_GATE_INIT):
@@ -75,6 +76,11 @@ class SameImageAdapterInjector(nn.Module):
         def hook(module, input, output):
             return self._inject_at_stage(output, stage_idx)
         return hook
+
+    # A3 hook API 別名:enable_vgg_adapter(DeformAdapter 介面)呼叫此名稱。
+    # 注入語意不變(pre-hook 殘差);_inject_at_stage 為 token 的純函數,
+    # gradient checkpointing 重放安全,無需 DeformAdapter 的快照機制。
+    _make_inject_pre_hook = _make_pre_hook
 
     def _inject_at_stage(self, output: torch.Tensor, stage_idx: int) -> torch.Tensor:
         B, H, W, C = output.shape

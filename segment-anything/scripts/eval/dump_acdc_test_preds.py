@@ -35,7 +35,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))  # 讓 _eval_common 可被 import
 from _eval_common import (  # noqa: E402
-    load_weather_sam_model, make_batched_input, colorize_19class,
+    load_weather_sam_from_ablation, make_batched_input, colorize_19class,
     CITYSCAPES_CLASSES, CITYSCAPES_PALETTE,
 )
 
@@ -152,6 +152,17 @@ def predict_native(model, batch: dict, device: str, target_hw: tuple[int, int]) 
     """
     batched_input = make_batched_input(batch, device)
     outputs = model(batched_input)
+
+    # [M2F] 語義輸出即 low_res_logits(sem_lr,已是 19 通道,class_ids=[0..18])。
+    # m2f 的 use_lrh=False,語義推論不經 context_fusion_head(該模組於 e2e/decoder_ft
+    # 皆未訓練、為隨機初始化,套用會汙染 logits)。前向對齊 weather_trainer.py val 的
+    # m2f mIoU 路徑(postprocess_masks bilinear 上採 → argmax),只是上採到原生解析度。
+    if getattr(model, 'decoder_arch', None) == 'm2f':
+        sem = outputs[0]['low_res_logits']  # (1, 19, 256, 256)
+        sem_hr = F.interpolate(
+            sem, size=target_hw, mode='bilinear', align_corners=False,
+        )
+        return sem_hr.argmax(dim=1).squeeze(0).cpu().numpy()
 
     low_res = outputs[0]['low_res_logits'].squeeze(0)  # (K, 256, 256)
     class_ids = outputs[0]['class_ids']
@@ -304,12 +315,22 @@ def verify_outputs(written: list[Path], expected_count: int | None = None) -> No
 
 
 def make_zip(out_root: Path, zip_path: Path) -> None:
-    """打包整個 out_root 為單一 zip，內部結構保持 <condition>/test/<seq>/..."""
+    """打包整個 out_root 為 ACDC evaluation server 合規 zip。
+
+    規範要求頂層須有 ``labelTrainIds/`` 目錄,結果檔放其下任意位置即可
+    （server 依檔名 ``GOPR..._frame_..*.png`` 在 labelTrainIds/ 下遞迴比對）。
+    磁碟上的 out_root 仍保留 <condition>/test/<seq>/... 原始結構,只在打包時
+    於每個 arcname 前綴 ``labelTrainIds/``。
+    """
     zip_path.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         for png in sorted(out_root.rglob('*.png')):
-            zf.write(png, arcname=png.relative_to(out_root))
-    print(f"📦 已打包：{zip_path}（{zip_path.stat().st_size / 1e6:.1f} MB）")
+            arcname = Path('labelTrainIds') / png.relative_to(out_root)
+            zf.write(png, arcname=str(arcname))
+            n += 1
+    print(f"📦 已打包：{zip_path}（{zip_path.stat().st_size / 1e6:.1f} MB, "
+          f"{n} files, 頂層 labelTrainIds/）")
 
 
 def parse_args() -> argparse.Namespace:
@@ -366,7 +387,7 @@ def main() -> None:
     print(f"Output root : {out_root}")
     print(f"Device      : {args.device}")
 
-    model = load_weather_sam_model(args.ckpt, device=args.device)
+    model, _cfg = load_weather_sam_from_ablation(args.ckpt, device=args.device)
     loader = build_test_loader(args.csv, num_workers=args.num_workers)
     csv_df = loader.dataset.data.reset_index(drop=True)
 
