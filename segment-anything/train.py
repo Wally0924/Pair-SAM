@@ -370,6 +370,9 @@ def main():
                 "lovasz_weight": args.lovasz_weight,
                 "lovasz_start_epoch": args.lovasz_start_epoch,
                 "dice_weight": args.dice_weight,
+                # label smoothing 原白名單漏記（2026-07-07 補）：S2 消融
+                # （--no-m2f_label_smooth）需憑本檔區辨；legacy CE 路徑亦用 label_smoothing
+                "label_smoothing": args.label_smoothing,
                 "rcs": args.rcs,
                 "rcs_temp": args.rcs_temp,
                 "epochs": args.epochs,
@@ -388,7 +391,8 @@ def main():
         cfg_dump.update({"cls_weight": args.cls_weight,
                          "bce_weight": args.bce_weight,
                          "no_object_weight": args.no_object_weight,
-                         "num_points": args.num_points})
+                         "num_points": args.num_points,
+                         "m2f_label_smooth": args.m2f_label_smooth})
         # 記錄「生效值」而非 CLI 旗標：builder 在 m2f 強制 use_lrh=False，
         # 且 m2f 路徑無 MFB（ce_weighted≡ce）——避免審計時誤判本 run 有 LRH/MFB
         cfg_dump["lrh"] = False
