@@ -205,6 +205,9 @@ class DeformAdapter(nn.Module):
         self._stage_cos_sims = [1.0] * self._num_stages
         self._last_gate_val = 0.0            # gamma.abs().mean()：零初始化起步
         self._last_inject_cos_sim = 1.0
+        # ||注入殘差(out-in)|| / ||ViT token||：實際注入幅度比值。與 sam_adapter 的
+        # (gate*delta)/q 同語意，補上此欄位讓 trainer 的 hasattr 守門不再靜默跳過。
+        self._last_delta_norm_ratio = 0.0
 
     def set_features(self, feats, h, w):
         device = feats['l2'].device
@@ -232,6 +235,12 @@ class DeformAdapter(nn.Module):
                 self._stage_cos_sims[stage_idx] = cos_sim
                 self._last_gate_val = sum(self._stage_gate_vals) / self._num_stages
                 self._last_inject_cos_sim = sum(self._stage_cos_sims) / self._num_stages
+                if stage_idx == 0:
+                    # 注入殘差 = injector 輸出 − 輸入（Injector.forward 回傳 x + gamma*delta，
+                    # 故 out-tokens 即實際注入的 gamma*delta）；比值化以對齊 sam_adapter。
+                    _delta_norm = (out - tokens).norm(dim=-1).mean().item()
+                    _vit_norm = tokens.norm(dim=-1).mean().item()
+                    self._last_delta_norm_ratio = _delta_norm / (_vit_norm + 1e-8)
             return (out.reshape(B, H, W, C),)
         return hook
 
