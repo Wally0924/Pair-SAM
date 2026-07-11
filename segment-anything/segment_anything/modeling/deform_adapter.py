@@ -42,6 +42,9 @@ class ReferencePriorModule(nn.Module):
         super().__init__()
         self.dim = dim
         self.use_reference = use_reference
+        # W3 消融開關：False = 移除置信度調變（m̄≡1，參考特徵不分可靠與否全幅注入）。
+        # 由 build_weather_sam_from_config 依 cfg['conf_mod'] 覆蓋，預設不影響既有行為。
+        self.use_conf_mod = True
         self.proj_c2 = nn.Conv2d(l2_channels, dim, kernel_size=1)
         self.proj_c3 = nn.Conv2d(l3_channels, dim, kernel_size=1)
         self.proj_c4 = nn.Conv2d(l4_channels, dim, kernel_size=1)
@@ -67,13 +70,14 @@ class ReferencePriorModule(nn.Module):
             c = torch.zeros_like(c)
 
         mask = feats.get('mask', None)
-        if mask is not None and self.use_reference:
+        if mask is not None and self.use_reference and self.use_conf_mod:
             m2 = F.adaptive_avg_pool2d(mask, c2.shape[-2:])
             m3 = F.adaptive_avg_pool2d(mask, c3.shape[-2:])
             m4 = F.adaptive_avg_pool2d(mask, c4.shape[-2:])
             conf = torch.cat([_flat(m2), _flat(m3), _flat(m4)], dim=1)  # (B,L,1)
         else:
-            # 無參考消融（use_reference=False）：conf 設中性值 1，而非全零。參考特徵 c 已歸零，
+            # 無參考消融（use_reference=False）或移除置信度調變（use_conf_mod=False，W3：
+            # m̄≡1、參考特徵全幅注入）：conf 設中性值 1，而非全零。前者參考特徵 c 已歸零，
             # 但 Adapter 仍照常運作（靠 extractor 回收骨幹語境自我精修）。若把 conf 歸零會乘性
             # 抹除注入、使 Adapter 近乎惰性，反而混入「移除 Adapter 容量」的效果；設為 1 則保留
             # 容量、只移除參考影像所提供之資訊（對齊特徵與其置信度加權），使「+參考」列與本列

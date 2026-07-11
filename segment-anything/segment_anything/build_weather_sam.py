@@ -54,8 +54,18 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
     if hasattr(model.vgg_injector, 'rpm'):
         model.vgg_injector.use_reference = _use_ref
         model.vgg_injector.rpm.use_reference = _use_ref  # propagate to RPM for ablation
+        # W3 消融:移除置信度調變(m̄≡1,參考特徵不分可靠與否全幅注入)
+        model.vgg_injector.rpm.use_conf_mod = bool(cfg.get('conf_mod', True))
+        # W6 消融:移除抽取器(單向注入,參考先驗不隨主幹深度更新)。
+        # 必須在 enable_vgg_adapter(hook 註冊)之前清空:extract hook 依 EXTRACT_BLOCKS
+        # 註冊,清空後不註冊、extractors 無參數 → 無 trainable-but-unused(梯度稽核不誤報)。
+        # checkpoint 載入為過濾式(僅載形狀相符鍵),extractor 鍵缺席不影響 eval/resume。
+        if not cfg.get('extractor', True):
+            model.vgg_injector.EXTRACT_BLOCKS = []
+            model.vgg_injector.extractors = torch.nn.ModuleList()
+            model.vgg_injector._extract_c = []
     # else: sam_adapter 基線無 rpm 且恆 reference-free(use_reference=False 為其不變量),
-    #       不以 --ref 覆蓋;參考消融(--no-ref)僅對 reference 變體有意義
+    #       不以 --ref/--no-conf_mod/--no-extractor 覆蓋;此三軸僅對 reference 變體有意義
 
     if cfg.get('use_vgg_adapter', True):
         model.enable_vgg_adapter(mode=cfg.get('inject', 'pre'))

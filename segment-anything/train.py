@@ -320,6 +320,10 @@ def main():
                         help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
     parser.add_argument("--cond", action=argparse.BooleanOptionalAction, default=True,
                         help="condition embedding 是否辨別天氣條件；--no-cond = 固定共享索引（P1 消融）")
+    parser.add_argument("--conf_mod", action=argparse.BooleanOptionalAction, default=True,
+                        help="參考特徵是否經置信度調變；--no-conf_mod = m̄≡1 全幅注入（W3 消融）")
+    parser.add_argument("--extractor", action=argparse.BooleanOptionalAction, default=True,
+                        help="DeformAdapter 是否啟用抽取器；--no-extractor = 單向注入（W6 消融）")
     parser.add_argument("--adapter_variant", choices=["reference", "sam_adapter"], default="reference",
                         help="[ablation B] reference=跨視角參考注入（FULL）；"
                              "sam_adapter=同影像 SAM-Adapter 基線（不使用參考，forward 跳過 UAWarpC 對齊）")
@@ -354,6 +358,8 @@ def main():
         mfb=args.mfb,
         ref=args.ref,
         cond=args.cond,
+        conf_mod=args.conf_mod,
+        extractor=args.extractor,
         adapter_variant=args.adapter_variant,
     )
     model = build_weather_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
