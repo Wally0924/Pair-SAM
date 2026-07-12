@@ -20,6 +20,12 @@
 #   註:編號依 2026-07-09 統整報告/碩論 W 表列序(W3=置信度調變、W6=抽取器);
 #      舊規劃「W3=B2 複用(cond 軸)」已由 B 系列與 2×2 交互涵蓋,不再使用。
 #
+# 【預期警報】B1_semB/W2_semB(--no-ref)首個 backward 會印
+#   「[Grad Audit] …未收到梯度:vgg_injector」——良性。斷聯的只有 rpm.proj_c2/c3/c4
+#   與 rpm.level_embed(參考特徵翻譯器,c=zeros_like 使其輸出被丟棄,語義B設計預期);
+#   injector/extractor 均在計算圖上(gamma 有非零梯度,已以 CPU 小型復現+舊 B1/W2
+#   遙測 gate 0.0009→0.0083 雙重驗證,2026-07-12)。稽核為 any-param-None 即報頂層模組。
+#
 # 假設已 conda activate sam_env。背景執行:
 #   nohup bash scripts/ablation_m2f_phase5.sh > outputs_ablation_m2f/phase5.log 2>&1 &
 # =============================================================================
