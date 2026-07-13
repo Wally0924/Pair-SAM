@@ -18,7 +18,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
-    load_weather_sam_model, load_weather_sam_from_ablation,
+    load_weather_sam_from_ablation,
     build_acdc_val_loader, make_batched_input,
     CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT,
 )

@@ -1,5 +1,5 @@
 # segment-anything/scripts/eval/_eval_common.py
-"""共用工具：v15 checkpoint 載入、ACDC val dataloader、Cityscapes 19-class 調色盤。"""
+"""共用工具：ablation config 驅動的模型載入、ACDC val dataloader、Cityscapes 19-class 調色盤。"""
 import os
 import sys
 from pathlib import Path
@@ -13,15 +13,10 @@ _SEGANY_ROOT = _THIS.parents[2]   # .../segment-anything
 if str(_SEGANY_ROOT) not in sys.path:
     sys.path.insert(0, str(_SEGANY_ROOT))
 
-from segment_anything.build_weather_sam import build_weather_sam_vit_h
 from utils.weather_dataloader import WeatherSegmentationDataset
 
 
 # ── 預設路徑 ───────────────────────────────────────────────
-DEFAULT_CKPT = str(
-    _SEGANY_ROOT / "outputs_weather_sam_mask2former_testv15" /
-    "best_E27_mIoU65.68_LR4.0e-05.pth"
-)
 DEFAULT_VAL_CSV = str(
     _SEGANY_ROOT.parent / "Datasets" / "acdc_adverse_ref_rgb_val.csv"
 )
@@ -65,36 +60,6 @@ def colorize_19class(mask: np.ndarray) -> np.ndarray:
     for cls_id in range(19):
         color[mask == cls_id] = CITYSCAPES_PALETTE[cls_id]
     return color
-
-
-def load_weather_sam_model(ckpt_path: str = DEFAULT_CKPT, device: str = 'cuda'):
-    """建構 WeatherSAM-ViT-H 並載入任意版本的 checkpoint，啟用 pre-hook cross-attn adapter。
-
-    版本無關：以 strict=False 載入，容忍版本間 buffer 增減（如 `_last_kv_keep_ratio`），
-    對 v5、v14、v15、E27 等所有歷代 ckpt 皆相容。
-    """
-    if not os.path.isfile(ckpt_path):
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    model = build_weather_sam_vit_h(num_classes=19, checkpoint=None)
-    state = torch.load(ckpt_path, map_location='cpu')
-    # 容忍多種儲存格式
-    if isinstance(state, dict) and 'model_state_dict' in state:
-        sd = state['model_state_dict']
-    elif isinstance(state, dict) and 'model' in state:
-        sd = state['model']
-    else:
-        sd = state
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    if unexpected:
-        print(f"[load_weather_sam_model] 忽略 {len(unexpected)} 個多餘鍵（OK）")
-    if missing:
-        print(f"[load_weather_sam_model] 缺少 {len(missing)} 個鍵（多為新增 buffer，OK）")
-    model.enable_vgg_adapter('pre')
-    return model.to(device).eval()
-
-
-# 向後相容別名：舊 script 仍可用 load_v15_model 名稱
-load_v15_model = load_weather_sam_model
 
 
 def load_weather_sam_from_ablation(ckpt_path, config_path=None, device='cuda'):

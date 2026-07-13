@@ -7,8 +7,7 @@
   * 目錄結構鏡像 GT：``<condition>/test/<sequence>/<file>``
   * 任務：standard semantic segmentation（不是 uncertainty-aware track）
 
-不更動既有 test_inference.py（val 流程保留）。本腳本 forward 邏輯與
-``test_inference.py::predict_native`` 完全一致：1024 推論 → fused logits →
+本腳本 forward 邏輯：1024 推論 → fused logits →
 雙線性上採至原解析度 → argmax。
 
 Usage
@@ -77,7 +76,7 @@ def save_triptych(adverse_rgb: np.ndarray, clear_rgb: np.ndarray | None,
                   out_path: Path) -> None:
     """三聯圖：Adverse | Clear Reference | Prediction（+ class legend）。
 
-    為 ACDC test 設計（無 GT），對應 test_inference.visualize 的 2x2 版本去掉 GT panel。
+    為 ACDC test 設計（無 GT），即 val 視覺化的 2x2 版本去掉 GT panel。
     """
     _ensure_matplotlib()
     H, W = pred.shape
@@ -142,7 +141,7 @@ def build_test_loader(csv_path: str, num_workers: int = 4) -> DataLoader:
 
 @torch.no_grad()
 def predict_native(model, batch: dict, device: str, target_hw: tuple[int, int]) -> np.ndarray:
-    """與 test_inference.py::predict_native 完全一致的前向流程。
+    """前向流程（paper protocol，原生解析度評估）。
 
     1. forward 在 1024x1024
     2. low_res_logits 攤平回 19 通道（缺席類別填 -10 視同極低）

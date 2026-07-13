@@ -4,7 +4,7 @@
   * 以 R7_seed42 ablation config 重建 WeatherSAM 並原生解析度推論（=Ours）
   * 直接讀回 CMA 預渲染結果（P-mode PNG，像素值即 trainId）
   * 讀原生 GT + invalid_mask，按官方協定 (GT==255 或 invalid) 過濾
-  * 算每張影像 Ours / CMA 的 mIoU（與 eval_e1_acdc_val_paper 同一 IoU 定義）
+  * 算每張影像 Ours / CMA 的 mIoU（與 eval_e1_acdc_val_full 同一 IoU 定義）
 
 兩段式：
   1. 對所有樣本算指標，寫 <out_dir>/ours_vs_cma_metrics.csv（已存在則直接讀，除非 --recompute）
@@ -60,7 +60,7 @@ DEFAULT_OUT_DIR = Path('/home/rvl1421/Downloads/figures')
 # ── 指標 ───────────────────────────────────────────────────
 def per_image_miou(pred: np.ndarray, gt: np.ndarray, valid: np.ndarray) -> float:
     """單張 mIoU：在有效像素上累積混淆矩陣，IoU 對 denom>0 的類別取平均。
-    與 eval_e1_acdc_val_paper.iou_from_confusion 同定義。"""
+    與 eval_e1_acdc_val_full.iou_from_confusion 同定義。"""
     g = gt[valid].astype(np.int64)
     p = pred[valid].astype(np.int64)
     p = np.clip(p, 0, NUM_CLASSES - 1)
