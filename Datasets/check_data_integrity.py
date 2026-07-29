@@ -137,7 +137,7 @@ def check_dataset_integrity(csv_path, base_dir=None):
     if warnings_ref_mask_dark > 0:
         print(f"⚠️ [嚴重警告] 發現 {warnings_ref_mask_dark} 張 Reference Mask 數值過低 (<=18)！")
         print("   -> 請確認你的 Ref Mask 是 'RGB Visualization' 而不是 'Class ID Map'。")
-        print("   -> 在 weather_sam.py 中，代碼會執行 `mask / 255.0`。")
+        print("   -> 在 pair_sam.py 中，代碼會執行 `mask / 255.0`。")
         print("   -> 如果輸入最大值只有 18，除以 255 後會接近 0，導致 Mask Encoder 失效。")
     
     print("\n詳細錯誤日誌 (前 20 筆):")

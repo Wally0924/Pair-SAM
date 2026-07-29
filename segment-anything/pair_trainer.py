@@ -1,4 +1,4 @@
-# weather_trainer.py
+# pair_trainer.py
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import math
 import random
 
-from segment_anything.modeling import WeatherSAM
+from segment_anything.modeling import PairSAM
 from utils.new_loss import ContextLoss, MaskLoss, lovasz_weight_for_epoch
 
 
@@ -81,14 +81,14 @@ class AttentionMonitor:
             self._fusion_handle = None
 
 
-class WeatherSAMTrainer:
+class PairSAMTrainer:
     """
-    負責訓練 WeatherSAM 的訓練器（Mask2Former-style），實作解耦式的多重 Loss 計算：
+    負責訓練 PairSAM 的訓練器（Mask2Former-style），實作解耦式的多重 Loss 計算：
     包含 MaskLoss (Dice)、ContextLoss (CE + 可選 Lovász)。
     """
     def __init__(
         self, 
-        model: WeatherSAM, 
+        model: PairSAM, 
         train_loader: DataLoader, 
         val_loader: DataLoader, 
         args=None
@@ -187,7 +187,7 @@ class WeatherSAMTrainer:
                 decoder_lr_modules = [
                     self.model.simple_fpn,
                     self.model.pixel_decoder,   # [fix] MSDeformAttn pixel decoder（5.3M）：原本漏列，
-                                                # 從 L158 全凍後未解凍 → 隨機初始化凍結在計算圖上（見 weather_sam L250）
+                                                # 從 L158 全凍後未解凍 → 隨機初始化凍結在計算圖上（見 pair_sam L250）
                     self.model.m2f_decoder,
                 ]
             decoder_transformer_modules = []

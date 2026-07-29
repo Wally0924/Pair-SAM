@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# WeatherSAM M2F 訓練：PEFT 天氣適應階段
+# PairSAM M2F 訓練：PEFT 天氣適應階段
 #   來源模型 = outputs_m2f_cs_e2e（Cityscapes 晴天端到端預訓練的 encoder + MSDeformAttn
 #   pixel decoder + masked-attention decoder）。本階段載入該完整權重，凍結 encoder+decoder，
 #   在 ACDC 惡劣天氣上「只訓練額外天氣模組」：DeformAdapter（vgg_injector）+ condition_encoder。

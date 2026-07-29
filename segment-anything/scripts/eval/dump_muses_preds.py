@@ -1,4 +1,4 @@
-"""WeatherSAM 在 MUSES 上的推論：val 本地 mIoU + test 提交打包。
+"""PairSAM 在 MUSES 上的推論：val 本地 mIoU + test 提交打包。
 
 固定使用 FULL_seed42 權重（使用者定案）。兩種子任務:
 
@@ -47,14 +47,14 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))  # 讓 _eval_common 可被 import
 from _eval_common import (  # noqa: E402
-    load_weather_sam_from_ablation, make_batched_input,
+    load_pair_sam_from_ablation, make_batched_input,
 )
 
 _SEGANY_ROOT = _THIS.parents[2]
 if str(_SEGANY_ROOT) not in sys.path:
     sys.path.insert(0, str(_SEGANY_ROOT))
 from torch.utils.data import DataLoader  # noqa: E402
-from utils.weather_dataloader import WeatherSegmentationDataset  # noqa: E402
+from utils.pair_dataloader import PairSegmentationDataset  # noqa: E402
 
 NUM_CLASSES = 19
 IGNORE_INDEX = 255
@@ -110,12 +110,12 @@ def resolve_condition_csv(src_csv: str, cond_mode: str) -> str:
 
 
 def build_loader(csv_path: str, mode: str, num_workers: int) -> DataLoader:
-    ds = WeatherSegmentationDataset(
+    ds = PairSegmentationDataset(
         csv_file=csv_path, image_size=1024, mode=mode, force_raw_images=True,
     )
     return DataLoader(
         ds, batch_size=1, shuffle=False, num_workers=num_workers,
-        collate_fn=WeatherSegmentationDataset.collate_fn,
+        collate_fn=PairSegmentationDataset.collate_fn,
     )
 
 
@@ -314,7 +314,7 @@ def main() -> None:
     print(f'CSV        : {args.csv}')
     print(f'Split      : {args.split} | cond-mode: {args.cond_mode} | device: {args.device}')
 
-    model, _cfg = load_weather_sam_from_ablation(args.ckpt, device=args.device)
+    model, _cfg = load_pair_sam_from_ablation(args.ckpt, device=args.device)
     if args.cond_mode == 'off':
         model.use_cond = False   # 忽略 condition_id（走共享索引 0），reference 仍使用
         print('  → use_cond=False（condition 關閉）')

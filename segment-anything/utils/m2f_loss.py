@@ -18,7 +18,7 @@
 #   (Both commit hashes reused verbatim from Task 1 / Task 2's recorded
 #    `git ls-remote HEAD` — re-checked at Task 3 time and confirmed unchanged.)
 #
-# [WeatherSAM adaptations]（完整清單；其餘計算式逐行同上游）:
+# [PairSAM adaptations]（完整清單；其餘計算式逐行同上游）:
 #   1. HungarianMatcher 不移植，以 _fixed_match_targets 取代：query i ↔ 類別 i
 #      硬對應，影像中缺席的類別 target = no-object。依據：OV-DETR conditional
 #      matching（Zang et al., "Open-Vocabulary DETR with Conditional Matching",
@@ -34,7 +34,7 @@
 #      sum(len(t["labels"]) for t in targets)）。
 #   4. detectron2.layers.cat（處理空 list 邊界的 torch.cat 薄封裝）替換為
 #      torch.cat：本專案不依賴 detectron2，且呼叫處恆非空 list，行為等價。
-#   5. 包裝類 M2FSetLoss.forward(output, gt_mask) 對齊 WeatherSAM trainer 的
+#   5. 包裝類 M2FSetLoss.forward(output, gt_mask) 對齊 PairSAM trainer 的
 #      per-image（B=1）呼叫慣例；deep supervision 迴圈對應上游 SetCriterion
 #      .forward 中 aux_outputs 逐組同權重累加的邏輯。
 # ============================================================================
@@ -121,7 +121,7 @@ def get_uncertain_point_coords_with_randomness(
         num_boxes, num_uncertain_points, 2
     )
     if num_random_points > 0:
-        point_coords = torch.cat(  # [WeatherSAM adaptation 4] detectron2.layers.cat -> torch.cat
+        point_coords = torch.cat(  # [PairSAM adaptation 4] detectron2.layers.cat -> torch.cat
             [
                 point_coords,
                 torch.rand(num_boxes, num_random_points, 2, device=coarse_logits.device),
@@ -145,13 +145,13 @@ def dice_loss(inputs, targets, num_masks, weights=None):
         targets: A float tensor with the same shape as inputs. Stores the binary
                  classification label for each element in inputs
                 (0 for the negative class and 1 for the positive class).
-        weights: [WeatherSAM adaptation 2] optional float tensor, same shape as
+        weights: [PairSAM adaptation 2] optional float tensor, same shape as
                  inputs, per-point validity weight (1.0 valid / 0.0 ignored).
                  None (default) reproduces upstream behaviour exactly.
     """
     inputs = inputs.sigmoid()
     inputs = inputs.flatten(1)
-    if weights is not None:                      # [WeatherSAM adaptation 2]
+    if weights is not None:                      # [PairSAM adaptation 2]
         inputs, targets = inputs * weights, targets * weights
     numerator = 2 * (inputs * targets).sum(-1)
     denominator = inputs.sum(-1) + targets.sum(-1)
@@ -167,14 +167,14 @@ def sigmoid_ce_loss(inputs, targets, num_masks, weights=None):
         targets: A float tensor with the same shape as inputs. Stores the binary
                  classification label for each element in inputs
                 (0 for the negative class and 1 for the positive class).
-        weights: [WeatherSAM adaptation 2] optional float tensor, same shape as
+        weights: [PairSAM adaptation 2] optional float tensor, same shape as
                  inputs, per-point validity weight (1.0 valid / 0.0 ignored).
                  None (default) reproduces upstream behaviour exactly.
     Returns:
         Loss tensor
     """
     loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-    if weights is not None:                      # [WeatherSAM adaptation 2]
+    if weights is not None:                      # [PairSAM adaptation 2]
         loss = (loss * weights).sum(1) / weights.sum(1).clamp(min=1.0)
     else:
         loss = loss.mean(1)
@@ -230,7 +230,7 @@ class M2FSetLoss(nn.Module):
         self.register_buffer("empty_weight", empty_weight)
 
     def _fixed_match_targets(self, gt_mask):
-        """[WeatherSAM adaptation 1] 固定匹配 target 建構（取代 HungarianMatcher）。"""
+        """[PairSAM adaptation 1] 固定匹配 target 建構（取代 HungarianMatcher）。"""
         valid = gt_mask != self.ignore_index
         labels = torch.full((self.num_classes,), self.num_classes,
                              dtype=torch.long, device=gt_mask.device)
@@ -264,7 +264,7 @@ class M2FSetLoss(nn.Module):
                 self.num_points, self.oversample_ratio, self.importance_sample_ratio,
             )
             point_labels = point_sample(tgt, point_coords, align_corners=False).squeeze(1)
-            # [WeatherSAM adaptation 2] 逐點 validity（ignore 區域排除）
+            # [PairSAM adaptation 2] 逐點 validity（ignore 區域排除）
             point_valid = (point_sample(
                 valid_f.expand(len(present), -1, -1, -1), point_coords,
                 align_corners=False).squeeze(1) > 0.5).float()

@@ -5,16 +5,16 @@ from torch.nn import functional as F
 from typing import Any, Dict, List, Tuple
 
 from .image_encoder import ImageEncoderViT
-from .weather_prompt_encoder import WeatherPromptEncoder
-from .weather_mask_decoder import MaskDecoder
+from .pair_prompt_encoder import PairPromptEncoder
+from .pair_mask_decoder import MaskDecoder
 from .fusion import CMAAlignment
 from .text_encoder import TextEncoder
 from .fusion_head import ResidualDWConvFusion
 from .deform_adapter import DeformAdapter
 
-class WeatherSAM(nn.Module):
+class PairSAM(nn.Module):
     """
-    基於 Segment Anything Model (SAM) 改良的天氣語意分割模型 (WeatherSAM)。
+    基於 Segment Anything Model (SAM) 改良的天氣語意分割模型 (PairSAM)。
     整合了 Image Encoder, Prompt Encoder, Mask Decoder，並額外加入了：
     1. CMAAlignment：UAWarpC 稠密匹配對齊晴天參考特徵，輸出 f_ref_warped + confidence map
        （目前作為診斷監控與 Phase-2 預備，不再注入 decoder）。
@@ -28,7 +28,7 @@ class WeatherSAM(nn.Module):
     def __init__(
         self,
         image_encoder: ImageEncoderViT,
-        prompt_encoder: WeatherPromptEncoder,
+        prompt_encoder: PairPromptEncoder,
         mask_decoder: MaskDecoder,
         fusion_module: CMAAlignment,
         text_encoder: TextEncoder,
@@ -74,7 +74,7 @@ class WeatherSAM(nn.Module):
         # [testv14] Dense Prompt Fusion 路徑已移除：跨條件補償改由 WarpedVGG Adapter
         # 在 ViT Encoder 內部完成，避免 encoder-level 與 decoder-level 雙重注入造成
         # gate 互相競爭、稀釋 adapter 學習信號。Decoder 的 dense prompt 改用
-        # WeatherPromptEncoder 內建的 no_mask_embed（中性零訊號）。
+        # PairPromptEncoder 內建的 no_mask_embed（中性零訊號）。
 
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
@@ -96,7 +96,7 @@ class WeatherSAM(nn.Module):
         self._adapter_hook_handles: list = []
 
         # [ablation B] adapter 變體：'reference'（預設，跨視角參考注入）或
-        # 'sam_adapter'（同影像 SAM-Adapter 基線）。後者由 build_weather_sam_from_config
+        # 'sam_adapter'（同影像 SAM-Adapter 基線）。後者由 build_pair_sam_from_config
         # 換掉 self.vgg_injector，並把 _adapter_reference_free 設為 True，使 forward
         # 完全跳過 UAWarpC 參考對齊（不讀 clear_image）。
         self.adapter_variant: str = 'reference'
@@ -139,7 +139,7 @@ class WeatherSAM(nn.Module):
         for s, blk_idx in enumerate(self.vgg_injector.INJECT_BLOCKS):
             if blk_idx >= n_blocks:
                 warnings.warn(
-                    f"[WeatherSAM] INJECT_BLOCKS[{s}]={blk_idx} out of range "
+                    f"[PairSAM] INJECT_BLOCKS[{s}]={blk_idx} out of range "
                     f"for {n_blocks}-block encoder; skipped.",
                     stacklevel=2,
                 )
@@ -150,7 +150,7 @@ class WeatherSAM(nn.Module):
         for s, blk_idx in enumerate(self.vgg_injector.EXTRACT_BLOCKS):
             if blk_idx >= n_blocks:
                 warnings.warn(
-                    f"[WeatherSAM] EXTRACT_BLOCKS[{s}]={blk_idx} out of range "
+                    f"[PairSAM] EXTRACT_BLOCKS[{s}]={blk_idx} out of range "
                     f"for {n_blocks}-block encoder; skipped.",
                     stacklevel=2,
                 )
@@ -160,7 +160,7 @@ class WeatherSAM(nn.Module):
             self._adapter_hook_handles.append(h)
 
         self.use_vgg_adapter = True
-        print(f'[WeatherSAM] Deform Adapter enabled: inject@{self.vgg_injector.INJECT_BLOCKS}, '
+        print(f'[PairSAM] Deform Adapter enabled: inject@{self.vgg_injector.INJECT_BLOCKS}, '
               f'extract@{self.vgg_injector.EXTRACT_BLOCKS}.')
 
     # Alias for new API used by brief / future callers
@@ -235,7 +235,7 @@ class WeatherSAM(nn.Module):
                 assert (self.simple_fpn is not None and self.m2f_decoder is not None
                         and self.pixel_decoder is not None), (
                     "decoder_arch='m2f' requires simple_fpn, pixel_decoder and m2f_decoder "
-                    "to be built (use build_weather_sam_from_config with decoder='m2f')."
+                    "to be built (use build_pair_sam_from_config with decoder='m2f')."
                 )
                 texts = image_record["text_prompts"]  # 19 個類別名（dataloader 依 id 排序）
                 text_feat = self.text_encoder(texts).squeeze(1)          # (19, 256)
@@ -303,7 +303,7 @@ class WeatherSAM(nn.Module):
             location_embeddings = loc_feats.repeat(k_prompts, 1, 1)
 
             # C. 提示編碼 (Prompt Encoding) → sparse: (K, 2, 256)
-            # [testv14] dense_embeddings 改用 WeatherPromptEncoder 的 no_mask_embed（中性零訊號），
+            # [testv14] dense_embeddings 改用 PairPromptEncoder 的 no_mask_embed（中性零訊號），
             # 跨條件補償已由 WarpedVGG Adapter 在 encoder 內完成，無需 decoder 入口再注入
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 text_embeddings=sparse_embeddings,

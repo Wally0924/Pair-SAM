@@ -1,5 +1,5 @@
-# WeatherSAM 研究報告書
-**版本**：v2.0（Mask2Former-style）　｜　**日期**：2026-04-12　｜　**作者**：WeatherSAM Research
+# PairSAM 研究報告書
+**版本**：v2.0（Mask2Former-style）　｜　**日期**：2026-04-12　｜　**作者**：PairSAM Research
 
 ---
 
@@ -21,7 +21,7 @@
 
 ### 1.1 研究目標
 
-WeatherSAM 是一個基於 Segment Anything Model（SAM ViT-H）的惡劣天氣語意分割模型。核心研究命題為：
+PairSAM 是一個基於 Segment Anything Model（SAM ViT-H）的惡劣天氣語意分割模型。核心研究命題為：
 
 > **同地點的晴天影像包含能夠幫助惡劣天氣語意分割的先驗資訊，且此對應關係可被模型顯式學習與驗證。**
 
@@ -95,7 +95,7 @@ WeatherSAM 是一個基於 Segment Anything Model（SAM ViT-H）的惡劣天氣�
     → location_embeddings (K, 1, 256)
 
   sparse_embeddings + location_embeddings
-    → WeatherPromptEncoder (concat → K, 2, 256)
+    → PairPromptEncoder (concat → K, 2, 256)
 
   ── Stage 4: Mask2Former-Style Decoding (核心改動) ──
 
@@ -206,14 +206,14 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{mask}} + \mathcal{L}_{\text{ct
 
 ### 3.1 ACDC Invalid Mask 支援（2026-04-11）
 
-**`segment-anything/utils/weather_dataloader.py`**
+**`segment-anything/utils/pair_dataloader.py`**
 
 - `__getitem__`：新增 `invalid_mask` 讀取邏輯。
   - 若 CSV 有 `invalid_mask` 欄位且檔案存在 → 讀取 PNG，`inv == 0` 為 True（無效）
   - 否則 → 輸出全 False tensor，維持與 Cityscapes 相同介面
 - `collate_fn`：新增 `invalid_masks` stack，`batch_dict` 新增 `"invalid_mask"` key
 
-**`segment-anything/weather_trainer.py`**
+**`segment-anything/pair_trainer.py`**
 
 - `train_epoch` 與 `validate_epoch` 的 `valid_mask_i` 計算前，加入：
   ```python
@@ -241,9 +241,9 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{mask}} + \mathcal{L}_{\text{ct
 
 | 檔案 | 修改內容 |
 |---|---|
-| `weather_mask_decoder.py` | 新增 `class_mask_tokens` (nn.Embedding(19, 256))、`class_hypernetworks_mlps` (19 個獨立 MLP)、`forward_semantic()` / `predict_masks_semantic()` 方法 |
-| `weather_sam.py` | forward 改呼叫 `forward_semantic()`，output dict 移除 `iou_predictions`，新增 `CLASS_MAP` (19 class) |
-| `build_weather_sam.py` | 新增 `num_classes=19` 傳入 MaskDecoder |
+| `pair_mask_decoder.py` | 新增 `class_mask_tokens` (nn.Embedding(19, 256))、`class_hypernetworks_mlps` (19 個獨立 MLP)、`forward_semantic()` / `predict_masks_semantic()` 方法 |
+| `pair_sam.py` | forward 改呼叫 `forward_semantic()`，output dict 移除 `iou_predictions`，新增 `CLASS_MAP` (19 class) |
+| `build_pair_sam.py` | 新增 `num_classes=19` 傳入 MaskDecoder |
 
 **設計特點**：
 - 所有 K 個 active class query 在同一 TwoWayTransformer sequence 中處理
@@ -257,10 +257,10 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{mask}} + \mathcal{L}_{\text{ct
 
 | 檔案 | 移除內容 |
 |---|---|
-| `weather_mask_decoder.py` | `class_iou_tokens` 從 token 序列移除、iou prediction 計算移除、回傳型別改為 `torch.Tensor` |
-| `weather_sam.py` | output dict 移除 `"iou_predictions"` key |
-| `weather_trainer.py` | Stage 2 IoU MSE 區塊、`iou_mse_loss_fn`、`iou_weight`、`calculate_true_iou` import（全部以註解保留） |
-| `weather_predictor.py` | 回傳簽名從 `(masks, iou_predictions, low_res_masks, class_ids)` → `(masks, low_res_masks, class_ids)` |
+| `pair_mask_decoder.py` | `class_iou_tokens` 從 token 序列移除、iou prediction 計算移除、回傳型別改為 `torch.Tensor` |
+| `pair_sam.py` | output dict 移除 `"iou_predictions"` key |
+| `pair_trainer.py` | Stage 2 IoU MSE 區塊、`iou_mse_loss_fn`、`iou_weight`、`calculate_true_iou` import（全部以註解保留） |
+| `pair_predictor.py` | 回傳簽名從 `(masks, iou_predictions, low_res_masks, class_ids)` → `(masks, low_res_masks, class_ids)` |
 | `train.py` | `--iou_weight` 參數、log_entry、print、plot_history（全部以註解保留） |
 
 ### 3.5 ResidualDWConvFusion 取代 ContextFusionHead（2026-04-12）
@@ -277,7 +277,7 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{mask}} + \mathcal{L}_{\text{ct
 | 檔案 | 修改內容 |
 |---|---|
 | `fusion_head.py` | 新增 `ResidualDWConvFusion`，舊 `ContextFusionHead` 完整保留 |
-| `weather_sam.py` | import 與實例化替換（舊版以註解保留） |
+| `pair_sam.py` | import 與實例化替換（舊版以註解保留） |
 
 ### 3.6 ACDC ConditionEncoder 支援（2026-04-12）
 
@@ -285,9 +285,9 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{mask}} + \mathcal{L}_{\text{ct
 
 | 檔案 | 修改內容 |
 |---|---|
-| `weather_sam.py` | 新增 `self.condition_encoder = nn.Embedding(3, 256)`，forward 中 `condition_id >= 0` 啟用 ConditionEncoder |
-| `weather_dataloader.py` | 新增 `condition_id` 欄位讀取，collate_fn 加入 `condition_ids` |
-| `weather_trainer.py` | `use_condition_embedding` flag 控制 param group（ConditionEncoder vs LocationEncoder.output_projection） |
+| `pair_sam.py` | 新增 `self.condition_encoder = nn.Embedding(3, 256)`，forward 中 `condition_id >= 0` 啟用 ConditionEncoder |
+| `pair_dataloader.py` | 新增 `condition_id` 欄位讀取，collate_fn 加入 `condition_ids` |
+| `pair_trainer.py` | `use_condition_embedding` flag 控制 param group（ConditionEncoder vs LocationEncoder.output_projection） |
 | `train.py` | 新增 `--use_condition_embedding` argparse（store_true, default=False） |
 
 **模式切換**：
@@ -411,7 +411,7 @@ Batch 內的所有樣本本身就構成完整的訓練訊號，不需要額外�
 
 ### 5.4 實作位置
 
-**`weather_sam.py` — 新增 projection head**
+**`pair_sam.py` — 新增 projection head**
 ```python
 # __init__ 中加入
 self.contrastive_proj = nn.Sequential(
@@ -421,7 +421,7 @@ self.contrastive_proj = nn.Sequential(
 )
 ```
 
-**`weather_sam.py` — forward 回傳對比特徵**
+**`pair_sam.py` — forward 回傳對比特徵**
 ```python
 # 在 ref_embeddings 計算後加入
 contrast_feats = {
@@ -446,7 +446,7 @@ def location_contrastive_loss(adverse_feats, clear_feats, temperature=0.07):
     return F.cross_entropy(logits, labels)
 ```
 
-**`weather_trainer.py` — 加入 auxiliary loss**
+**`pair_trainer.py` — 加入 auxiliary loss**
 ```python
 # Stage 5 之後，加入對比損失（auxiliary，不影響主路徑梯度）
 contrast_loss = location_contrastive_loss(

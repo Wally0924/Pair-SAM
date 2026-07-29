@@ -19,9 +19,9 @@ import torch.nn.functional as F
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 sys.path.insert(0, str(_THIS.parents[1]))
-from _eval_common import (load_weather_sam_from_ablation, denorm_image, colorize_19class)
+from _eval_common import (load_pair_sam_from_ablation, denorm_image, colorize_19class)
 from segment_anything.modeling.semantic_assembly import assemble_semantic_logits
-from utils.weather_dataloader import WeatherSegmentationDataset
+from utils.pair_dataloader import PairSegmentationDataset
 
 NUM_CLASSES = 19
 DEVICE = 'cuda'
@@ -36,9 +36,9 @@ def main():
     ap.add_argument('--n', type=int, default=6, help='視覺化張數')
     args = ap.parse_args()
 
-    model, cfg = load_weather_sam_from_ablation(args.ckpt, args.config, device=DEVICE)
+    model, cfg = load_pair_sam_from_ablation(args.ckpt, args.config, device=DEVICE)
     print(f'[viz] config: {cfg}')
-    ds = WeatherSegmentationDataset(csv_file=args.csv, image_size=1024,
+    ds = PairSegmentationDataset(csv_file=args.csv, image_size=1024,
                                     mode='val', force_raw_images=True)
     n = min(args.n, len(ds))
     idxs = np.linspace(0, len(ds) - 1, n).round().astype(int).tolist()  # 均勻取樣
@@ -47,7 +47,7 @@ def main():
     fig, axes = plt.subplots(n, 3, figsize=(13.5, 4.5 * n))
     if n == 1:
         axes = axes[None, :]
-    titles = ['Input (Adverse)', 'WeatherSAM (Ours)', 'Ground Truth']
+    titles = ['Input (Adverse)', 'PairSAM (Ours)', 'Ground Truth']
 
     with torch.no_grad():
         for row, idx in enumerate(idxs):

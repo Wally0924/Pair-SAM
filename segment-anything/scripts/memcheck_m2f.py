@@ -5,11 +5,11 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import torch
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 from utils.m2f_loss import M2FSetLoss
 
 cfg = {"model_type": "vit_h", "use_vgg_adapter": True, "decoder": "m2f"}
-model = build_weather_sam_from_config(cfg).cuda().train()
+model = build_pair_sam_from_config(cfg).cuda().train()
 # 對齊真實訓練（train.py:301 / pretrain_cityscapes.py:109）：ViT-H block gradient
 # checkpointing。少了這行等於測「不切實際的無 checkpointing 設定」，必 OOM。
 model.image_encoder.use_checkpoint = True

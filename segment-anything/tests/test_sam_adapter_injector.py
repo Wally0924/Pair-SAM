@@ -60,7 +60,7 @@ def test_delta_depends_on_input():
 
 
 def test_hook_interface_parity():
-    """必須具備與參考注入器一致的 hook 介面與屬性，供 WeatherSAM 多型呼叫。"""
+    """必須具備與參考注入器一致的 hook 介面與屬性，供 PairSAM 多型呼叫。"""
     inj = SameImageAdapterInjector()
     assert inj.INJECT_BLOCKS == [7, 15, 23, 31]
     assert hasattr(inj, 'gates') and len(inj.gates) == 4

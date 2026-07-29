@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # ACDC 訓練集實測 class pixel frequency（1200 張，2.3B valid pixels）
-# 統計指令：weather_dataloader CSV → cv2 imread GT → np.bincount
+# 統計指令：pair_dataloader CSV → cv2 imread GT → np.bincount
 # sky 佔 33.7%（ACDC 特有，遠高於 Cityscapes 的 7%），road/building/vegetation 次之
 # rider/motorcycle/bicycle 低於 0.05%，觸及 weight cap
 _ACDC_CLASS_FREQ = torch.tensor([

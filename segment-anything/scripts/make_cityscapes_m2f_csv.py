@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""產生 Cityscapes 的 WeatherSegmentationDataset CSV(m2f CS 預訓練用)。
+"""產生 Cityscapes 的 PairSegmentationDataset CSV(m2f CS 預訓練用)。
 
 一次性腳本:掃描 Cityscapes leftImg8bit 影像,配對 gtFine labelTrainIds,
 輸出與 acdc_adverse_ref_rgb_{train,val}.csv 同欄位格式的 CSV。

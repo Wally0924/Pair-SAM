@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# WeatherSAM M2F 訓練：凍結 encoder + 解凍 decoder 微調（+ DeformAdapter）
+# PairSAM M2F 訓練：凍結 encoder + 解凍 decoder 微調（+ DeformAdapter）
 #   來源模型 = outputs_m2f_cs_e2e（Cityscapes 晴天端到端預訓練的 encoder + MSDeformAttn
 #   pixel decoder + masked-attention decoder）。本階段載入該完整權重（encoder 與 decoder
 #   皆載入預權重），凍結 ViT-H encoder，於 ACDC 惡劣天氣上微調 decoder，並一併訓練

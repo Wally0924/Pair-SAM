@@ -1,4 +1,4 @@
-"""端到端 smoke test：整個 WeatherSAM forward（含 DeformAdapter A3）輸出 key 與舊版一致。
+"""端到端 smoke test：整個 PairSAM forward（含 DeformAdapter A3）輸出 key 與舊版一致。
 
 GPU 測試：用真實 ViT-H（1024² 太慢，CPU skip）；在 CUDA 下以 bfloat16 autocast 執行。
 執行：conda run -n sam_env python -m pytest segment-anything/tests/test_deform_adapter_e2e.py -v
@@ -9,7 +9,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 
 
 def test_full_model_forward_keys_unchanged():
@@ -36,7 +36,7 @@ def test_full_model_forward_keys_unchanged():
         "ref": True,
         "mfb": True,
     }
-    model = build_weather_sam_from_config(cfg, checkpoint=None).eval()
+    model = build_pair_sam_from_config(cfg, checkpoint=None).eval()
     model = model.cuda().to(torch.bfloat16)  # half precision to reduce peak VRAM
 
     S = model.image_encoder.img_size  # 1024

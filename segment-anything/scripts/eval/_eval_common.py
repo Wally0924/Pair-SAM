@@ -13,7 +13,7 @@ _SEGANY_ROOT = _THIS.parents[2]   # .../segment-anything
 if str(_SEGANY_ROOT) not in sys.path:
     sys.path.insert(0, str(_SEGANY_ROOT))
 
-from utils.weather_dataloader import WeatherSegmentationDataset
+from utils.pair_dataloader import PairSegmentationDataset
 
 
 # ── 預設路徑 ───────────────────────────────────────────────
@@ -62,38 +62,38 @@ def colorize_19class(mask: np.ndarray) -> np.ndarray:
     return color
 
 
-def load_weather_sam_from_ablation(ckpt_path, config_path=None, device='cuda'):
+def load_pair_sam_from_ablation(ckpt_path, config_path=None, device='cuda'):
     """依 ablation_config.json 重建模型並載入 ckpt，確保與訓練 config 完全一致。
 
-    複用 build_weather_sam_from_config 的 checkpoint 載入（自動處理 model_state_dict
+    複用 build_pair_sam_from_config 的 checkpoint 載入（自動處理 model_state_dict
     key 與 shape 過濾），並由 cfg 設定 decoder_mode / use_lrh / use_reference / inject。
     回傳 (model, cfg)。
     """
     import json
-    from segment_anything.build_weather_sam import build_weather_sam_from_config
+    from segment_anything.build_pair_sam import build_pair_sam_from_config
     if config_path is None:
         config_path = os.path.join(os.path.dirname(ckpt_path), 'ablation_config.json')
     with open(config_path) as f:
         cfg = json.load(f)
-    model = build_weather_sam_from_config(cfg, checkpoint=ckpt_path)
+    model = build_pair_sam_from_config(cfg, checkpoint=ckpt_path)
     return model.to(device).eval(), cfg
 
 
 def build_acdc_val_loader(csv_path: str = DEFAULT_VAL_CSV,
                            batch_size: int = 1, num_workers: int = 2):
     """ACDC val DataLoader，batch_size=1 簡化 per-condition 統計。"""
-    ds = WeatherSegmentationDataset(
+    ds = PairSegmentationDataset(
         csv_file=csv_path, image_size=1024, mode='val', force_raw_images=True,
     )
     return DataLoader(
         ds, batch_size=batch_size, shuffle=False, num_workers=num_workers,
-        collate_fn=WeatherSegmentationDataset.collate_fn,
+        collate_fn=PairSegmentationDataset.collate_fn,
     )
 
 
 def make_batched_input(batch: dict, device: str) -> list:
-    """把 dataloader 出來的 batch dict 轉成 WeatherSAM.forward 需要的 list[dict]。
-    與 weather_trainer.py 中的轉換邏輯保持一致。
+    """把 dataloader 出來的 batch dict 轉成 PairSAM.forward 需要的 list[dict]。
+    與 pair_trainer.py 中的轉換邏輯保持一致。
     """
     bs = batch['gt_mask'].shape[0]
     out = []

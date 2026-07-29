@@ -1,11 +1,11 @@
-# weather_prompt_encoder.py
+# pair_prompt_encoder.py
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional
 
 
-class WeatherPromptEncoder(nn.Module):
+class PairPromptEncoder(nn.Module):
     def __init__(
         self,
         embed_dim: int,
@@ -13,7 +13,7 @@ class WeatherPromptEncoder(nn.Module):
         input_image_size: Tuple[int, int],
     ) -> None:
         """
-        修改版 WeatherPromptEncoder (Sparse Prompt Strategy):
+        修改版 PairPromptEncoder (Sparse Prompt Strategy):
         1. 接收 Text Embeddings
         2. 接收 Location Embeddings
         將兩者串接作為 Transformer 的 Tokens；dense prompt 固定為 no_mask_embed。

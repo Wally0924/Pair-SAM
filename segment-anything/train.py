@@ -15,10 +15,10 @@ import matplotlib.pyplot as plt
 import argparse
 
 # 引入你的模組
-from utils.weather_dataloader import WeatherSegmentationDataset
+from utils.pair_dataloader import PairSegmentationDataset
 from utils.rare_class_sampler import RareClassSampler
-from weather_trainer import WeatherSAMTrainer
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from pair_trainer import PairSAMTrainer
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 
 
 def set_seed(seed: int, deterministic: bool = True):
@@ -54,7 +54,7 @@ def plot_history(history, output_dir, is_m2f=False):
     # 每個 loss 各自一個子圖，各有自己的 y 軸尺度
     # train_col = f'train_{key}'，val_col = f'val_{key}'；缺失欄位自動跳過
     # Loss 面板依 decoder 切換。m2f 路徑 CSV 欄位重用 ce←cls、lovasz←bce（見
-    # weather_trainer init 註解），故此處把面板標籤改回 M2F SetLoss 語彙，
+    # pair_trainer init 註解），故此處把面板標籤改回 M2F SetLoss 語彙，
     # 並略去 legacy MFB 加權面板（m2f 無 MFB，ce_weighted/dice_weighted 為重複值）。
     if is_m2f:
         loss_components = [
@@ -137,7 +137,7 @@ def plot_history(history, output_dir, is_m2f=False):
     for idx in range(n_plots, len(axes)):
         axes[idx].set_visible(False)
 
-    fig.suptitle('WeatherSAM Training Curves (Per-Component)', fontsize=13, fontweight='bold')
+    fig.suptitle('PairSAM Training Curves (Per-Component)', fontsize=13, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.985])  # 預留 suptitle 空間，避免壓到首列面板標題
     save_path = os.path.join(output_dir, 'training_curve.png')
     plt.savefig(save_path, dpi=120)
@@ -150,7 +150,7 @@ def plot_history(history, output_dir, is_m2f=False):
 # ==========================================
 def print_training_config(args, device):
     print("\n" + "="*60)
-    print(f"🚀  WeatherSAM Training Configuration")
+    print(f"🚀  PairSAM Training Configuration")
     print("="*60)
     
     is_m2f = getattr(args, 'decoder', 'unified') == 'm2f'
@@ -225,7 +225,7 @@ def main():
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
-    parser.add_argument("--output_dir", type=str, default="outputs_weather_sam_mask2former_testv15",)
+    parser.add_argument("--output_dir", type=str, default="outputs_pair_sam_mask2former_testv15",)
     
     # --- 訓練超參數 ---
     parser.add_argument("--epochs", type=int, default=30, help="總共訓練的 Epoch 數量")
@@ -362,7 +362,7 @@ def main():
         extractor=args.extractor,
         adapter_variant=args.adapter_variant,
     )
-    model = build_weather_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
+    model = build_pair_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
     # Gradient checkpointing：ViT-H 1024² 不開會存滿 32 blocks activation（>21GB，OOM）。
     # 僅在 self.training 時生效，數值等價，memcheck 實測峰值 10.07GB / 0.79s per step。
     model.image_encoder.use_checkpoint = True
@@ -425,14 +425,14 @@ def main():
             reason.append("use_vgg_adapter=True")
         print(f"⚠️  force_raw_images=True ({' / '.join(reason)}) — cache bypassed for both train & val")
 
-    train_ds = WeatherSegmentationDataset(
+    train_ds = PairSegmentationDataset(
         csv_file=args.train_csv,
         image_size=1024,
         mode='train',
         force_raw_images=force_raw,
     )
 
-    val_ds = WeatherSegmentationDataset(
+    val_ds = PairSegmentationDataset(
         csv_file=args.val_csv,
         image_size=1024,
         mode='val',
@@ -475,7 +475,7 @@ def main():
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=4,
-        collate_fn=WeatherSegmentationDataset.collate_fn,
+        collate_fn=PairSegmentationDataset.collate_fn,
         pin_memory=True,
         persistent_workers=True,
         worker_init_fn=seed_worker,
@@ -487,7 +487,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=4,
-        collate_fn=WeatherSegmentationDataset.collate_fn,
+        collate_fn=PairSegmentationDataset.collate_fn,
         pin_memory=True,
         persistent_workers=True,
         worker_init_fn=seed_worker,
@@ -495,7 +495,7 @@ def main():
     
     # 3. 初始化 Trainer
     print("⚙️  Initializing Trainer...")
-    trainer = WeatherSAMTrainer(
+    trainer = PairSAMTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,

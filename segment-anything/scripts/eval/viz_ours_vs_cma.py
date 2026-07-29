@@ -1,7 +1,7 @@
-"""Ours (WeatherSAM, R7) vs CMA 定性比較圖。
+"""Ours (PairSAM, R7) vs CMA 定性比較圖。
 
 對 CMA manifest 列出的 ACDC val 影像：
-  * 以 R7_seed42 ablation config 重建 WeatherSAM 並原生解析度推論（=Ours）
+  * 以 R7_seed42 ablation config 重建 PairSAM 並原生解析度推論（=Ours）
   * 直接讀回 CMA 預渲染結果（P-mode PNG，像素值即 trainId）
   * 讀原生 GT + invalid_mask，按官方協定 (GT==255 或 invalid) 過濾
   * 算每張影像 Ours / CMA 的 mIoU（與 eval_e1_acdc_val_full 同一 IoU 定義）
@@ -34,11 +34,11 @@ _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))       # _eval_common
 sys.path.insert(0, str(_THIS.parents[1]))   # utils
 from _eval_common import (  # noqa: E402
-    load_weather_sam_from_ablation, colorize_19class,
+    load_pair_sam_from_ablation, colorize_19class,
     CITYSCAPES_CLASSES, CITYSCAPES_PALETTE,
 )
 from segment_anything.modeling.semantic_assembly import assemble_semantic_logits  # noqa: E402
-from utils.weather_dataloader import WeatherSegmentationDataset  # noqa: E402
+from utils.pair_dataloader import PairSegmentationDataset  # noqa: E402
 
 NUM_CLASSES = 19
 IGNORE_INDEX = 255
@@ -207,11 +207,11 @@ def compute_metrics_and_cache(args) -> pd.DataFrame:
     tmp_csv.parent.mkdir(parents=True, exist_ok=True)
     val_cols = list(val.columns)
     merged[val_cols].to_csv(tmp_csv, index=False)
-    ds = WeatherSegmentationDataset(csv_file=str(tmp_csv), image_size=1024,
+    ds = PairSegmentationDataset(csv_file=str(tmp_csv), image_size=1024,
                                     mode='val', force_raw_images=True)
     assert len(ds) == len(merged), f'dataset {len(ds)} != merged {len(merged)}'
 
-    model, cfg = load_weather_sam_from_ablation(args.ckpt, None, device=DEVICE)
+    model, cfg = load_pair_sam_from_ablation(args.ckpt, None, device=DEVICE)
     print(f'[ours_vs_cma] Ours config: {cfg}')
 
     rows = []

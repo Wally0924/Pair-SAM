@@ -11,7 +11,7 @@
 #     - Zhu et al., "Deformable DETR: Deformable Transformers for End-to-End
 #       Object Detection", ICLR 2021. arXiv:2010.04159（MSDeformAttn 源頭）
 #
-# [WeatherSAM adaptations]（完整清單；其餘逐行同上游）:
+# [PairSAM adaptations]（完整清單；其餘逐行同上游）:
 #   1. 移除 detectron2 / fvcore 依賴：@configurable / from_config /
 #      SEM_SEG_HEADS_REGISTRY / ShapeSpec 全刪；detectron2 Conv2d + get_norm
 #      wrapper → nn.Conv2d + nn.GroupNorm（以 nn.Sequential 組）；
@@ -40,7 +40,7 @@ from .ops.ms_deform_attn import MSDeformAttn
 from .m2f_decoder import PositionEmbeddingSine, _get_activation_fn
 
 
-# ── helper：替換 detectron2 / fvcore 相依（[WeatherSAM adaptation 1]）──
+# ── helper：替換 detectron2 / fvcore 相依（[PairSAM adaptation 1]）──
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
@@ -203,7 +203,7 @@ class MSDeformAttnTransformerEncoder(nn.Module):
 
 
 class MSDeformAttnPixelDecoder(nn.Module):
-    # [WeatherSAM adaptation 1] 去 @configurable / SEM_SEG_HEADS_REGISTRY / from_config。
+    # [PairSAM adaptation 1] 去 @configurable / SEM_SEG_HEADS_REGISTRY / from_config。
     def __init__(
         self,
         conv_dim: int = 256,
@@ -216,7 +216,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
         in_channels: int = 256,
     ):
         super().__init__()
-        # [WeatherSAM adaptation 3] 固定 4 尺度佈局取代上游從 ShapeSpec 排序取得的
+        # [PairSAM adaptation 3] 固定 4 尺度佈局取代上游從 ShapeSpec 排序取得的
         #   self.in_features / feature_strides / feature_channels（res2→res5）。
         self.in_features = ["res2", "res3", "res4", "res5"]
         self.feature_strides = [4, 8, 16, 32]
@@ -260,7 +260,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
 
         self.mask_dim = mask_dim
         # use 1x1 conv instead
-        # [WeatherSAM adaptation 1] detectron2 Conv2d → nn.Conv2d
+        # [PairSAM adaptation 1] detectron2 Conv2d → nn.Conv2d
         self.mask_features = nn.Conv2d(
             conv_dim,
             mask_dim,
@@ -271,7 +271,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
         _c2_xavier_fill(self.mask_features)
 
         self.maskformer_num_feature_levels = 3  # always use 3 scales
-        self.common_stride = 4  # [WeatherSAM adaptation 3] 固定 common_stride
+        self.common_stride = 4  # [PairSAM adaptation 3] 固定 common_stride
 
         # extra fpn levels
         stride = min(self.transformer_feature_strides)
@@ -282,7 +282,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
 
         use_bias = norm == ""
         for idx, in_ch in enumerate(self.feature_channels[:self.num_fpn_levels]):
-            # [WeatherSAM adaptation 1] detectron2 Conv2d+get_norm → nn.Sequential(Conv2d, GroupNorm[, ReLU])
+            # [PairSAM adaptation 1] detectron2 Conv2d+get_norm → nn.Sequential(Conv2d, GroupNorm[, ReLU])
             lateral_conv = nn.Sequential(
                 nn.Conv2d(in_ch, conv_dim, kernel_size=1, bias=use_bias),
                 _get_norm(norm, conv_dim),
@@ -351,7 +351,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
         return self.mask_features(out[-1]), out[0], multi_scale_features
 
     def forward(self, feats, f4):
-        # [WeatherSAM adaptation 4] SimpleFPN 輸出 → 上游 features dict → forward_features。
+        # [PairSAM adaptation 4] SimpleFPN 輸出 → 上游 features dict → forward_features。
         #   feats=[f32,f16,f8]（coarse→fine, strides 32/16/8）；f4=1/4 mask src（stride 4）。
         f32, f16, f8 = feats
         features = {"res2": f4, "res3": f8, "res4": f16, "res5": f32}

@@ -29,7 +29,7 @@ import torch
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (  # noqa: E402
-    load_weather_sam_from_ablation, make_batched_input,
+    load_pair_sam_from_ablation, make_batched_input,
     colorize_19class, CITYSCAPES_CLASSES, CITYSCAPES_PALETTE,
 )
 from dump_muses_preds import predict_native, resolve_condition_csv  # noqa: E402
@@ -37,7 +37,7 @@ from dump_muses_preds import predict_native, resolve_condition_csv  # noqa: E402
 _SEGANY_ROOT = _THIS.parents[2]
 if str(_SEGANY_ROOT) not in sys.path:
     sys.path.insert(0, str(_SEGANY_ROOT))
-from utils.weather_dataloader import WeatherSegmentationDataset  # noqa: E402
+from utils.pair_dataloader import PairSegmentationDataset  # noqa: E402
 
 DEFAULT_CKPT = str(_SEGANY_ROOT / 'outputs_ablation_m2f' / 'FULL_seed42'
                    / 'weather_sam_best_latest.pth')
@@ -96,11 +96,11 @@ def main() -> None:
     args = parse_args()
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
 
-    model, _cfg = load_weather_sam_from_ablation(args.ckpt, device=args.device)
+    model, _cfg = load_pair_sam_from_ablation(args.ckpt, device=args.device)
     model.use_cond = False  # cond off:text + reference 照常
 
     resolved = resolve_condition_csv(args.csv, 'off')
-    ds = WeatherSegmentationDataset(csv_file=resolved, image_size=1024,
+    ds = PairSegmentationDataset(csv_file=resolved, image_size=1024,
                                     mode='val', force_raw_images=True)
     df = ds.data.reset_index(drop=True)
 
@@ -119,7 +119,7 @@ def main() -> None:
             night_n += 1; tag = f'night{night_n}'
 
         # 前向(原生解析度)
-        item = WeatherSegmentationDataset.collate_fn([ds[idx]])
+        item = PairSegmentationDataset.collate_fn([ds[idx]])
         batched = make_batched_input(item, args.device)
         gt = cv2.imread(str(row['gt_path']), cv2.IMREAD_GRAYSCALE)
         H, W = gt.shape[:2]

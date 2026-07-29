@@ -1,7 +1,7 @@
 # tests/test_sam_adapter_a3_api.py
 """SameImageAdapterInjector 與 A3 hook API 的相容性(W4 基線前置)。
 
-背景:A3 改版後 WeatherSAM.enable_vgg_adapter 只認 DeformAdapter 介面
+背景:A3 改版後 PairSAM.enable_vgg_adapter 只認 DeformAdapter 介面
 (INJECT_BLOCKS/_make_inject_pre_hook + EXTRACT_BLOCKS/_make_extract_post_hook)。
 本測試鎖定 SameImageAdapterInjector 必須提供同名 API,否則
 --adapter_variant sam_adapter 在 enable 階段直接 AttributeError。

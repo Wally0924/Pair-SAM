@@ -1,15 +1,15 @@
 # pretrain_cityscapes.py
 """
-Stage-1：在 Cityscapes 晴天影像上全量 fine-tune WeatherSAM 的 ViT-H encoder。
+Stage-1：在 Cityscapes 晴天影像上全量 fine-tune PairSAM 的 ViT-H encoder。
 
 目標
     產出一個「域內化」的 SAM ViT-H encoder（sam_vit_h_cityscapes_encoder.pth），
-    作為 Stage-2（ACDC 完整 WeatherSAM）唯一改動的 encoder 初始權重，取代原始
+    作為 Stage-2（ACDC 完整 PairSAM）唯一改動的 encoder 初始權重，取代原始
     SA-1B 的 sam_vit_h_4b8939.pth。Stage-2 訓練腳本 train.py 完全不需修改，
     只要把 --checkpoint 指向本腳本輸出的 encoder-only 權重即可。
 
 pretrain 模型 = FULL 模型拔除 Adapter 與 condition embedding：
-    build_weather_sam_from_config(use_vgg_adapter=False, cond=False)
+    build_pair_sam_from_config(use_vgg_adapter=False, cond=False)
     → 跳過 VGG adapter + CMA pre_align（不讀 clear_image），
       condition embedding 退化為常數（forward 內 use_cond=False 固定索引 0）。
     保留：ViT-H encoder + text prompt(19 類名) + prompt_encoder + mask_decoder
@@ -35,7 +35,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 from utils.new_loss import (
     ContextLoss, MaskLoss, CITYSCAPES_CLASS_WEIGHTS, lovasz_weight_for_epoch,
 )
@@ -85,7 +85,7 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# 模型建構（乾淨版 WeatherSAM）
+# 模型建構（乾淨版 PairSAM）
 # ---------------------------------------------------------------------------
 def build_model(args):
     # use_vgg_adapter=False → 不啟用 adapter、forward 不讀 clear_image
@@ -100,9 +100,9 @@ def build_model(args):
         "mfb": args.mfb,
     }
     # checkpoint=SA-1B：build 的 state_dict 過濾只會匹配 image_encoder.*（原始 SAM 的
-    # prompt/mask decoder 與客製 WeatherSAM 不同名，會被濾除），故 encoder 載入 SA-1B、
+    # prompt/mask decoder 與客製 PairSAM 不同名，會被濾除），故 encoder 載入 SA-1B、
     # decoder/fusion 隨機初始化 —— 正是我們要的 pretrain 起點。
-    model = build_weather_sam_from_config(cfg, checkpoint=args.sam_checkpoint)
+    model = build_pair_sam_from_config(cfg, checkpoint=args.sam_checkpoint)
     model = model.to(args.device)
 
     # gradient checkpointing（僅影響 self.training 時的 encoder forward）

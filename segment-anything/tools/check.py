@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-from utils.dataloader import WeatherSegmentationDataset
+from utils.dataloader import PairSegmentationDataset
 
 # ================= 設定區 =================
 CONFIG = {
@@ -39,7 +39,7 @@ def main():
 
     # 1. 建立 Dataset
     print("正在初始化 Dataset (這可能需要幾秒鐘)...")
-    dataset = WeatherSegmentationDataset(root_dir=CONFIG["DATA_ROOT"], mode='train')
+    dataset = PairSegmentationDataset(root_dir=CONFIG["DATA_ROOT"], mode='train')
     
     # 2. 隨機取樣
     indices = torch.randperm(len(dataset))[:CONFIG["MAX_SAMPLES"]]

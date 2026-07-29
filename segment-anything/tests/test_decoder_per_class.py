@@ -6,7 +6,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import torch
-from segment_anything.modeling.weather_mask_decoder import MaskDecoder
+from segment_anything.modeling.pair_mask_decoder import MaskDecoder
 from segment_anything.modeling.transformer import TwoWayTransformer
 
 

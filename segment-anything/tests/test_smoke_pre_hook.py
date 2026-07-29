@@ -28,8 +28,8 @@ class FakeEncoder(nn.Module):
         return x
 
 
-class FakeWeatherSAM(nn.Module):
-    """Minimal stand-in for WeatherSAM — only the adapter-related attributes."""
+class FakePairSAM(nn.Module):
+    """Minimal stand-in for PairSAM — only the adapter-related attributes."""
     def __init__(self):
         super().__init__()
         self.image_encoder = FakeEncoder(n_blocks=32)
@@ -44,7 +44,7 @@ class FakeWeatherSAM(nn.Module):
     def enable_vgg_adapter(self, mode: str = 'pre'):
         import warnings
         if mode not in ('pre', 'post'):
-            raise ValueError(f"[WeatherSAM] mode must be 'pre' or 'post', got {mode!r}")
+            raise ValueError(f"[PairSAM] mode must be 'pre' or 'post', got {mode!r}")
         for handle in self._adapter_hook_handles:
             handle.remove()
         self._adapter_hook_handles = []
@@ -52,7 +52,7 @@ class FakeWeatherSAM(nn.Module):
         n_blocks = len(self.image_encoder.blocks)
         inject_blocks = [b for b in all_inject_blocks if b < n_blocks]
         if len(inject_blocks) != len(all_inject_blocks):
-            warnings.warn(f"[WeatherSAM] Some INJECT_BLOCKS out of range", stacklevel=2)
+            warnings.warn(f"[PairSAM] Some INJECT_BLOCKS out of range", stacklevel=2)
         for stage_idx, block_idx in enumerate(inject_blocks):
             target_block = self.image_encoder.blocks[block_idx]
             if mode == 'pre':
@@ -72,21 +72,21 @@ class FakeWeatherSAM(nn.Module):
 
 
 def test_enable_pre_mode_registers_four_hooks():
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     model.enable_vgg_adapter(mode='pre')
     assert model.use_vgg_adapter is True
     assert len(model._adapter_hook_handles) == 4
 
 
 def test_enable_post_mode_registers_four_hooks():
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     model.enable_vgg_adapter(mode='post')
     assert model.use_vgg_adapter is True
     assert len(model._adapter_hook_handles) == 4
 
 
 def test_disable_clears_handles():
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     model.enable_vgg_adapter(mode='pre')
     model.disable_vgg_adapter()
     assert model.use_vgg_adapter is False
@@ -94,13 +94,13 @@ def test_disable_clears_handles():
 
 
 def test_invalid_mode_raises_value_error():
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     with pytest.raises(ValueError, match="mode must be 'pre' or 'post'"):
         model.enable_vgg_adapter(mode='invalid')
 
 
 def test_re_enable_clears_old_hooks():
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     model.enable_vgg_adapter(mode='pre')
     assert len(model._adapter_hook_handles) == 4
     model.enable_vgg_adapter(mode='post')  # re-enable with different mode
@@ -109,7 +109,7 @@ def test_re_enable_clears_old_hooks():
 
 def test_pre_hook_fires_during_forward():
     """Verify pre-hook actually runs during forward pass (not just registered)."""
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     model.vgg_injector.set_features({
         'l2': torch.zeros(1, 256, 64, 64),
         'l3': torch.zeros(1, 512, 64, 64),
@@ -123,7 +123,7 @@ def test_pre_hook_fires_during_forward():
 
 def test_post_hook_fires_during_forward():
     """Verify post-hook actually runs during forward pass."""
-    model = FakeWeatherSAM()
+    model = FakePairSAM()
     model.vgg_injector.set_features({
         'l2': torch.zeros(1, 256, 64, 64),
         'l3': torch.zeros(1, 512, 64, 64),

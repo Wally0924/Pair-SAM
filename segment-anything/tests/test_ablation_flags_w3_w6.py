@@ -40,7 +40,7 @@ def test_no_conf_mod_forces_neutral_conf_keeps_reference():
     """W3:use_conf_mod=False → conf≡1,但參考特徵 c 保持非零(仍引入參考)。"""
     torch.manual_seed(0)
     rpm = _small_rpm()
-    rpm.use_conf_mod = False        # 模擬 build_weather_sam_from_config 覆蓋
+    rpm.use_conf_mod = False        # 模擬 build_pair_sam_from_config 覆蓋
     c, conf = rpm(_fake_feats())
     assert torch.equal(conf, torch.ones_like(conf)), "W3 語義:m̄≡1"
     assert c.abs().sum() > 0, "W3 不得歸零參考特徵(那是 --no-ref 的語義)"
@@ -59,7 +59,7 @@ def test_w6_extractor_removal_invariants():
     """W6:清空後 EXTRACT_BLOCKS=[]、extractors 無參數、set_features 狀態一致。"""
     ad = DeformAdapter(vit_dim=16, l2_channels=8, l3_channels=8, l4_channels=8,
                        n_heads=2)
-    # 模擬 build_weather_sam_from_config 的 W6 覆蓋(enable 前執行)
+    # 模擬 build_pair_sam_from_config 的 W6 覆蓋(enable 前執行)
     ad.EXTRACT_BLOCKS = []
     ad.extractors = nn.ModuleList()
     ad._extract_c = []

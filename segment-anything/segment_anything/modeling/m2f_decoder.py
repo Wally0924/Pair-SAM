@@ -15,7 +15,7 @@
 #     - Carion et al., "End-to-End Object Detection with Transformers" (DETR,
 #       source of PositionEmbeddingSine), ECCV 2020. arXiv:2005.12872
 #
-# [WeatherSAM adaptations]（完整清單；其餘逐行同上游）:
+# [PairSAM adaptations]（完整清單；其餘逐行同上游）:
 #   1. 移除 detectron2 依賴：@configurable / TRANSFORMER_DECODER_REGISTRY /
 #      Conv2d wrapper → 純 PyTorch；num_feature_levels 固定 3。
 #   2. num_queries = num_classes = 19（上游 100）；query↔類別硬對應。
@@ -293,7 +293,7 @@ class M2FDecoder(nn.Module):
         self.num_classes = num_classes
         self.num_heads = nheads
         self.num_layers = dec_layers
-        self.num_feature_levels = 3  # [WeatherSAM adaptation 1] 固定 3 尺度，不走 detectron2 config
+        self.num_feature_levels = 3  # [PairSAM adaptation 1] 固定 3 尺度，不走 detectron2 config
 
         # 上游同名成員（transformer_self_attention_layers 等三組 ModuleList）
         self.transformer_self_attention_layers = nn.ModuleList()
@@ -313,8 +313,8 @@ class M2FDecoder(nn.Module):
         self.decoder_norm = nn.LayerNorm(hidden_dim)
         self.pe_layer = PositionEmbeddingSine(hidden_dim // 2, normalize=True)
 
-        self.query_feat = nn.Embedding(num_classes, hidden_dim)  # [WeatherSAM adaptation 2] num_queries = num_classes
-        # [WeatherSAM adaptation 4] +1 slot = condition token 的 PE
+        self.query_feat = nn.Embedding(num_classes, hidden_dim)  # [PairSAM adaptation 2] num_queries = num_classes
+        # [PairSAM adaptation 4] +1 slot = condition token 的 PE
         self.query_embed = nn.Embedding(num_classes + 1, hidden_dim)
         self.level_embed = nn.Embedding(self.num_feature_levels, hidden_dim)
 
@@ -325,7 +325,7 @@ class M2FDecoder(nn.Module):
         # ── 上游 forward_prediction_heads 原樣，唯一 adaptation：先切掉 condition token ──
         decoder_output = self.decoder_norm(output)
         decoder_output = decoder_output.transpose(0, 1)               # (B, Q, C)
-        decoder_output = decoder_output[:, : self.num_classes]        # [WeatherSAM adaptation 4]
+        decoder_output = decoder_output[:, : self.num_classes]        # [PairSAM adaptation 4]
         outputs_class = self.class_embed(decoder_output)
         mask_embed = self.mask_embed(decoder_output)
         outputs_mask = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
@@ -339,8 +339,8 @@ class M2FDecoder(nn.Module):
         return outputs_class, outputs_mask, attn_mask
 
     def forward(self, feats, mask_features, text_feat=None, cond_token=None):
-        # [WeatherSAM adaptation 5] 簽名改為 (feats, mask_features, text_feat, cond_token)
-        # ── 主體對齊上游 forward；無 self.mask_classification 分支（[WeatherSAM adaptation 6]，本專案恆為 True）──
+        # [PairSAM adaptation 5] 簽名改為 (feats, mask_features, text_feat, cond_token)
+        # ── 主體對齊上游 forward；無 self.mask_classification 分支（[PairSAM adaptation 6]，本專案恆為 True）──
         B = mask_features.shape[0]
         src, pos, size_list = [], [], []
         for i in range(self.num_feature_levels):
@@ -354,11 +354,11 @@ class M2FDecoder(nn.Module):
         query_embed = query_embed.unsqueeze(1).repeat(1, B, 1)        # (19, B, C)
         output = self.query_feat.weight.unsqueeze(1).repeat(1, B, 1)  # (19, B, C)
         if text_feat is not None:
-            # [WeatherSAM adaptation 3] OV-DETR 式：text embedding 條件化 query
+            # [PairSAM adaptation 3] OV-DETR 式：text embedding 條件化 query
             output = output + text_feat.unsqueeze(1)
         n_cond = 0
         if cond_token is not None:
-            # [WeatherSAM adaptation 4] condition token 附加於序列尾端
+            # [PairSAM adaptation 4] condition token 附加於序列尾端
             output = torch.cat([output, cond_token.permute(1, 0, 2)], dim=0)  # (20, B, C)
             cond_pe = self.query_embed.weight[self.num_classes:].unsqueeze(1).repeat(1, B, 1)
             query_embed = torch.cat([query_embed, cond_pe], dim=0)
@@ -374,7 +374,7 @@ class M2FDecoder(nn.Module):
             level_index = i % self.num_feature_levels
             # 上游逐字保留（全空 mask fallback 全開）：
             attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
-            # [WeatherSAM adaptation 4] cross-attn 只作用於前 19 個 class query
+            # [PairSAM adaptation 4] cross-attn 只作用於前 19 個 class query
             tgt = self.transformer_cross_attention_layers[i](
                 output[: self.num_classes], src[level_index],
                 memory_mask=attn_mask,

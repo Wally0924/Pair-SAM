@@ -1,11 +1,11 @@
 # cityscapes_dataloader.py
 """
-Stage-1 Cityscapes 語意分割 Dataset（WeatherSAM encoder pretrain 專用）。
+Stage-1 Cityscapes 語意分割 Dataset（PairSAM encoder pretrain 專用）。
 
 用途：
-    以 Cityscapes 晴天影像對「乾淨版 WeatherSAM」(use_vgg_adapter=False, cond=False)
+    以 Cityscapes 晴天影像對「乾淨版 PairSAM」(use_vgg_adapter=False, cond=False)
     做全量 fine-tune，取得域內化的 ViT-H encoder。此 Dataset 刻意與 ACDC 用的
-    WeatherSegmentationDataset 解耦——不需要 clear reference、condition_id、
+    PairSegmentationDataset 解耦——不需要 clear reference、condition_id、
     invalid_mask、feature cache 等惡劣天氣專屬欄位，只提供影像 + 19 類 trainId 標註。
 
 輸出格式（與 model.preprocess / model.forward 的期望一致）：
@@ -28,7 +28,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# Cityscapes 19 類名稱（trainId 0~18），順序與 WeatherSAM.CLASS_MAP 一致
+# Cityscapes 19 類名稱（trainId 0~18），順序與 PairSAM.CLASS_MAP 一致
 CITYSCAPES_CLASSES = [
     "road", "sidewalk", "building", "wall", "fence",
     "pole", "traffic light", "traffic sign", "vegetation",

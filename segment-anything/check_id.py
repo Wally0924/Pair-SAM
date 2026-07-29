@@ -3,15 +3,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-# 假設你的 Dataset 類別名稱為 WeatherDataset，請根據你的 weather_dataloader.py 實際名稱修改
-from utils.weather_dataloader import WeatherSegmentationDataset 
+# 假設你的 Dataset 類別名稱為 WeatherDataset，請根據你的 pair_dataloader.py 實際名稱修改
+from utils.pair_dataloader import PairSegmentationDataset 
 
 def verify_class_mapping():
     print("🔍 啟動 Ground Truth 標籤驗證程式...\n")
     
     # 1. 初始化你的 Dataset (請確認你的 CSV 檔案位置正確)
-    # 根據你的 weather_dataloader.py，參數應該是 csv_file, image_size, mode
-    dataset = WeatherSegmentationDataset(
+    # 根據你的 pair_dataloader.py，參數應該是 csv_file, image_size, mode
+    dataset = PairSegmentationDataset(
         csv_file="/home/rvl1421/SAM_research-1/Datasets/train_with_gps.csv", # 請改成實際的 CSV 路徑
         image_size=1024,
         mode='train'

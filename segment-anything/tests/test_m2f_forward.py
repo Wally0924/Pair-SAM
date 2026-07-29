@@ -1,12 +1,12 @@
 import torch
 import pytest
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 
 
 @pytest.fixture(scope="module")
 def model():
     cfg = {"model_type": "vit_b", "use_vgg_adapter": False, "decoder": "m2f"}
-    m = build_weather_sam_from_config(cfg)
+    m = build_pair_sam_from_config(cfg)
     return m.to("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -51,6 +51,6 @@ def test_eval_mode_semantic_output(model):
 
 def test_legacy_path_still_works():
     cfg = {"model_type": "vit_b", "use_vgg_adapter": False, "decoder": "unified"}
-    m = build_weather_sam_from_config(cfg)
+    m = build_pair_sam_from_config(cfg)
     assert m.decoder_arch == "legacy"
     assert m.mask_decoder.decoder_mode == "unified"

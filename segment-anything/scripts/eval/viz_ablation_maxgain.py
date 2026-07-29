@@ -29,11 +29,11 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from scripts.eval._eval_common import (
-    load_weather_sam_from_ablation, make_batched_input,
+    load_pair_sam_from_ablation, make_batched_input,
     colorize_19class, denorm_image, CONDITION_NAMES, DEFAULT_VAL_CSV,
 )
 from segment_anything.modeling.semantic_assembly import assemble_semantic_logits
-from utils.weather_dataloader import WeatherSegmentationDataset
+from utils.pair_dataloader import PairSegmentationDataset
 
 OUT_ROOT = os.path.join(os.path.dirname(__file__), '..', '..', 'outputs_ablation')
 SAVE_FIG = os.path.join(OUT_ROOT, 'fig_ablation_qualitative_maxgain.png')
@@ -98,7 +98,7 @@ def first_n_indices(csv_path, cid, n):
 
 
 def main():
-    ds = WeatherSegmentationDataset(
+    ds = PairSegmentationDataset(
         csv_file=DEFAULT_VAL_CSV, image_size=1024, mode='val', force_raw_images=True,
     )
     conds = list(CONDITION_NAMES.keys())
@@ -122,7 +122,7 @@ def main():
         ckpt = os.path.join(OUT_ROOT, run_dir, 'weather_sam_best_latest.pth')
         cfg_path = os.path.join(OUT_ROOT, run_dir, 'ablation_config.json')
         print(f'\n[load] {label} ← {run_dir}')
-        model, cfg = load_weather_sam_from_ablation(ckpt, cfg_path, device=DEVICE)
+        model, cfg = load_pair_sam_from_ablation(ckpt, cfg_path, device=DEVICE)
         model.eval()
         for cid in conds:
             for idx in cand[cid]:

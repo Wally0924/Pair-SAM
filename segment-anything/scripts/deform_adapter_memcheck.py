@@ -13,7 +13,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import torch
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 
 cfg = {
     "model_type": "vit_h",
@@ -30,7 +30,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _CHECKPOINT = os.path.join(_SCRIPT_DIR, "..", "checkpoints", "sam_vit_h_4b8939.pth")
 
 print(f"Loading model from {_CHECKPOINT}...")
-model = build_weather_sam_from_config(cfg, checkpoint=_CHECKPOINT).cuda()
+model = build_pair_sam_from_config(cfg, checkpoint=_CHECKPOINT).cuda()
 
 # §7 mitigation (a): gradient checkpointing on ViT-H blocks
 # Only active during training (use_ckpt = getattr(self, 'use_checkpoint', False) and self.training)

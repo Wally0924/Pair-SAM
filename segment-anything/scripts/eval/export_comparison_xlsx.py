@@ -74,7 +74,7 @@ def main():
     rows = [
         ('CMA (SegFormer)',         'ACDC test (2000)', CMA_TEST,    CMA_TEST_MEAN),
         ('Refign-DAFormer',         'ACDC test (2000)', REFIGN_TEST, REFIGN_TEST_MEAN),
-        ('Ours (WeatherSAM v15 E27)', 'ACDC val (406)',   ours,       ours_mean),
+        ('Ours (PairSAM v15 E27)', 'ACDC val (406)',   ours,       ours_mean),
     ]
 
     for r_idx, (name, split, vals, mean) in enumerate(rows, start=2):
@@ -114,7 +114,7 @@ def main():
     fair_rows = [
         ('CMA (SegFormer, Table 5 row 7)', CMA_VAL_MEAN),
         ('Refign-DAFormer (Table 4 row 6)', REFIGN_VAL_MEAN),
-        ('Ours (WeatherSAM v15 E27)',       ours_mean),
+        ('Ours (PairSAM v15 E27)',       ours_mean),
     ]
     for r_idx, (name, val) in enumerate(fair_rows, start=8):
         c1 = ws.cell(row=r_idx, column=1, value=name)
@@ -163,7 +163,7 @@ def main():
         ('', ''),
         ('Source — CMA',       'Bruggemann et al., ICCV 2023. Table 1 (SegFormer, ACDC test 2000).'),
         ('Source — Refign',    'Bruggemann et al., WACV 2023. Table 1 (DAFormer, ACDC test 2000).'),
-        ('Source — Ours',      'WeatherSAM v15, checkpoint best_E27_mIoU65.68_LR4.0e-05.pth, ACDC val 406.'),
+        ('Source — Ours',      'PairSAM v15, checkpoint best_E27_mIoU65.68_LR4.0e-05.pth, ACDC val 406.'),
         ('', ''),
         ('Resolution',         'Ours: native 1080x1920 (pred upsampled bilinear from 256x256 logits to 1080x1920, GT not resized).'),
         ('Train/eval protocol','Ours: 1024x1024 input to ViT, then upsample. Confusion-matrix based mIoU.'),

@@ -1,11 +1,11 @@
-# build_weather_sam.py
+# build_pair_sam.py
 import torch
 from functools import partial
 
-from .modeling import ImageEncoderViT, TwoWayTransformer, WeatherPromptEncoder, CMAAlignment, TextEncoder, WeatherSAM, MaskDecoder
+from .modeling import ImageEncoderViT, TwoWayTransformer, PairPromptEncoder, CMAAlignment, TextEncoder, PairSAM, MaskDecoder
 
-def build_weather_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='reference'):
-    return _build_weather_sam(
+def build_pair_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='reference'):
+    return _build_pair_sam(
         encoder_embed_dim=768,
         encoder_depth=12,
         encoder_num_heads=12,
@@ -15,8 +15,8 @@ def build_weather_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='re
         adapter_variant=adapter_variant,
     )
 
-def build_weather_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='reference'):
-    return _build_weather_sam(
+def build_pair_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='reference'):
+    return _build_pair_sam(
         encoder_embed_dim=1280,
         encoder_depth=32,
         encoder_num_heads=16,
@@ -26,8 +26,8 @@ def build_weather_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='re
         adapter_variant=adapter_variant,
     )
 
-def build_weather_sam_from_config(cfg: dict, checkpoint=None):
-    """[ablation] 依 config dict 建構 WeatherSAM，統一 train 與 eval 的建模路徑。
+def build_pair_sam_from_config(cfg: dict, checkpoint=None):
+    """[ablation] 依 config dict 建構 PairSAM，統一 train 與 eval 的建模路徑。
 
     cfg keys: model_type, use_vgg_adapter(bool), inject('pre'/'post'),
               decoder('unified'/'per_class'), lrh(bool), mfb(bool), ref(bool), cond(bool)
@@ -38,9 +38,9 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
     # （eval/resume 時會載入失敗 → 注入器變隨機）。
     variant = cfg.get('adapter_variant', 'reference')
     if cfg.get('model_type', 'vit_h') == 'vit_b':
-        model = build_weather_sam_vit_b(checkpoint=checkpoint, adapter_variant=variant)
+        model = build_pair_sam_vit_b(checkpoint=checkpoint, adapter_variant=variant)
     else:
-        model = build_weather_sam_vit_h(checkpoint=checkpoint, adapter_variant=variant)
+        model = build_pair_sam_vit_h(checkpoint=checkpoint, adapter_variant=variant)
 
     model.use_lrh = bool(cfg.get('lrh', True))
     model.use_cond = bool(cfg.get('cond', True))
@@ -73,13 +73,13 @@ def build_weather_sam_from_config(cfg: dict, checkpoint=None):
     return model
 
 
-weather_sam_model_registry = {
-    "default": build_weather_sam_vit_h,
-    "vit_h": build_weather_sam_vit_h,
-    "vit_b": build_weather_sam_vit_b,
+pair_sam_model_registry = {
+    "default": build_pair_sam_vit_h,
+    "vit_h": build_pair_sam_vit_h,
+    "vit_b": build_pair_sam_vit_b,
 }
 
-def _build_weather_sam(
+def _build_pair_sam(
     encoder_embed_dim,
     encoder_depth,
     encoder_num_heads,
@@ -109,7 +109,7 @@ def _build_weather_sam(
         out_chans=prompt_embed_dim,
     )
 
-    prompt_encoder = WeatherPromptEncoder(
+    prompt_encoder = PairPromptEncoder(
         embed_dim=prompt_embed_dim,
         image_embedding_size=(image_embedding_size, image_embedding_size),
         input_image_size=(image_size, image_size),
@@ -143,8 +143,8 @@ def _build_weather_sam(
     pixel_decoder = MSDeformAttnPixelDecoder(conv_dim=prompt_embed_dim, mask_dim=prompt_embed_dim)
     m2f_decoder = M2FDecoder(num_classes=num_classes, hidden_dim=prompt_embed_dim)
 
-    # 2. 組合 WeatherSAM
-    sam = WeatherSAM(
+    # 2. 組合 PairSAM
+    sam = PairSAM(
         image_encoder=image_encoder,
         prompt_encoder=prompt_encoder,
         mask_decoder=mask_decoder,

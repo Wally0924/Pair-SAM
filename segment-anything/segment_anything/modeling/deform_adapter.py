@@ -1,4 +1,4 @@
-"""WeatherSAM 雙向可變形 Adapter（A3）。SPM → UAWarpC 參考；Injector + Extractor。"""
+"""PairSAM 雙向可變形 Adapter（A3）。SPM → UAWarpC 參考；Injector + Extractor。"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -43,7 +43,7 @@ class ReferencePriorModule(nn.Module):
         self.dim = dim
         self.use_reference = use_reference
         # W3 消融開關：False = 移除置信度調變（m̄≡1，參考特徵不分可靠與否全幅注入）。
-        # 由 build_weather_sam_from_config 依 cfg['conf_mod'] 覆蓋，預設不影響既有行為。
+        # 由 build_pair_sam_from_config 依 cfg['conf_mod'] 覆蓋，預設不影響既有行為。
         self.use_conf_mod = True
         self.proj_c2 = nn.Conv2d(l2_channels, dim, kernel_size=1)
         self.proj_c3 = nn.Conv2d(l3_channels, dim, kernel_size=1)

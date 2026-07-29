@@ -7,7 +7,7 @@ import os
 import argparse
 import cv2
 
-from segment_anything.build_weather_sam import build_weather_sam_vit_h, build_weather_sam_vit_b
+from segment_anything.build_pair_sam import build_pair_sam_vit_h, build_pair_sam_vit_b
 
 
 def preprocess_image(image, pixel_mean, pixel_std, img_size):
@@ -71,9 +71,9 @@ def main():
     # 1. 載入模型
     print(f"🏗️  Loading {args.model_type} Image Encoder from {args.checkpoint} ...")
     if args.model_type == "vit_h":
-        sam_model = build_weather_sam_vit_h(checkpoint=args.checkpoint)
+        sam_model = build_pair_sam_vit_h(checkpoint=args.checkpoint)
     else:
-        sam_model = build_weather_sam_vit_b(checkpoint=args.checkpoint)
+        sam_model = build_pair_sam_vit_b(checkpoint=args.checkpoint)
 
     sam_model.to(args.device)
     image_encoder = sam_model.image_encoder

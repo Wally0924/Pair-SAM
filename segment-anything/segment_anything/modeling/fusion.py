@@ -87,7 +87,7 @@ class CMAAlignment(nn.Module):
 
     VGG16 backbone 與 UAWarpCHead 在載入 CMA pretrained 權重後皆凍結；
     本模組本身不含任何可訓練參數，僅輸出對齊後的 reference 特徵與 confidence map，
-    供下游 WeatherSAM.vgg_injector (MultiScaleCrossAttnInjector) 使用。
+    供下游 PairSAM.vgg_injector (MultiScaleCrossAttnInjector) 使用。
     """
 
     _IMG_MEAN = [0.485, 0.456, 0.406]

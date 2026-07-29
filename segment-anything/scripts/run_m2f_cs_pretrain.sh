@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# WeatherSAM M2F「Cityscapes 解碼端預訓練」：source-domain pre-training。
+# PairSAM M2F「Cityscapes 解碼端預訓練」：source-domain pre-training。
 #
 # 目的（2026-07-05 定案）：
 #   m2f decoder stack（SimpleFPN + MSDeformAttn pixel decoder + M2FDecoder）

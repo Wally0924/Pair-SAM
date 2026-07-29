@@ -1,4 +1,4 @@
-"""Tests for the _is_gate_param helper in weather_trainer.
+"""Tests for the _is_gate_param helper in pair_trainer.
 
 Gate warmup 只涵蓋 legacy adapter 的 softplus gates。DeformAdapter (A3) 的
 per-channel gamma 為零初始化（ViT-Adapter 原設定），零初始化本身即內建 warmup，
@@ -7,7 +7,7 @@ per-channel gamma 為零初始化（ViT-Adapter 原設定），零初始化本�
 import os
 import sys
 
-# Add segment-anything root to path so we can import weather_trainer
+# Add segment-anything root to path so we can import pair_trainer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import torch
@@ -15,11 +15,11 @@ import torch.nn as nn
 
 # ---------------------------------------------------------------------------
 # Import _is_gate_param from the real trainer module.
-# weather_trainer.py has heavy module-level imports (WeatherSAM, loss utils).
+# pair_trainer.py has heavy module-level imports (PairSAM, loss utils).
 # If those blow up (no GPU / missing deps), we want an explicit ImportError
 # rather than silently duplicating the predicate.
 # ---------------------------------------------------------------------------
-from weather_trainer import _is_gate_param
+from pair_trainer import _is_gate_param
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ class TestDeformAdapterGateCapture:
             deform_ratio=0.5,
         )
 
-        # Wrap in a parent module the same way WeatherSAM does
+        # Wrap in a parent module the same way PairSAM does
         parent = nn.Module()
         parent.vgg_injector = adapter
 

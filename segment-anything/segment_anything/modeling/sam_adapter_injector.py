@@ -3,7 +3,7 @@
 
 設計目的：作為「跨視角參考注入」的對照基線。它鏡像 MultiScaleCrossAttnInjector
 的 hook 介面（相同 INJECT_BLOCKS / set_features / _make_pre_hook / .gates / 診斷
-欄位），讓 WeatherSAM 能透過完全相同的 enable/disable 路徑在相同的 ViT-H 區塊註冊
+欄位），讓 PairSAM 能透過完全相同的 enable/disable 路徑在相同的 ViT-H 區塊註冊
 hook，並沿用既有的 optimizer 參數分組與 gate warmup。
 
 與 MultiScaleCrossAttnInjector 的唯一差異：殘差 delta 改由「對 ViT token 本身做

@@ -18,7 +18,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))
 from _eval_common import (
-    load_weather_sam_from_ablation,
+    load_pair_sam_from_ablation,
     build_acdc_val_loader, make_batched_input,
     CONDITION_NAMES, CITYSCAPES_CLASSES, OUTPUT_ROOT,
 )
@@ -48,7 +48,7 @@ def main():
                     help='val CSV 路徑（預設 ACDC val；指定可評估其他資料集，如 Dark Zurich val）')
     ap.add_argument('--name', default='ACDC', help='資料集名稱，僅用於輸出標題')
     args = ap.parse_args()
-    model, cfg = load_weather_sam_from_ablation(args.ckpt, args.config, device=DEVICE)
+    model, cfg = load_pair_sam_from_ablation(args.ckpt, args.config, device=DEVICE)
     print(f"[eval] loaded run config: {cfg}")
     loader = build_acdc_val_loader(args.csv) if args.csv else build_acdc_val_loader()
 
@@ -68,7 +68,7 @@ def main():
             cid     = int(batch['condition_id'][0].item())
 
             # 1. low_res_logits (K, 256, 256) → fused_logits_hr (1, 19, 1024, 1024)
-            #    遵照 weather_trainer.validate_epoch 的流程
+            #    遵照 pair_trainer.validate_epoch 的流程
             low_res = outputs[0]['low_res_logits'].squeeze(0)         # (K, 256, 256)
             class_ids_out = outputs[0]['class_ids']                    # List[int]
             fused = assemble_semantic_logits(
@@ -154,7 +154,7 @@ def main():
     # ── 輸出 Markdown ──
     md_path = json_path.with_suffix('.md')
     lines = []
-    lines.append(f'# E1: WeatherSAM — {args.name} val Evaluation')
+    lines.append(f'# E1: PairSAM — {args.name} val Evaluation')
     lines.append('')
     lines.append(f'**Checkpoint:** `{Path(args.ckpt).name}`')
     lines.append(f'**Date:** {datetime.now().strftime("%Y-%m-%d")}')

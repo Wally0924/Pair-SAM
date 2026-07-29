@@ -1,6 +1,6 @@
 """
 ACDC CSV 資料驗證腳本
-驗證 ref_complete.csv 中的每筆資料是否符合 WeatherSAM 訓練架構的要求：
+驗證 ref_complete.csv 中的每筆資料是否符合 PairSAM 訓練架構的要求：
   1. image_path     → 3-channel RGB PNG（輸入影像）
   2. ref_mask_path  → 3-channel color PNG，且非純黑（MaskEncoder 輸入）
   3. gt_path        → 灰階 PNG，pixel 值 ∈ {0..18, 255}（CrossEntropyLoss target）

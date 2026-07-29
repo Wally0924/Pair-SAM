@@ -6,7 +6,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 
 
 def _cfg(**over):
@@ -17,7 +17,7 @@ def _cfg(**over):
 
 
 def test_config_maps_to_attributes():
-    m = build_weather_sam_from_config(_cfg(decoder='per_class', lrh=False, ref=False),
+    m = build_pair_sam_from_config(_cfg(decoder='per_class', lrh=False, ref=False),
                                       checkpoint=None)
     assert m.mask_decoder.decoder_mode == 'per_class'
     assert m.use_lrh is False
@@ -25,7 +25,7 @@ def test_config_maps_to_attributes():
 
 
 def test_full_defaults_backward_compatible():
-    m = build_weather_sam_from_config(_cfg(), checkpoint=None)
+    m = build_pair_sam_from_config(_cfg(), checkpoint=None)
     assert m.mask_decoder.decoder_mode == 'unified'
     assert m.use_lrh is True
     assert m.vgg_injector.use_reference is True

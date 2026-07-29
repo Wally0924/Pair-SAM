@@ -1,4 +1,4 @@
-# weather_dataloader.py
+# pair_dataloader.py
 import torch
 from torch.utils.data import Dataset
 import numpy as np
@@ -6,7 +6,7 @@ import cv2
 import os
 import pandas as pd
 
-class WeatherSegmentationDataset(Dataset):
+class PairSegmentationDataset(Dataset):
     def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train',
                  force_raw_images: bool = False):
         """

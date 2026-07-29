@@ -1,4 +1,4 @@
-"""Dump WeatherSAM v15 predictions for ACDC test-set submission.
+"""Dump PairSAM v15 predictions for ACDC test-set submission.
 
 產生符合 ACDC evaluation server 規範的提交檔案：
   * trainIds 0..18（不預測像素填 255），uint8 PNG
@@ -14,7 +14,7 @@ Usage
 -----
     conda run -n sam_env python scripts/eval/dump_acdc_test_preds.py \
         --csv ../Datasets/acdc_adverse_ref_rgb_test.csv \
-        --ckpt outputs_weather_sam_mask2former_testv15/weather_sam_best_latest.pth \
+        --ckpt outputs_pair_sam_mask2former_testv15/weather_sam_best_latest.pth \
         --out  submissions/acdc_test_v15 \
         --zip
 """
@@ -34,7 +34,7 @@ from tqdm import tqdm
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent))  # 讓 _eval_common 可被 import
 from _eval_common import (  # noqa: E402
-    load_weather_sam_from_ablation, make_batched_input, colorize_19class,
+    load_pair_sam_from_ablation, make_batched_input, colorize_19class,
     CITYSCAPES_CLASSES, CITYSCAPES_PALETTE,
 )
 
@@ -43,7 +43,7 @@ _SEGANY_ROOT = _THIS.parents[2]
 if str(_SEGANY_ROOT) not in sys.path:
     sys.path.insert(0, str(_SEGANY_ROOT))
 from torch.utils.data import DataLoader  # noqa: E402
-from utils.weather_dataloader import WeatherSegmentationDataset  # noqa: E402
+from utils.pair_dataloader import PairSegmentationDataset  # noqa: E402
 
 NUM_CLASSES = 19
 IGNORE_INDEX = 255
@@ -97,7 +97,7 @@ def save_triptych(adverse_rgb: np.ndarray, clear_rgb: np.ndarray | None,
 
     ax2 = fig.add_subplot(gs[0, 1])
     ax2.imshow(pred_color)
-    ax2.set_title("Prediction (WeatherSAM)", fontsize=20); ax2.axis('off')
+    ax2.set_title("Prediction (PairSAM)", fontsize=20); ax2.axis('off')
 
     ax3 = fig.add_subplot(gs[0, 2])
     if clear_rgb is not None:
@@ -130,12 +130,12 @@ def save_triptych(adverse_rgb: np.ndarray, clear_rgb: np.ndarray | None,
 
 def build_test_loader(csv_path: str, num_workers: int = 4) -> DataLoader:
     """ACDC test loader：mode='test' 會 bypass GT dropna 過濾。"""
-    ds = WeatherSegmentationDataset(
+    ds = PairSegmentationDataset(
         csv_file=csv_path, image_size=1024, mode='test', force_raw_images=True,
     )
     return DataLoader(
         ds, batch_size=1, shuffle=False, num_workers=num_workers,
-        collate_fn=WeatherSegmentationDataset.collate_fn,
+        collate_fn=PairSegmentationDataset.collate_fn,
     )
 
 
@@ -154,7 +154,7 @@ def predict_native(model, batch: dict, device: str, target_hw: tuple[int, int]) 
 
     # [M2F] 語義輸出即 low_res_logits(sem_lr,已是 19 通道,class_ids=[0..18])。
     # m2f 的 use_lrh=False,語義推論不經 context_fusion_head(該模組於 e2e/decoder_ft
-    # 皆未訓練、為隨機初始化,套用會汙染 logits)。前向對齊 weather_trainer.py val 的
+    # 皆未訓練、為隨機初始化,套用會汙染 logits)。前向對齊 pair_trainer.py val 的
     # m2f mIoU 路徑(postprocess_masks bilinear 上採 → argmax),只是上採到原生解析度。
     if getattr(model, 'decoder_arch', None) == 'm2f':
         sem = outputs[0]['low_res_logits']  # (1, 19, 256, 256)
@@ -339,7 +339,7 @@ def parse_args() -> argparse.Namespace:
                    default=str(repo_root / 'Datasets' / 'acdc_adverse_ref_rgb_test.csv'),
                    help='ACDC test CSV（gt_path 可為空）')
     p.add_argument('--ckpt', type=str,
-                   default=str(_SEGANY_ROOT / 'outputs_weather_sam_mask2former_testv15'
+                   default=str(_SEGANY_ROOT / 'outputs_pair_sam_mask2former_testv15'
                                / 'weather_sam_best_latest.pth'),
                    help='v15 checkpoint 路徑')
     p.add_argument('--out', type=str,
@@ -386,7 +386,7 @@ def main() -> None:
     print(f"Output root : {out_root}")
     print(f"Device      : {args.device}")
 
-    model, _cfg = load_weather_sam_from_ablation(args.ckpt, device=args.device)
+    model, _cfg = load_pair_sam_from_ablation(args.ckpt, device=args.device)
     loader = build_test_loader(args.csv, num_workers=args.num_workers)
     csv_df = loader.dataset.data.reset_index(drop=True)
 

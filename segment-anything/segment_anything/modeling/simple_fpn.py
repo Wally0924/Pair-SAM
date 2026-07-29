@@ -6,7 +6,7 @@
 #   Paper: Li et al., "Exploring Plain Vision Transformer Backbones for
 #          Object Detection" (ViTDet), ECCV 2022. arXiv:2203.16527
 #
-# [WeatherSAM adaptations]（完整清單）:
+# [PairSAM adaptations]（完整清單）:
 #   1. 移除 detectron2 Backbone 基類 / ShapeSpec / top_block(p6)，改為純 nn.Module。
 #   2. detectron2 的 Conv2d+get_norm("LN") wrapper → nn.Conv2d + 本 repo LayerNorm2d
 #      （兩者等價：channel-wise LayerNorm over (C,H,W)）。
@@ -60,5 +60,5 @@ class SimpleFPN(nn.Module):
         f8 = self.stages[1](x)    # (B, 256, 128, 128)  1/8
         f16 = self.stages[2](x)   # (B, 256, 64, 64)    1/16
         f32 = self.stages[3](x)   # (B, 256, 32, 32)    1/32
-        # [WeatherSAM adaptation] coarse→fine list + 獨立 mask features
+        # [PairSAM adaptation] coarse→fine list + 獨立 mask features
         return [f32, f16, f8], f4

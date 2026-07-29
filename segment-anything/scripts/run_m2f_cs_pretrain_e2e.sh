@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# WeatherSAM M2F「Cityscapes 端到端預訓練」(Strategy B)：
+# PairSAM M2F「Cityscapes 端到端預訓練」(Strategy B)：
 #   encoder + m2f decoder 一起訓，產出「兩者皆 co-adapt」的預權重。
 #
 # 與凍結版 run_m2f_cs_pretrain.sh 的唯一差異：解凍 ViT-H 讓 encoder 與

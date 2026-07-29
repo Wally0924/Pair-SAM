@@ -1,4 +1,4 @@
-# WeatherSAM: Reference-Guided Adaptation of SAM for Adverse-Weather Semantic Segmentation
+# PairSAM: Reference-Guided Adaptation of SAM for Adverse-Weather Semantic Segmentation
 
 <div align="center">
 
@@ -15,9 +15,9 @@
 
 ## Abstract
 
-Semantic segmentation degrades sharply under adverse weather—fog, rain, snow, and night—where reduced contrast and texture corruption weaken the appearance cues that clear-weather models rely on. We present **WeatherSAM**, a parameter-efficient framework that adapts the frozen Segment Anything Model (SAM) ViT-H backbone to adverse conditions by injecting a *geometrically aligned clear-weather reference frame* as a structural prior. A GNSS-paired clear-weather image is aligned to the adverse-weather viewpoint by a frozen optical-flow alignment network, and its multi-scale VGG features—gated by an alignment-confidence mask—are injected into the ViT-H encoder through a multi-scale cross-attention adapter. Decoding follows a Mask2Former-style **unified query** formulation: nineteen class-specific query tokens interact through cross-class self-attention in a single TwoWayTransformer pass, and a lightweight residual depthwise-convolution head performs cross-class competition and spatial refinement on the assembled class-logit map. Training optimizes only about **2.98% (24.53M)** of the model's parameters while the ViT-H image encoder, CLIP text encoder, and the alignment network remain frozen. We evaluate on ACDC, Dark Zurich, and RobotCar Correspondence under the standard GNSS-paired protocol.
+Semantic segmentation degrades sharply under adverse weather—fog, rain, snow, and night—where reduced contrast and texture corruption weaken the appearance cues that clear-weather models rely on. We present **PairSAM**, a parameter-efficient framework that adapts the frozen Segment Anything Model (SAM) ViT-H backbone to adverse conditions by injecting a *geometrically aligned clear-weather reference frame* as a structural prior. A GNSS-paired clear-weather image is aligned to the adverse-weather viewpoint by a frozen optical-flow alignment network, and its multi-scale VGG features—gated by an alignment-confidence mask—are injected into the ViT-H encoder through a multi-scale cross-attention adapter. Decoding follows a Mask2Former-style **unified query** formulation: nineteen class-specific query tokens interact through cross-class self-attention in a single TwoWayTransformer pass, and a lightweight residual depthwise-convolution head performs cross-class competition and spatial refinement on the assembled class-logit map. Training optimizes only about **2.98% (24.53M)** of the model's parameters while the ViT-H image encoder, CLIP text encoder, and the alignment network remain frozen. We evaluate on ACDC, Dark Zurich, and RobotCar Correspondence under the standard GNSS-paired protocol.
 
-**[中文摘要]** 本研究提出 **WeatherSAM**，一個針對惡劣天氣（霧、雨、雪、夜）語意分割的參數高效框架，以凍結的 SAM ViT-H 骨幹為基礎，透過注入「幾何對齊後的晴天參考影像」作為結構先驗來適應退化場景。GNSS 配對的晴天影像先由凍結的光流對齊網路扭曲至惡劣天氣視角，其多尺度 VGG 特徵再經對齊信心遮罩閘控，透過多尺度交叉注意力 Adapter 注入 ViT-H 編碼器。解碼採 Mask2Former 風格的**統一查詢**：十九個類別專屬查詢 Token 在單次 TwoWayTransformer 中經跨類別自注意力交互；最後以輕量殘差深度卷積頭對組裝後的類別 logit 圖進行跨類別競爭與空間精修。全程僅訓練約 **2.98%（24.53M）** 參數，ViT-H 影像編碼器、CLIP 文字編碼器與對齊網路皆凍結。實驗於 ACDC、Dark Zurich、RobotCar Correspondence 三個資料集、依標準 GNSS 配對協定進行。
+**[中文摘要]** 本研究提出 **PairSAM**，一個針對惡劣天氣（霧、雨、雪、夜）語意分割的參數高效框架，以凍結的 SAM ViT-H 骨幹為基礎，透過注入「幾何對齊後的晴天參考影像」作為結構先驗來適應退化場景。GNSS 配對的晴天影像先由凍結的光流對齊網路扭曲至惡劣天氣視角，其多尺度 VGG 特徵再經對齊信心遮罩閘控，透過多尺度交叉注意力 Adapter 注入 ViT-H 編碼器。解碼採 Mask2Former 風格的**統一查詢**：十九個類別專屬查詢 Token 在單次 TwoWayTransformer 中經跨類別自注意力交互；最後以輕量殘差深度卷積頭對組裝後的類別 logit 圖進行跨類別競爭與空間精修。全程僅訓練約 **2.98%（24.53M）** 參數，ViT-H 影像編碼器、CLIP 文字編碼器與對齊網路皆凍結。實驗於 ACDC、Dark Zurich、RobotCar Correspondence 三個資料集、依標準 GNSS 配對協定進行。
 
 ---
 
@@ -35,7 +35,7 @@ Semantic segmentation degrades sharply under adverse weather—fog, rain, snow, 
 
 <p align="center"><em>[Figure placeholder — pipeline diagram TBD]</em></p>
 
-WeatherSAM maps an adverse-weather image and a GNSS-paired clear-weather reference to a 19-class semantic map through the following stages.
+PairSAM maps an adverse-weather image and a GNSS-paired clear-weather reference to a 19-class semantic map through the following stages.
 
 1. **Reference alignment (frozen).** `CMAAlignment` (VGG-16 + UAWarpC) estimates optical flow from the clear reference to the adverse-weather view, warps the reference features, and produces an alignment-confidence map. The module is loaded from pre-trained weights and kept frozen.
 2. **Reference injection.** `MultiScaleCrossAttnInjector` (the *WarpedVGG Adapter*) injects the confidence-gated reference features into the ViT-H encoder via multi-scale cross-attention. Injection is applied **pre** the block self-attention at blocks 7/15/23/31, with learnable per-stage gates.
@@ -75,8 +75,8 @@ WeatherSAM maps an adverse-weather image and a GNSS-paired clear-weather referen
 ### Setup
 
 ```bash
-git clone https://github.com/<your-org>/WeatherSAM.git
-cd WeatherSAM
+git clone https://github.com/<your-org>/PairSAM.git
+cd PairSAM
 
 conda create -n sam_env python=3.10 -y
 conda activate sam_env
@@ -106,7 +106,7 @@ Place under `segment-anything/checkpoints/`:
 
 ## Datasets
 
-WeatherSAM is evaluated under the **GNSS-paired** protocol shared with Refign and CMA: every adverse-weather target image carries a clear-weather reference retrieved by GNSS, used as the structural prior. All datasets use the 19 Cityscapes training-label classes.
+PairSAM is evaluated under the **GNSS-paired** protocol shared with Refign and CMA: every adverse-weather target image carries a clear-weather reference retrieved by GNSS, used as the structural prior. All datasets use the 19 Cityscapes training-label classes.
 
 | Dataset | Train | Val | Test | Primary variation |
 |---|---:|---:|---:|---|
@@ -192,7 +192,7 @@ python scripts/eval/eval_e1_acdc_val_full.py \
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | CMA | SegFormer | ✓ | — | — | — | — | — |
 | Refign-DAFormer | MiT-B5 | ✓ | — | — | — | — | — |
-| **WeatherSAM (ours)** | ViT-H (frozen) | ✓ | TBD | TBD | TBD | TBD | **TBD** |
+| **PairSAM (ours)** | ViT-H (frozen) | ✓ | TBD | TBD | TBD | TBD | **TBD** |
 
 ### Cross-dataset generalization (mIoU)
 
@@ -200,7 +200,7 @@ python scripts/eval/eval_e1_acdc_val_full.py \
 |---|:--:|:--:|
 | CMA | 53.6 | 54.3 |
 | Refign-DAFormer | 56.2 | 60.5 |
-| **WeatherSAM (ours)** | **TBD** | **TBD** |
+| **PairSAM (ours)** | **TBD** | **TBD** |
 
 > ACDC **test-set** per-class IoU vs. prior Cityscapes→ACDC methods (CMA Table-1 format) is reported in the paper; predictions are exported with `scripts/eval/dump_acdc_test_preds.py` for server submission.
 
@@ -209,26 +209,26 @@ python scripts/eval/eval_e1_acdc_val_full.py \
 ## Project Structure
 
 ```
-WeatherSAM/
+PairSAM/
 ├── segment-anything/
 │   ├── segment_anything/modeling/
-│   │   ├── weather_sam.py            # Top-level model; reference pre-align + adapter
+│   │   ├── pair_sam.py            # Top-level model; reference pre-align + adapter
 │   │   ├── vgg_adapter.py            # MultiScaleCrossAttnInjector (WarpedVGG Adapter)
 │   │   ├── fusion.py                 # CMAAlignment (VGG-16 + UAWarpC) + flow-guided fusion
 │   │   ├── fusion_head.py            # ResidualDWConvFusion (LRH)
-│   │   ├── weather_mask_decoder.py   # Mask2Former-style unified / per-class decoder
-│   │   ├── weather_prompt_encoder.py # Text + condition prompt encoder
+│   │   ├── pair_mask_decoder.py   # Mask2Former-style unified / per-class decoder
+│   │   ├── pair_prompt_encoder.py # Text + condition prompt encoder
 │   │   ├── transformer.py            # TwoWayTransformer
 │   │   └── semantic_assembly.py      # 19-class logit assembly + gated LRH
 │   ├── utils/
 │   │   ├── new_loss.py               # ContextLoss (CE+MFB+Lovász) + MaskLoss (Dice)
 │   │   ├── rare_class_sampler.py     # DAFormer-style RCS (optional, off by default)
-│   │   └── weather_dataloader.py     # ACDC dataset (adverse + reference + condition)
+│   │   └── pair_dataloader.py     # ACDC dataset (adverse + reference + condition)
 │   ├── scripts/
 │   │   ├── eval/eval_e1_acdc_val_full.py   # per-class × per-condition mIoU
 │   │   └── aggregate_ablation.py           # ablation tables → LaTeX
 │   ├── train.py                      # training entry point
-│   ├── weather_trainer.py            # training / validation loop
+│   ├── pair_trainer.py            # training / validation loop
 │   ├── run_ablation.sh               # full ablation campaign
 │   └── tests/                        # pytest unit tests for each switch
 ├── docs/                             # specs, plans, experiment reports
@@ -240,8 +240,8 @@ WeatherSAM/
 ## Citation
 
 ```bibtex
-@article{weathersam,
-  title   = {WeatherSAM: Reference-Guided Adaptation of SAM for
+@article{pairsam,
+  title   = {PairSAM: Reference-Guided Adaptation of SAM for
              Adverse-Weather Semantic Segmentation},
   author  = {[Author Names]},
   journal = {[Venue]},
@@ -291,6 +291,6 @@ This repository inherits the **Apache License 2.0** from the Segment Anything co
 
 ## Acknowledgements
 
-WeatherSAM builds on **Segment Anything** and **Mask2Former** (Meta AI Research), **CLIP** (OpenAI), and the **CMA / Refign** GNSS-paired evaluation protocol. We thank the authors of **ACDC**, **Dark Zurich**, and **RobotCar Correspondence** for releasing their benchmarks.
+PairSAM builds on **Segment Anything** and **Mask2Former** (Meta AI Research), **CLIP** (OpenAI), and the **CMA / Refign** GNSS-paired evaluation protocol. We thank the authors of **ACDC**, **Dark Zurich**, and **RobotCar Correspondence** for releasing their benchmarks.
 
 Funding and institutional acknowledgements: *[to be added upon publication.]*

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import functools
 import torch
-from segment_anything.build_weather_sam import build_weather_sam_from_config
+from segment_anything.build_pair_sam import build_pair_sam_from_config
 
 
 def _cfg(**over):
@@ -24,7 +24,7 @@ def _cfg(**over):
 
 @functools.lru_cache(maxsize=None)
 def _model(cond=True):
-    return build_weather_sam_from_config(_cfg(cond=cond), checkpoint=None)
+    return build_pair_sam_from_config(_cfg(cond=cond), checkpoint=None)
 
 
 def _cid(i):

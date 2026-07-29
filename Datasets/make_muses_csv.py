@@ -1,6 +1,6 @@
 """從 MUSES meta.json 產生 val / test 的推論用 CSV。
 
-輸出 CSV 欄位（相容 WeatherSegmentationDataset，並多帶 weather/time_of_day 供日後
+輸出 CSV 欄位（相容 PairSegmentationDataset，並多帶 weather/time_of_day 供日後
 決定 condition_id 映射時一鍵回填）:
 
     image_path, ref_image_path, gt_path, condition, condition_id,
