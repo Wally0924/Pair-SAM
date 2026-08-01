@@ -112,7 +112,11 @@ def accumulate_iou(acc, pred, gt, invalid, key_prefix):
 
 
 def conf_stats(conf, gt, invalid):
-    """回傳 (conf_mean, valid_ratio, conf_static, conf_dynamic)，僅計 GT 有效像素。"""
+    """回傳 (conf_mean, valid_ratio, conf_static, conf_dynamic)，僅計 GT 有效像素。
+
+    某些影像的 GT 中不含任何動態類別（person..bicycle）像素，此時 conf_dynamic
+    （少數情況下 conf_static 亦然）回傳 NaN，屬資料本質（該張本無此類別可統計），
+    非計算錯誤；main() 輸出至 per_image.csv 時一律轉為空字串。"""
     gt = gt.copy(); gt[invalid] = IGNORE
     valid = gt != IGNORE
     if not valid.any():
@@ -126,6 +130,12 @@ def conf_stats(conf, gt, invalid):
         float(conf[st].mean()) if st.any() else float('nan'),
         float(conf[dy].mean()) if dy.any() else float('nan'),
     )
+
+
+def fmt(x, ndigits):
+    """四捨五入；NaN 一律寫成空字串，與 per_class_iou.csv 的缺值標記（union==0 時的
+    空字串）一致，避免下游腳本以 == '' 判空時漏判字面字串 'nan'。"""
+    return '' if (isinstance(x, float) and np.isnan(x)) else round(x, ndigits)
 
 
 def pixel_counts(gt, invalid):
@@ -189,8 +199,8 @@ def main():
             a, b = mious[('ref', i)], mious[('noref', i)]
             cm, cv, cs, cd = cstats[i]
             nv, ns, nd = pixel_counts(gts[i], invs[i])
-            w.writerow([i, conds[i], round(b, 3), round(a, 3), round(a - b, 3),
-                        round(cm, 4), round(cv, 4), round(cs, 4), round(cd, 4),
+            w.writerow([i, conds[i], fmt(b, 3), fmt(a, 3), fmt(a - b, 3),
+                        fmt(cm, 4), fmt(cv, 4), fmt(cs, 4), fmt(cd, 4),
                         nv, ns, nd])
 
     # per_class_iou.csv 與 per_class_iou_by_condition.csv
