@@ -38,6 +38,7 @@ class PairSAM(nn.Module):
         simple_fpn: nn.Module = None,
         m2f_decoder: nn.Module = None,
         pixel_decoder: nn.Module = None,
+        num_conditions: int = 4,
     ) -> None:
         super().__init__()
         self.image_encoder = image_encoder
@@ -50,8 +51,14 @@ class PairSAM(nn.Module):
         self.pixel_decoder = pixel_decoder
         self.decoder_arch = 'legacy'  # 'm2f' 由 builder 依 cfg 切換
 
-        # ConditionEncoder：天氣條件 Embedding（fog=0, rain=1, snow=2, night=3）
-        self.condition_encoder = nn.Embedding(4, 256)
+        # ConditionEncoder：天氣條件 Embedding
+        #   num_conditions=4（ACDC，預設）: fog=0, rain=1, snow=2, night=3
+        #   num_conditions=8（MUSES，weather×time_of_day 全交叉）: 前 4 格語意與 ACDC
+        #     完全相同（fog/day, rain/day, snow/day, clear/night），後 4 格為
+        #     fog/night=4, rain/night=5, snow/night=6, clear/day=7。此編號設計使
+        #     ACDC checkpoint 的 4 格權重可原位沿用，新增格由 builder 依語意搬移初始化。
+        self.num_conditions = num_conditions
+        self.condition_encoder = nn.Embedding(num_conditions, 256)
         nn.init.normal_(self.condition_encoder.weight, std=0.01)
 
         # Cityscapes 19 類的 class name → id 對照表（模型內部使用，不是可學習參數）

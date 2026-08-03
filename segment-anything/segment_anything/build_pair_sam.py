@@ -4,7 +4,8 @@ from functools import partial
 
 from .modeling import ImageEncoderViT, TwoWayTransformer, PairPromptEncoder, CMAAlignment, TextEncoder, PairSAM, MaskDecoder
 
-def build_pair_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='reference'):
+def build_pair_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='reference',
+                         num_conditions=4):
     return _build_pair_sam(
         encoder_embed_dim=768,
         encoder_depth=12,
@@ -13,9 +14,11 @@ def build_pair_sam_vit_b(num_classes=19, checkpoint=None, adapter_variant='refer
         num_classes=num_classes,
         checkpoint=checkpoint,
         adapter_variant=adapter_variant,
+        num_conditions=num_conditions,
     )
 
-def build_pair_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='reference'):
+def build_pair_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='reference',
+                         num_conditions=4):
     return _build_pair_sam(
         encoder_embed_dim=1280,
         encoder_depth=32,
@@ -24,6 +27,7 @@ def build_pair_sam_vit_h(num_classes=19, checkpoint=None, adapter_variant='refer
         num_classes=num_classes,
         checkpoint=checkpoint,
         adapter_variant=adapter_variant,
+        num_conditions=num_conditions,
     )
 
 def build_pair_sam_from_config(cfg: dict, checkpoint=None):
@@ -37,10 +41,13 @@ def build_pair_sam_from_config(cfg: dict, checkpoint=None):
     # 就建好，否則 _build 會先以參考注入器載入、隨後被換掉而丟失已訓練的 adapter 權重
     # （eval/resume 時會載入失敗 → 注入器變隨機）。
     variant = cfg.get('adapter_variant', 'reference')
+    n_cond = int(cfg.get('num_conditions', 4))
     if cfg.get('model_type', 'vit_h') == 'vit_b':
-        model = build_pair_sam_vit_b(checkpoint=checkpoint, adapter_variant=variant)
+        model = build_pair_sam_vit_b(checkpoint=checkpoint, adapter_variant=variant,
+                                     num_conditions=n_cond)
     else:
-        model = build_pair_sam_vit_h(checkpoint=checkpoint, adapter_variant=variant)
+        model = build_pair_sam_vit_h(checkpoint=checkpoint, adapter_variant=variant,
+                                     num_conditions=n_cond)
 
     model.use_lrh = bool(cfg.get('lrh', True))
     model.use_cond = bool(cfg.get('cond', True))
@@ -79,6 +86,53 @@ pair_sam_model_registry = {
     "vit_b": build_pair_sam_vit_b,
 }
 
+# ── condition embedding 擴表（4 → 8）─────────────────────────────────
+# 新增列的初始化來源：以既有 ACDC 列的語意組合平均，讓 8 條件模型在第 0 步就
+# 帶有合理先驗（例：fog/night 起點 = fog 與 night 的中點），而非隨機向量。
+# key = 新列 index，value = 取平均的舊列 index 清單。
+_COND_EXPAND_4_TO_8 = {
+    4: [0, 3],        # fog/night   ← fog(0)      + clear/night(3)
+    5: [1, 3],        # rain/night  ← rain(1)     + clear/night(3)
+    6: [2, 3],        # snow/night  ← snow(2)     + clear/night(3)
+    7: [0, 1, 2, 3],  # clear/day   ← 全表平均（ACDC 無晴天日間，取中性起點）
+}
+
+_COND_KEY = 'condition_encoder.weight'
+
+
+def _expand_condition_embedding(state_dict: dict, num_conditions: int) -> dict:
+    """把 checkpoint 內 4×256 的 condition embedding 擴為 num_conditions×256。
+
+    僅處理 4 → 8 這一種情況；列數已相符、或 checkpoint 無此鍵時原樣回傳。
+    前 4 列逐位元複製（ACDC 語意與 8 條件方案的前 4 格完全對應），
+    新增列依 ``_COND_EXPAND_4_TO_8`` 取舊列平均。
+
+    回傳淺拷貝的 state_dict，不修改呼叫端傳入的物件。
+    """
+    if _COND_KEY not in state_dict:
+        return state_dict
+
+    old_w = state_dict[_COND_KEY]
+    n_old = old_w.shape[0]
+    if n_old == num_conditions:
+        return state_dict
+    if not (n_old == 4 and num_conditions == 8):
+        print(f"⚠️  condition_encoder 列數 {n_old} → {num_conditions} 無對應擴表規則，"
+              f"該層將重新初始化。")
+        return state_dict
+
+    new_w = old_w.new_empty((num_conditions, old_w.shape[1]))
+    new_w[:4] = old_w                                  # 0-3：ACDC 權重原位沿用
+    for tgt, srcs in _COND_EXPAND_4_TO_8.items():
+        new_w[tgt] = old_w[srcs].mean(dim=0)
+
+    out = dict(state_dict)
+    out[_COND_KEY] = new_w
+    print(f"🔀 condition_encoder 擴表 4 → 8：0-3 沿用 ACDC 權重，"
+          f"4-7 由 {{{', '.join(f'{k}←{v}' for k, v in _COND_EXPAND_4_TO_8.items())}}} 平均初始化。")
+    return out
+
+
 def _build_pair_sam(
     encoder_embed_dim,
     encoder_depth,
@@ -87,6 +141,7 @@ def _build_pair_sam(
     num_classes=19,
     checkpoint=None,
     adapter_variant='reference',
+    num_conditions=4,
 ):
     prompt_embed_dim = 256
     image_size = 1024
@@ -154,6 +209,7 @@ def _build_pair_sam(
         simple_fpn=simple_fpn,
         m2f_decoder=m2f_decoder,
         pixel_decoder=pixel_decoder,
+        num_conditions=num_conditions,
     )
 
     # 2b. [ablation B] 在載入 checkpoint 之前換好注入器，確保 sam_adapter 的已訓練
@@ -175,7 +231,12 @@ def _build_pair_sam(
         if 'model_state_dict' in state_dict:
             print("Detected Trainer checkpoint. Extracting 'model_state_dict'...")
             state_dict = state_dict['model_state_dict']
-            
+
+        # condition embedding 擴表：4 條件（ACDC）checkpoint → 8 條件（MUSES）模型。
+        # 必須在下方的 shape 過濾之前處理，否則整張表會因 shape 不符被靜默丟棄、
+        # 退化為隨機初始化，ACDC 已學到的天氣表徵全數遺失。
+        state_dict = _expand_condition_embedding(state_dict, num_conditions)
+
         # 過濾不匹配的鍵值
         model_dict = sam.state_dict()
         

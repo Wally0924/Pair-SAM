@@ -320,6 +320,10 @@ def main():
                         help="Adapter 是否引入 reference K/V；--no-ref = 零張量")
     parser.add_argument("--cond", action=argparse.BooleanOptionalAction, default=True,
                         help="condition embedding 是否辨別天氣條件；--no-cond = 固定共享索引（P1 消融）")
+    parser.add_argument("--num_conditions", type=int, default=4, choices=[4, 8],
+                        help="condition 類別數：4=ACDC(fog/rain/snow/night)；"
+                             "8=MUSES weather×time_of_day 全交叉。"
+                             "由 4 熱啟動至 8 時，builder 會自動擴表搬移 ACDC 權重")
     parser.add_argument("--conf_mod", action=argparse.BooleanOptionalAction, default=True,
                         help="參考特徵是否經置信度調變；--no-conf_mod = m̄≡1 全幅注入（W3 消融）")
     parser.add_argument("--extractor", action=argparse.BooleanOptionalAction, default=True,
@@ -361,6 +365,7 @@ def main():
         conf_mod=args.conf_mod,
         extractor=args.extractor,
         adapter_variant=args.adapter_variant,
+        num_conditions=args.num_conditions,
     )
     model = build_pair_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
     # Gradient checkpointing：ViT-H 1024² 不開會存滿 32 blocks activation（>21GB，OOM）。
@@ -430,6 +435,7 @@ def main():
         image_size=1024,
         mode='train',
         force_raw_images=force_raw,
+        num_conditions=args.num_conditions,
     )
 
     val_ds = PairSegmentationDataset(
@@ -437,6 +443,7 @@ def main():
         image_size=1024,
         mode='val',
         force_raw_images=force_raw,
+        num_conditions=args.num_conditions,
     )
 
     # ★ DataLoader generator 綁定 seed，確保每個 epoch 的 shuffle 順序可重現

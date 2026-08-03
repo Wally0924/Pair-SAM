@@ -8,11 +8,15 @@
                      MUSES evaluation server 合規 zip（頂層 ``labelTrainIds/``，
                      檔名 ``REC####_frame_######.png``，尺寸 1920×1080）。
 
-condition_id 處理（--cond-mode，對應與使用者討論的兩案）:
+condition_id 處理（--cond-mode）:
 
 * ``off`` : model.use_cond=False，所有樣本 condition_id 走共享索引 0。
             最乾淨、避開 ACDC↔MUSES 分類法不符（reference 仍照常使用）。
 * ``map`` : 保留 condition。night→3；白天 fog→0/rain→1/snow→2；clear→0。
+            適用 4 條件（ACDC 訓練）模型的零樣本評估。
+* ``csv`` : 沿用 CSV 既有的 condition_id，不做任何重新映射。8 條件模型
+            （MUSES weather×time_of_day 全交叉，見 make_muses_csv.py --cond-mode
+            map8）必須用此項；映射表只在產生端維護一份，避免分歧。
 
 輸出前向與 ACDC 提交腳本一致（1024 推論 → logits 雙線性上採至原生 → argmax），
 確保跨資料集評估協定相同。
@@ -91,6 +95,13 @@ def resolve_condition_csv(src_csv: str, cond_mode: str) -> str:
     回傳暫存 CSV 路徑。原始 CSV（condition_id 留白）保持不動。
     """
     df = pd.read_csv(src_csv)
+    if cond_mode == 'csv':
+        # CSV 自帶 condition_id（例：make_muses_csv.py --cond-mode map8 產出的 8 類），
+        # 直接沿用，避免此處再維護一份會與產生端分歧的映射表。
+        if 'condition_id' not in df.columns or df['condition_id'].isna().any():
+            raise ValueError(
+                f'--cond-mode csv 需要 CSV 的 condition_id 欄位完整填值：{src_csv}')
+        return src_csv
     if cond_mode == 'off':
         df['condition_id'] = 0
     elif cond_mode == 'map':
@@ -109,9 +120,11 @@ def resolve_condition_csv(src_csv: str, cond_mode: str) -> str:
     return tmp.name
 
 
-def build_loader(csv_path: str, mode: str, num_workers: int) -> DataLoader:
+def build_loader(csv_path: str, mode: str, num_workers: int,
+                 num_conditions: int = 4) -> DataLoader:
     ds = PairSegmentationDataset(
         csv_file=csv_path, image_size=1024, mode=mode, force_raw_images=True,
+        num_conditions=num_conditions,
     )
     return DataLoader(
         ds, batch_size=1, shuffle=False, num_workers=num_workers,
@@ -290,8 +303,10 @@ def parse_args() -> argparse.Namespace:
     repo_root = _SEGANY_ROOT.parent
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--split', required=True, choices=['val', 'test'])
-    p.add_argument('--cond-mode', required=True, choices=['off', 'map'],
-                   help='condition_id 處理：off=關閉(use_cond=False)；map=依天氣/日夜映射')
+    p.add_argument('--cond-mode', required=True, choices=['off', 'map', 'csv'],
+                   help='condition_id 處理：off=關閉(use_cond=False)；'
+                        'map=依天氣/日夜映射為 4 類；'
+                        'csv=沿用 CSV 既有的 condition_id（8 類 map8 模型用此項）')
     p.add_argument('--csv', type=str, default=None,
                    help='預設依 --split 取 Datasets/muses_ref_rgb_{split}.csv')
     p.add_argument('--ckpt', type=str, default=DEFAULT_CKPT)
@@ -320,7 +335,10 @@ def main() -> None:
         print('  → use_cond=False（condition 關閉）')
 
     resolved_csv = resolve_condition_csv(args.csv, args.cond_mode)
-    loader = build_loader(resolved_csv, mode=args.split, num_workers=args.num_workers)
+    # dataloader 的 condition_id 上界必須與模型 embedding 列數一致，否則 8 類 CSV
+    # 會在 4 條件檢查下被擋（或反之，越界索引直接查表出錯）。
+    loader = build_loader(resolved_csv, mode=args.split, num_workers=args.num_workers,
+                          num_conditions=getattr(model, 'num_conditions', 4))
     df = loader.dataset.data.reset_index(drop=True)
 
     if args.split == 'val':

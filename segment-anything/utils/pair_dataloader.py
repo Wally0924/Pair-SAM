@@ -8,7 +8,7 @@ import pandas as pd
 
 class PairSegmentationDataset(Dataset):
     def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train',
-                 force_raw_images: bool = False):
+                 force_raw_images: bool = False, num_conditions: int = 4):
         """
         Args:
             csv_file (str): CSV 路徑
@@ -16,10 +16,14 @@ class PairSegmentationDataset(Dataset):
             mode (str): 'train', 'val', 或 'test'
             force_raw_images (bool): 強制使用原始影像，忽略預提取 feature cache。
                 當 Image Encoder 解凍訓練時必須設為 True，否則 encoder 被 bypass，梯度無法回傳。
+            num_conditions (int): condition_id 的合法上界（不含）。ACDC 為 4，
+                MUSES 的 weather×time_of_day 全交叉為 8。必須與模型
+                condition_encoder 的列數一致。
         """
         self.image_size = image_size
         self.mode = mode
         self.force_raw_images = force_raw_images
+        self.num_conditions = num_conditions
         
         # 1. 檢查並讀取 CSV
         if not os.path.exists(csv_file):
@@ -197,18 +201,23 @@ class PairSegmentationDataset(Dataset):
         # 固定使用全部 19 個類別（與推論時保持一致，消除 oracle gap）
         output["text_prompts"] = [self.ID_TO_NAME[i] for i in range(len(self.ID_TO_NAME))]
 
-        # 處理 condition_id（天氣條件索引：fog=0, rain=1, snow=2, night=3）
+        # 處理 condition_id（條件索引；合法範圍 [0, num_conditions)）
+        #   num_conditions=4（ACDC）: fog=0, rain=1, snow=2, night=3
+        #   num_conditions=8（MUSES）: 另加 fog/night=4, rain/night=5, snow/night=6, clear/day=7
         # Strict mode：CSV 必須有合法 condition_id，缺失或越界直接 raise
         cid_raw = row.get('condition_id')
         if 'condition_id' not in row or pd.isna(cid_raw):
             raise ValueError(
                 f"Sample {idx} 缺少 condition_id 欄位。"
-                f"請確認 CSV 有 condition_id 欄位且值 ∈ {{0,1,2,3}}（fog/rain/snow/night）。"
+                f"請確認 CSV 有 condition_id 欄位且值 ∈ [0, {self.num_conditions})。"
             )
         cid_int = int(cid_raw)
-        if cid_int not in (0, 1, 2, 3):
+        if not 0 <= cid_int < self.num_conditions:
             raise ValueError(
-                f"Sample {idx} 的 condition_id={cid_int} 越界，必須為 0(fog)/1(rain)/2(snow)/3(night)。"
+                f"Sample {idx} 的 condition_id={cid_int} 越界，"
+                f"必須落在 [0, {self.num_conditions})。"
+                f"（num_conditions={self.num_conditions}；MUSES 8 條件請以 "
+                f"num_conditions=8 建構 Dataset）"
             )
         output["condition_id"] = torch.tensor(cid_int, dtype=torch.long)
 
