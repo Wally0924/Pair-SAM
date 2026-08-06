@@ -66,10 +66,13 @@ FULL 的最佳點在 ep22，其後八個 epoch 無進步；val 總損失自 ep6 
 |---|---|---|---|---|---|
 | `FULL_seed42` | UAWarpC 翹曲後之參考影像 | UAWarpC 學習所得 | 零初始化 | 76.02 | 72.14 |
 | `W2_semB_seed42` | 全零張量 | ≡ 1 | 零初始化 | 76.50 | — |
+| `W3_confmod_seed42` | UAWarpC 翹曲後之參考影像 | ≡ 1（`--no-conf_mod`） | 零初始化 | 75.63 | — |
 | **`P1_selfprior_seed42`** | **當前影像** | **≡ 1** | **零初始化** | 待測 | 待定 |
 | `W4_seed42` | 當前影像（SAM-Adapter 變體） | — | 固定 0.05 | 79.80 | — |
 
 > **數值來源一致性（重要）：** 本表 val mIoU 一律取自各 run 的 `e1_results.json` 之 `overall_miou`，即論文所引用的數值。`train_log.csv` 的訓練中驗證峰值採不同評估流程，數值略有出入（FULL 為 76.10 對 76.02，W4 為 79.79 對 79.80）。P1 的結果必須以 `eval_e1_acdc_val_full.py` 產出的 `e1_results.json` 為準，不得以 `train_log.csv` 峰值與本表其他列相比。
+>
+> **`W3_confmod_seed42` 追加說明（2026-08-07，任務 4 審查時補記）：** 本列在初版設計矩陣中遺漏。P1 相對 FULL 同時變動了先驗來源與 conf 調變兩項——`P1_selfprior_seed42` 的 `self_prior()` 不回傳 `'mask'` 鍵，與 `W3_confmod_seed42` 的 `--no-conf_mod` 皆落入 `deform_adapter.py` 之 `ReferencePriorModule.forward()` 同一 else 分支，兩者殊途同歸得到 `conf ≡ 1`。初版矩陣僅以 FULL 為對照，未意識到 P1 相對 FULL 是兩個自由變因，導致初版報告（`docs/experiments/2026-08-06-selfprior-baseline.md`）誤將 FULL−P1=−0.43 全數歸因於「先驗來源」。W3 是先驗來源單一變因的正確對照組（先驗仍為跨視角參考，僅 conf 被設為 ≡1），已於報告任務 4 的審查修正中補上，詳見該報告 §2、§6。
 
 P1 與 FULL 之間只有先驗來源一項自由變因（conf 由該來源決定，非獨立選擇）。P1 與 W4 的差異在閘控初始化與注入結構，故 P1 一併回答「W4 的優勢是否源自閘控初始化」。
 
