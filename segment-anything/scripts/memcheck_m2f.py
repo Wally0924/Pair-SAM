@@ -8,7 +8,13 @@ import torch
 from segment_anything.build_pair_sam import build_pair_sam_from_config
 from utils.m2f_loss import M2FSetLoss
 
-cfg = {"model_type": "vit_h", "use_vgg_adapter": True, "decoder": "m2f"}
+import argparse
+_p = argparse.ArgumentParser()
+_p.add_argument("--prior_source", choices=["reference", "self"], default="reference")
+_args = _p.parse_args()
+
+cfg = {"model_type": "vit_h", "use_vgg_adapter": True, "decoder": "m2f",
+       "prior_source": _args.prior_source}
 model = build_pair_sam_from_config(cfg).cuda().train()
 # 對齊真實訓練（train.py:301 / pretrain_cityscapes.py:109）：ViT-H block gradient
 # checkpointing。少了這行等於測「不切實際的無 checkpointing 設定」，必 OOM。

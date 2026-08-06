@@ -139,3 +139,51 @@ def test_self_mode_keeps_zero_init_gate():
     m = build_pair_sam_from_config(_cfg(prior_source='self'), checkpoint=None)
     for inj in m.vgg_injector.injectors:
         assert torch.equal(inj.gamma.detach(), torch.zeros_like(inj.gamma))
+
+
+def _train_dir():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+def test_train_cli_exposes_prior_source():
+    """行為測試：--help 必須列出 --prior_source 及其兩個合法值。
+
+    argparse parser 建構於 train.py 的 main() 內部、由 __main__ 守衛，
+    無法 import 取得，故以子行程驗證真實的 argparse 行為。
+    """
+    import subprocess
+    out = subprocess.run([sys.executable, 'train.py', '--help'],
+                         cwd=_train_dir(), capture_output=True,
+                         text=True, timeout=600)
+    assert out.returncode == 0, out.stderr
+    assert '--prior_source' in out.stdout, "train.py 缺 --prior_source 旗標"
+    assert '{reference,self}' in out.stdout, \
+        "--prior_source 必須限定 choices=['reference', 'self']"
+
+
+def test_train_cli_rejects_invalid_prior_source():
+    """行為測試：非法值必須被 argparse 擋下，而非靜默落入預設。"""
+    import subprocess
+    out = subprocess.run([sys.executable, 'train.py', '--prior_source', 'bogus'],
+                         cwd=_train_dir(), capture_output=True,
+                         text=True, timeout=600)
+    assert out.returncode == 2, f"預期 argparse 錯誤退出碼 2，實得 {out.returncode}"
+    assert 'invalid choice' in out.stderr
+
+
+def test_train_wires_prior_source_into_abl_cfg():
+    """接線檢查：abl_cfg 必須含 prior_source=args.prior_source。
+
+    這是原始碼層級斷言，不是行為測試 —— 刻意如此。要在執行期驗證需要
+    完整的 CUDA 環境、資料集與 checkpoint，成本過高；真正的執行期驗證是
+    Task 4 Step 2（訓練啟動兩分鐘後檢查 ablation_config.json）。
+
+    保留本項的理由：若 abl_cfg 遺漏此鍵，eval 會從 ablation_config.json
+    重建模型時靜默退回 reference 模式、產出錯誤數字。此斷言讓接線遺漏在
+    改動 train.py 的當下就被發現，而不是八小時訓練跑完後才發現。
+    """
+    import re
+    with open(os.path.join(_train_dir(), 'train.py'), encoding='utf-8') as f:
+        src = f.read()
+    assert re.search(r'prior_source\s*=\s*args\.prior_source', src), \
+        "abl_cfg 必須含 prior_source=args.prior_source"

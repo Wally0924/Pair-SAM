@@ -331,6 +331,10 @@ def main():
     parser.add_argument("--adapter_variant", choices=["reference", "sam_adapter"], default="reference",
                         help="[ablation B] reference=跨視角參考注入（FULL）；"
                              "sam_adapter=同影像 SAM-Adapter 基線（不使用參考，forward 跳過 UAWarpC 對齊）")
+    parser.add_argument("--prior_source", choices=["reference", "self"], default="reference",
+                        help="[P1 基線] DeformAdapter 先驗來源：reference=UAWarpC 對齊後的"
+                             "跨視角晴天參考（FULL）；self=當前影像的 VGG 多尺度特徵"
+                             "（ViT-Adapter 式 SPM 基線，不經對齊，conf≡1）")
     parser.add_argument("--rcs", action=argparse.BooleanOptionalAction, default=False,
                         help="Rare Class Sampling：依稀有類過取樣訓練影像（預設關閉；對照實驗顯示 MFB-only 較佳，"
                              "RCS 已從 FULL 移除，見 docs/experiments/2026-06-06-mfb-vs-rcs-comparison.md）")
@@ -365,6 +369,7 @@ def main():
         conf_mod=args.conf_mod,
         extractor=args.extractor,
         adapter_variant=args.adapter_variant,
+        prior_source=args.prior_source,
         num_conditions=args.num_conditions,
     )
     model = build_pair_sam_from_config(abl_cfg, checkpoint=model_checkpoint)
