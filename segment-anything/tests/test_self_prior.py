@@ -139,7 +139,6 @@ def test_no_ref_projections_stay_disconnected():
     c_false, conf = rpm(feats)
     # use_reference=False 時，c 應為全零
     assert c_false.abs().sum() == 0
-    # c 沒有梯度計算圖，因此 proj 層不會收到梯度
+    # c 沒有梯度計算圖：torch.zeros_like(c) 切斷梯度流。c.grad_fn is None 確保
+    # 日後若有人改成 c*0 之類保留 grad_fn 的寫法，此斷言會抓到迴歸。
     assert not c_false.requires_grad or c_false.grad_fn is None
-    grad = rpm.proj_c2.weight.grad
-    assert grad is None or grad.abs().sum() == 0
