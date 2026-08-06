@@ -284,6 +284,47 @@ class CMAAlignment(nn.Module):
             'mask': confidence,               # (B, 1,   out_H, out_W) 連續信心 [0,1]（軟加權）
         }
 
+    @torch.no_grad()
+    def self_prior(
+        self,
+        img_curr: torch.Tensor,          # (B, 3, H, W) 當前影像，值域 [0, 255]
+        out_size: tuple = (64, 64),      # 目標特徵圖空間尺寸
+        l2_native: bool = False,         # True 時 l2 回傳 2×out_size（真 stride-8）
+    ) -> dict:
+        """同影像先驗（ViT-Adapter 式 SPM）：以當前影像的 VGG 多尺度特徵作為
+        DeformAdapter 的先驗，不執行 UAWarpC 對齊。
+
+        與 pre_align() 的輸出契約逐一對等（相同鍵、相同 channel、相同空間尺寸），
+        唯一差異是**不回傳 'mask' 鍵**：無翹曲即無對齊不確定性，
+        ReferencePriorModule 會因 feats.get('mask', None) is None 走既有 else 分支
+        取得 conf ≡ 1。此為 ViT-Adapter 設定的正確實例化，非移除置信度調變。
+
+        Returns:
+            dict，鍵為 'l2'(256ch) / 'l3'(512ch) / 'l4'(512ch)，無 'mask'。
+        """
+        out_H, out_W = out_size
+        feats_curr, _ = self._extract_vgg_features(img_curr)
+
+        def _resize(x, size):
+            if x.shape[-2:] != size:
+                x = F.interpolate(x, size=size, mode='bilinear', align_corners=False)
+            return x
+
+        # l2：l2_native=True 時為 2×out_size（真 stride-8），與 pre_align Step 9 對齊
+        l2_size = (out_H * 2, out_W * 2) if l2_native else (out_H, out_W)
+        f_l2 = _resize(feats_curr[2], l2_size)              # 256ch
+        f_l3 = _resize(feats_curr[3], (out_H, out_W))       # 512ch
+        f_l4 = _resize(feats_curr[4], (out_H // 2, out_W // 2))  # 512ch，真 stride-32
+
+        # 遙測：pair_trainer.py 讀取這四個屬性。self 模式無對齊，置信度與有效率
+        # 皆為中性值 1.0；flow 與 confidence map 無意義，設為 None。
+        self._last_conf_mean = 1.0
+        self._last_valid_ratio = 1.0
+        self._last_flow = None
+        self._last_confidence_map = None
+
+        return {'l2': f_l2, 'l3': f_l3, 'l4': f_l4}
+
 
 # =============================================================================
 # FlowGuidedSemanticAlignment
