@@ -109,6 +109,11 @@ class PairSAM(nn.Module):
         self.adapter_variant: str = 'reference'
         self._adapter_reference_free: bool = False
 
+        # 先驗來源：'reference' = UAWarpC 對齊後的跨視角晴天參考（FULL，預設）；
+        # 'self' = 當前影像的 VGG 多尺度特徵（ViT-Adapter 式 SPM 基線）。
+        # 由 build_pair_sam_from_config 依 cfg['prior_source'] 覆蓋。
+        self.prior_source: str = 'reference'
+
     @property
     def device(self) -> Any:
         return self.pixel_mean.device
@@ -187,6 +192,44 @@ class PairSAM(nn.Module):
         """disable_vgg_adapter の別名（新 API）。"""
         self.disable_vgg_adapter()
 
+    def _build_adapter_prior(self, batched_input):
+        """建構 DeformAdapter 的多尺度先驗，依 self.prior_source 分派。
+
+        'reference'：pre_align(當前影像, 晴天參考) → 含 'mask'（對齊置信度）
+        'self'     ：self_prior(當前影像)          → 無 'mask'（RPM 取 conf≡1）
+
+        不適用時回傳 None（未啟用 adapter、reference-free 變體、已有預計算
+        embedding、缺必要輸入）。
+        """
+        if not (self.use_vgg_adapter and not self._adapter_reference_free):
+            return None
+        if "image_embedding" in batched_input[0]:
+            return None
+        if not all("image" in x for x in batched_input):
+            return None
+        if self.prior_source == 'reference' and not all(
+                "clear_image" in x for x in batched_input):
+            return None
+
+        img_curr_batch = torch.stack(
+            [x["image"] for x in batched_input], dim=0).to(self.device)
+        _grid = self.image_encoder.img_size // self.image_encoder.patch_embed.proj.stride[0]
+
+        if self.prior_source == 'self':
+            feats = self.fusion_module.self_prior(
+                img_curr_batch, out_size=(_grid, _grid), l2_native=True)
+        else:
+            img_ref_batch = torch.stack(
+                [x["clear_image"] for x in batched_input], dim=0).to(self.device)
+            feats = self.fusion_module.pre_align(
+                img_curr_batch, img_ref_batch, out_size=(_grid, _grid), l2_native=True)
+
+        # pre_align/self_prior 在 no_grad 下產生大量 VGG 中間特徵（1024×1024）。
+        # 釋放 CUDA allocator cache，為後續 ViT-H global attention 騰出空間。
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return feats
+
     def forward(
         self,
         batched_input: List[Dict[str, Any]],
@@ -201,29 +244,10 @@ class PairSAM(nn.Module):
         """
         outputs = []
 
-        # --- 階段 0：pre_align — UAWarpC 對齊後的 VGG ref 特徵供 WarpedVGG Adapter 使用 ---
-        # CMAAlignment.pre_align() 僅使用原始影像的 VGG 特徵計算 flow，不依賴 ViT embedding，
+        # --- 階段 0：建構 DeformAdapter 先驗（依 prior_source 分派）---
+        # CMAAlignment 僅使用原始影像的 VGG 特徵，不依賴 ViT embedding，
         # 因此可在 SAM Encoder 之前安全執行，不存在循環依賴。
-        _vgg_ref_aligned = None
-        if (self.use_vgg_adapter
-                and not self._adapter_reference_free
-                and "image_embedding" not in batched_input[0]
-                and all("image" in x for x in batched_input)
-                and all("clear_image" in x for x in batched_input)):
-            img_curr_batch = torch.stack(
-                [x["image"] for x in batched_input], dim=0
-            ).to(self.device)
-            img_ref_batch = torch.stack(
-                [x["clear_image"] for x in batched_input], dim=0
-            ).to(self.device)
-            _grid = self.image_encoder.img_size // self.image_encoder.patch_embed.proj.stride[0]
-            _vgg_ref_aligned = self.fusion_module.pre_align(
-                img_curr_batch, img_ref_batch, out_size=(_grid, _grid), l2_native=True)
-            # pre_align(l2_native=True) returns l2 at (2*_grid, 2*_grid) — genuine stride-8.
-            # No post-hoc upsample needed; flow was scaled ×2 inside pre_align.
-            # pre_align 在 no_grad 下會產生大量 VGG 中間特徵（1024×1024 雙圖）
-            # 釋放 CUDA allocator cache，為後續 ViT-H global attention (1 GiB) 騰出空間
-            torch.cuda.empty_cache()
+        _vgg_ref_aligned = self._build_adapter_prior(batched_input)
 
         # --- 階段 1：核心特徵萃取 (Image Encoding) ---
         if "image_embedding" in batched_input[0]:
@@ -231,7 +255,8 @@ class PairSAM(nn.Module):
         else:
             input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
             if self.use_vgg_adapter and _vgg_ref_aligned is not None:
-                # _grid was computed in Stage 0 (pre_align branch) and is always set here
+                _grid = (self.image_encoder.img_size
+                         // self.image_encoder.patch_embed.proj.stride[0])
                 self.vgg_injector.set_features(_vgg_ref_aligned, _grid, _grid)
             image_embeddings = self.image_encoder(input_images)
 

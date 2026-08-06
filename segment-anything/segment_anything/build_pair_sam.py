@@ -57,6 +57,14 @@ def build_pair_sam_from_config(cfg: dict, checkpoint=None):
         model.use_lrh = False  # LRH/fusion head 屬 legacy 組裝路徑，m2f 不經過
     else:
         model.mask_decoder.decoder_mode = _dec
+    # 先驗來源（P1 基線）：'self' = 同影像先驗（ViT-Adapter 式 SPM），不經 UAWarpC。
+    # 必須在此映射，因 eval/test dump 均經 load_pair_sam_from_ablation 由
+    # ablation_config.json 重建模型；缺此映射會靜默以 reference 模式評估。
+    _prior_source = str(cfg.get('prior_source', 'reference'))
+    if _prior_source not in ('reference', 'self'):
+        raise ValueError(
+            f"prior_source 必須為 'reference' 或 'self'，收到 {_prior_source!r}")
+    model.prior_source = _prior_source
     _use_ref = bool(cfg.get('ref', True))
     if hasattr(model.vgg_injector, 'rpm'):
         model.vgg_injector.use_reference = _use_ref
