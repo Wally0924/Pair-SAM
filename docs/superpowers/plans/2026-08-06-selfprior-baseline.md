@@ -839,7 +839,7 @@ tail -f outputs_ablation_m2f/phase6.log
 第 1 個 epoch 結束後（約 15 分鐘）確認：
 
 ```bash
-head -2 outputs_ablation_m2f/P1_selfprior_seed42/train_log.csv | cut -d, -f1,13,29
+head -2 outputs_ablation_m2f/P1_selfprior_seed42/train_log.csv | cut -d, -f1,14,30
 ```
 
 Expected: `epoch,val_miou,train_inject_gate` 三欄有值，`train_inject_gate` 為接近 0 的小正值（零初始化閘控開始成長）。
