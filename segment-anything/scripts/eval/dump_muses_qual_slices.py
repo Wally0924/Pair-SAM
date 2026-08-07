@@ -74,6 +74,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--buckets', nargs='+',
                    default=['rain:day', 'snow:day', 'rain:night', 'snow:night'],
                    help='每個 bucket 形如 weather:tod，取該組於 val 的第一筆')
+    p.add_argument('--cond-mode', choices=['off', 'csv'], default='off',
+                   help='condition_id 處理：off=關閉條件、走共享索引 0（ACDC 權重零樣本'
+                        '用）；csv=沿用 CSV 既有 condition_id（MUSES 8 條件模型用）')
     p.add_argument('--out-dir', type=str,
                    default=str(repo_root / 'paper' / 'Chinese_master_thesis'
                                / 'Images' / 'qual' / 'MUSES'))
@@ -87,11 +90,14 @@ def main() -> None:
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
 
     model, _cfg = load_pair_sam_from_ablation(args.ckpt, device=args.device)
-    model.use_cond = False  # cond off：text + reference 照常
+    if args.cond_mode == 'off':
+        model.use_cond = False  # cond off：text + reference 照常
 
-    resolved = resolve_condition_csv(args.csv, 'off')
+    resolved = resolve_condition_csv(args.csv, args.cond_mode)
+    # condition_id 上界須與模型 embedding 列數一致，否則 8 條件 CSV 會被擋下
     ds = PairSegmentationDataset(csv_file=resolved, image_size=1024,
-                                 mode='val', force_raw_images=True)
+                                 mode='val', force_raw_images=True,
+                                 num_conditions=getattr(model, 'num_conditions', 4))
     df = ds.data.reset_index(drop=True)
 
     summary = []
