@@ -1,4 +1,54 @@
-# 📜 Scripts Description
+# 資料索引與前處理
+
+## 資料集取得
+
+本 repo 只提供資料索引 CSV，不散布資料集影像。請自行向各資料集官方申請並下載：
+
+| 資料集 | 用途 | 取得方式 |
+|--------|------|----------|
+| [ACDC](https://acdc.vision.ee.ethz.ch/) | 主要訓練與評估（fog / rain / snow / night） | 官網註冊後下載 |
+| [MUSES](https://muses.vision.ee.ethz.ch/) | 跨資料集泛化評估（weather × time-of-day 八種條件） | 官網註冊後下載 |
+| [Cityscapes](https://www.cityscapes-dataset.com/) | 晴天預訓練與 GT | 官網註冊後下載 |
+| [Foggy Cityscapes](https://people.ee.ethz.ch/~csakarid/SFSU_synthetic/) | 合成霧氣訓練 | 隨 Cityscapes 提供 |
+| [Dark Zurich](https://www.trace.ethz.ch/publications/2019/GCMA_UIoU/) | 夜間評估 | 官網下載 |
+
+下載後請維持各資料集的原始目錄結構，統一放在同一個根目錄下：
+
+```text
+$DATASET_ROOT/
+├── ACDC/
+├── MUSES/
+├── Cityscapes/
+├── Cityscapes_foggy/
+└── Dark_Zurich/
+```
+
+## 路徑設定
+
+CSV 中的路徑以佔位符記錄，執行前需設定環境變數：
+
+```bash
+export DATASET_ROOT=/path/to/your/Datasets   # 預設 ~/Datasets
+export REPO_ROOT=/path/to/SAM_research       # 預設為本 repo 根目錄，通常不需設定
+```
+
+兩個佔位符的意義：
+
+- `${DATASET_ROOT}` — 外部資料集的原始影像與標註
+- `${REPO_ROOT}` — repo 內的預計算特徵快取（`Datasets/features_*`，需自行以 `precompute_features.py` 產生）
+
+路徑展開由 `path_resolver.py` 處理，`pair_dataloader.py` 與 `precompute_features.py` 讀取 CSV 後會自動套用，一般情況下無需手動呼叫。若自行撰寫分析腳本讀取這些 CSV：
+
+```python
+import pandas as pd
+from path_resolver import resolve_dataframe
+
+df = resolve_dataframe(pd.read_csv('Datasets/acdc_adverse_ref_rgb_val.csv'))
+```
+
+---
+
+## 📜 Scripts Description
 
 ### 1. `sperate_data.py`
 

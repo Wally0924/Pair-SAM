@@ -1,12 +1,109 @@
-# Byte-compiled / optimized / DLL files
+# =============================================================================
+# PairSAM / WeatherSAM — 公開 repo 的檔案分類
+#
+#   上傳：模型程式碼、訓練與評估腳本、測試、資料索引 CSV（路徑已可攜化）
+#   不傳但提供下載點：模型權重、訓練輸出、特徵快取、benchmark 提交包
+#   純本地：論文原稿、個人 AI 工作流設定、除錯視覺化、自採影像
+#
+# 資料集本身（ACDC / MUSES / Cityscapes / Dark Zurich）受各自授權約束，
+# 一律不散布；請依 Datasets/README.md 自行取得後設定 DATASET_ROOT。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 純本地：論文與個人工作流
+# -----------------------------------------------------------------------------
+
+# 論文撰寫工作區（碩論、研討會論文草稿與 LaTeX 中間檔），不進 code repo
+paper/
+
+# 研究過程文件（設計 spec、實驗報告、開發計畫），留存本地
+docs/
+
+# 個人 AI 助理設定與工作流快取（含本機 conda 路徑與 hook 絕對路徑）
+CLAUDE.md
+**/CLAUDE.md
+.claude/
+.superpowers/
+.codex
+.cursorignore
+.cursorindexingignore
+
+# -----------------------------------------------------------------------------
+# 不傳但提供下載點：模型權重
+# -----------------------------------------------------------------------------
+
+# SAM 原廠權重從 Meta 官方取得；自訓權重另行發布於 release / HF Hub
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.onnx
+checkpoints/
+segment-anything/checkpoints/
+
+# -----------------------------------------------------------------------------
+# 不傳但提供下載點：訓練輸出與實驗產物
+# -----------------------------------------------------------------------------
+
+# 所有訓練輸出目錄（checkpoint、train_log、training_curve、e1_results）
+# 整包另行提供 results 下載點，避免 repo 膨脹
+segment-anything/outputs_*/
+segment-anything/inference_viz_acdc*/
+segment-anything/inference_viz_cityscapes*/
+
+# benchmark 提交包（ACDC / MUSES / Dark Zurich test server）
+segment-anything/submissions/
+submissions/
+
+# 口試簡報圖表產物：可由 scripts/eval/plot_defense_figures.py 與
+# plot_class_pixel_ratio.py 重現；adverse_*_input.png 為 ACDC 原始影像，
+# 涉及資料集散布授權，不進公開 repo。
+segment-anything/figures_defense/
+
+# 除錯與品質檢查視覺化（含資料集原始影像衍生內容）
+segment-anything/debug_viz*/
+segment-anything/color_analysis_result.png
+segment-anything/gt_verify_check.png
+acdc_sample_vis.png
+
+# -----------------------------------------------------------------------------
+# 不傳但提供下載點：資料集與特徵快取
+# -----------------------------------------------------------------------------
+
+# 原始資料集與軟連結
+segment-anything/data/
+Datasets/ACDC/
+Datasets/MUSES/
+Datasets/Cityscapes/
+Datasets/Cityscapes_foggy/
+Datasets/Dark_Zurich/
+
+# 預先計算的 ViT-H 特徵快取（~60GB），可由 precompute_features.py 重建
+Datasets/features_*/
+Datasets/acdc_*_features_*/
+Datasets/foggy_0.02/*.pt
+
+# -----------------------------------------------------------------------------
+# 訓練與執行時產物
+# -----------------------------------------------------------------------------
+*.log
+!Makefile
+results_all/
+wandb/
+runs/
+lightning_logs/
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
 __pycache__/
 *.py[codz]
 *$py.class
-
-# C extensions
 *.so
+*.pyd
+_ext
 
-# Distribution / packaging
+# 打包與發布
 .Python
 build/
 develop-eggs/
@@ -25,18 +122,14 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
-# Installer logs
+# 安裝紀錄
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# 測試與覆蓋率
 htmlcov/
 .tox/
 .nox/
@@ -51,90 +144,16 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Translations
-*.mo
-*.pot
+# 型別檢查與 linter 快取
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+cython_debug/
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
-
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
+# 虛擬環境
 .env
 .envrc
 .venv
@@ -144,86 +163,39 @@ ENV/
 env.bak/
 venv.bak/
 
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
-
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#  you could uncomment the following to ignore the entire vscode folder
-.vscode/
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
+# 套件管理
+.pdm-python
+.pdm-build/
+.pixi
+__pypackages__/
 .pypirc
 
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
+# Jupyter / IPython
+.ipynb_checkpoints
+**/.ipynb_checkpoints/
+profile_default/
+ipython_config.py
 
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
+# -----------------------------------------------------------------------------
+# 編輯器與作業系統
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+.spyderproject
+.spyproject
+.ropeproject
+_darcs
+*.swn
+*.swo
+*.swp
+*~
+.nfs*
+.DS_Store
+Thumbs.db
 
-segment-anything/data/
-segment-anything/debug_viz*
-segment-anything/outputs_weather_sam*
-segment-anything/inference_viz_cityscapes*/
-*.pt
-*.pth
-/home/rvl1421/SAM_research/segment-anything/checkpoints
-CLAUDE.md
-segment-anything/inference_viz_acdc*/
-docs
-submissions
-# 所有訓練輸出目錄一律不進 repo（涵蓋 m2f 與未來新 run，取代逐一列舉）
-segment-anything/outputs_*/
-
-# 論文撰寫工作區（master/conference 草稿），不進 code repo
-paper/
-
-# 口試簡報圖表產物：11 張圖可由 scripts/eval/plot_defense_figures.py 與
-# plot_class_pixel_ratio.py 重現；另兩張 adverse_*_input.png 是 ACDC 原始影像，
-# 涉及資料集散布授權，不進公開 repo。
-segment-anything/figures_defense/
+# -----------------------------------------------------------------------------
+# 前端 demo（SAM 上游遺留）
+# -----------------------------------------------------------------------------
+**/node_modules
+yarn.lock
+package-lock.json

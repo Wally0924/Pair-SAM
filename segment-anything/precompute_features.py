@@ -4,10 +4,16 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import pandas as pd
 import os
+import sys
 import argparse
 import cv2
 
 from segment_anything.build_pair_sam import build_pair_sam_vit_h, build_pair_sam_vit_b
+
+# CSV 內的 ${DATASET_ROOT} / ${REPO_ROOT} 佔位符需展開為實際路徑
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Datasets'))
+from path_resolver import resolve_dataframe
 
 
 def preprocess_image(image, pixel_mean, pixel_std, img_size):
@@ -84,7 +90,7 @@ def main():
     img_size   = image_encoder.img_size
 
     # 2. 讀取 CSV
-    df = pd.read_csv(args.csv_file)
+    df = resolve_dataframe(pd.read_csv(args.csv_file))
     print(f"📂 Loaded {len(df)} rows from {args.csv_file}")
 
     for col in [args.foggy_image_col, args.clear_image_col]:

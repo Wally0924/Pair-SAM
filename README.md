@@ -95,12 +95,20 @@ pip install git+https://github.com/openai/CLIP.git
 
 ### Pre-trained Checkpoints
 
-Place under `segment-anything/checkpoints/`:
+Model weights are **not stored in this repository**. Download them and place under `segment-anything/checkpoints/`:
 
-| File | Size | Source |
-|---|---|---|
-| `sam_vit_h_4b8939.pth` | ~2.4 GB | [Segment Anything (Kirillov et al., ICCV 2023)](https://github.com/facebookresearch/segment-anything) |
-| `cma_alignment_weights.pth` | ~69 MB | CMA alignment (VGG-16 + UAWarpC) — *[release link TBD]* |
+| File | Size | Required for | Source |
+|---|---|---|---|
+| `sam_vit_h_4b8939.pth` | ~2.4 GB | all ViT-H runs | [Segment Anything (Kirillov et al., ICCV 2023)](https://github.com/facebookresearch/segment-anything) |
+| `sam_vit_b_01ec64.pth` | ~358 MB | ViT-B ablations | [Segment Anything](https://github.com/facebookresearch/segment-anything) |
+| `cma_alignment_weights.pth` | ~69 MB | CMA alignment (VGG-16 + UAWarpC) | *[release link TBD]* |
+| `cma_segformer_acdc.ckpt` | ~1.4 GB | CMA baseline comparison | *[release link TBD]* |
+| `location_encoder_weights.pth` | ~37 MB | GNSS location encoding | *[release link TBD]* |
+| `cityscapes_pretrain/sam_vit_h_cityscapes_merged.pth` | ~2.4 GB | clear-weather pre-training stage | *[release link TBD]* |
+
+### Trained Models and Experiment Outputs
+
+Training runs write to `segment-anything/outputs_*/`, which is excluded from version control (checkpoints alone exceed 100 GB). Trained PairSAM weights and the corresponding experiment records — `train_log.csv`, `e1_results.json`, `ablation_config.json`, and training curves for every ablation variant — are released separately: *[release link TBD]*.
 
 ---
 
@@ -114,12 +122,28 @@ PairSAM is evaluated under the **GNSS-paired** protocol shared with Refign and C
 | **Dark Zurich** | 2,416 | 50 | 151 | nighttime |
 | **RobotCar Correspondence** | 6,511 | 27 | 27 | cross-season / cross-time |
 
+Datasets are **not redistributed here** — obtain them from the official sources (ACDC, MUSES, Cityscapes, Foggy Cityscapes, Dark Zurich) under their respective licenses, keep each dataset's original directory layout, and place them under a common root. See [`Datasets/README.md`](Datasets/README.md) for links and the expected structure.
+
 Manifest CSV columns (`acdc_adverse_ref_rgb_{train,val}.csv`):
 
-```
+```text
 image_path, ref_image_path, gt_path, condition, condition_id, invalid_mask
 ```
 where `condition_id ∈ {0: fog, 1: rain, 2: snow, 3: night}`.
+
+### Path Configuration
+
+The manifest CSVs ship with placeholders instead of absolute paths, so set the dataset root before running anything:
+
+```bash
+export DATASET_ROOT=/path/to/your/Datasets   # defaults to ~/Datasets
+```
+
+`${DATASET_ROOT}` (external datasets) and `${REPO_ROOT}` (in-repo feature caches) are expanded automatically by [`Datasets/path_resolver.py`](Datasets/path_resolver.py) when `pair_dataloader.py`, `precompute_features.py`, or `train.py` read a manifest. No manual substitution is needed.
+
+> **Note.** Several helper scripts under `segment-anything/scripts/` still carry the original author's absolute paths as argparse or shell defaults (e.g. `run_muses_cond8.sh`, `make_ch4_figs.py`). These are one-off analysis and figure-generation utilities — override the relevant `--csv` / `--output_dir` arguments, or edit the defaults, before running them. The training and evaluation entry points documented in this README take explicit paths and need no such edits.
+
+<!-- -->
 
 > **Note.** GT for the ACDC test set is held out by the official server; the per-condition and ablation analyses in this repository use the ACDC **validation** split (406 images), whose labels are public.
 
@@ -231,9 +255,14 @@ PairSAM/
 │   ├── pair_trainer.py            # training / validation loop
 │   ├── run_ablation.sh               # full ablation campaign
 │   └── tests/                        # pytest unit tests for each switch
-├── docs/                             # specs, plans, experiment reports
+├── Datasets/
+│   ├── path_resolver.py              # ${DATASET_ROOT} / ${REPO_ROOT} expansion
+│   ├── *.csv                         # dataset manifests (portable placeholders)
+│   └── class_presence.json           # per-image class table for RCS
 └── README.md
 ```
+
+Not tracked here: model weights (`checkpoints/`), training runs (`outputs_*/`), feature caches, benchmark submission packages, and the paper sources. See the release links above.
 
 ---
 

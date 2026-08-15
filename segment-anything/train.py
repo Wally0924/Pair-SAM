@@ -15,8 +15,9 @@ import matplotlib.pyplot as plt
 import argparse
 
 # 引入你的模組
-from utils.pair_dataloader import PairSegmentationDataset
+from utils.pair_dataloader import PairSegmentationDataset  # 同時把 Datasets/ 加入 sys.path
 from utils.rare_class_sampler import RareClassSampler
+from path_resolver import resolve_path
 from pair_trainer import PairSAMTrainer
 from segment_anything.build_pair_sam import build_pair_sam_from_config
 
@@ -465,6 +466,9 @@ def main():
                 f"scripts/precompute_class_presence.py（見 ABLATION_RUNBOOK Phase 0）。")
         with open(cp_path) as f:
             cp = json.load(f)
+        # presence 的 key 以 ${DATASET_ROOT} 佔位符儲存，需展開後才能與
+        # dataloader 已解析的 gt_path 比對
+        cp['presence'] = {resolve_path(k): v for k, v in cp['presence'].items()}
         num_classes = int(cp.get('num_classes', 19))
         gt_paths = train_ds.data['gt_path'].tolist()
         presence_list = []

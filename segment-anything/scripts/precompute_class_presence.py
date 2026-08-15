@@ -4,15 +4,21 @@
 
 用法：
   python scripts/precompute_class_presence.py \
-    --csv /home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv \
-    --out /home/rvl1421/SAM_research-1/Datasets/class_presence.json
+    --csv ../Datasets/acdc_adverse_ref_rgb_train.csv \
+    --out ../Datasets/class_presence.json
 """
 import argparse
 import json
 import os
+import sys
 
 import cv2
 import numpy as np
+
+# CSV 內的 gt_path 以 ${DATASET_ROOT} 佔位符記錄，讀檔前需展開
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Datasets'))
+from path_resolver import resolve_path
 import pandas as pd
 from tqdm import tqdm
 
@@ -37,8 +43,9 @@ def build_class_presence(csv_path, out_path, num_classes=19):
         raise ValueError("CSV 缺少 gt_path 欄位")
     presence = {}
     total_counts = [0] * num_classes
+    # key 保留 CSV 原始的 ${DATASET_ROOT} 佔位符以維持可攜性，實際讀檔則用展開後路徑
     for gt in tqdm(df['gt_path'].tolist(), desc='scan GT'):
-        present, counts = scan_gt_mask(gt, num_classes)
+        present, counts = scan_gt_mask(resolve_path(gt), num_classes)
         presence[gt] = present
         for c in range(num_classes):
             total_counts[c] += counts[c]

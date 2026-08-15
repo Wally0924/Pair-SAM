@@ -4,7 +4,13 @@ from torch.utils.data import Dataset
 import numpy as np
 import cv2
 import os
+import sys
 import pandas as pd
+
+# repo 內的 CSV 以 ${DATASET_ROOT} / ${REPO_ROOT} 記錄資料集位置，讀取後需展開為實際路徑
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Datasets'))
+from path_resolver import resolve_dataframe
 
 class PairSegmentationDataset(Dataset):
     def __init__(self, csv_file: str, image_size: int = 1024, mode: str = 'train',
@@ -29,8 +35,8 @@ class PairSegmentationDataset(Dataset):
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"❌ 找不到 CSV 檔案: {csv_file}")
             
-        self.data = pd.read_csv(csv_file)
-        
+        self.data = resolve_dataframe(pd.read_csv(csv_file))
+
         # 2. 檢查是否包含特徵路徑欄位 (Feature Caching)
         self.has_cached_features = 'feature_path' in self.data.columns
         if self.has_cached_features:
