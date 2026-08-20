@@ -283,39 +283,6 @@ Not tracked here: model weights (`checkpoints/`), training runs (`outputs_*/`), 
 }
 ```
 
-This framework builds on the following works:
-
-```bibtex
-@inproceedings{kirillov2023sam,
-  title={Segment Anything}, author={Kirillov, Alexander and others},
-  booktitle={ICCV}, year={2023}}
-
-@inproceedings{cheng2022mask2former,
-  title={Masked-attention Mask Transformer for Universal Image Segmentation},
-  author={Cheng, Bowen and Misra, Ishan and Schwing, Alexander G. and others},
-  booktitle={CVPR}, year={2022}}
-
-@inproceedings{radford2021clip,
-  title={Learning Transferable Visual Models From Natural Language Supervision},
-  author={Radford, Alec and others}, booktitle={ICML}, year={2021}}
-
-@inproceedings{sakaridis2021acdc,
-  title={{ACDC}: The Adverse Conditions Dataset with Correspondences for
-         Semantic Driving Scene Understanding},
-  author={Sakaridis, Christos and Dai, Dengxin and Van Gool, Luc},
-  booktitle={ICCV}, year={2021}}
-
-@inproceedings{bruggemann2023cma,
-  title={Contrastive Model Adaptation for Cross-Condition Robustness in
-         Semantic Segmentation},
-  author={Bruggemann, David and others}, booktitle={ICCV}, year={2023}}
-
-@inproceedings{berman2018lovasz,
-  title={The Lov{\'a}sz-Softmax Loss: A Tractable Surrogate for the
-         Optimization of the IoU Measure}, author={Berman, Maxim and others},
-  booktitle={CVPR}, year={2018}}
-```
-
 ---
 
 ## License
