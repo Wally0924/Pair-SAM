@@ -1,6 +1,13 @@
 # build_pair_sam.py
+import os
+
 import torch
 from functools import partial
+
+# checkpoints/ 位於 segment-anything/ 之下,以本檔位置推導,避免絕對路徑
+_CHECKPOINT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints"
+)
 
 from .modeling import ImageEncoderViT, TwoWayTransformer, PairPromptEncoder, CMAAlignment, TextEncoder, PairSAM, MaskDecoder
 
@@ -191,7 +198,7 @@ def _build_pair_sam(
 
     fusion_module = CMAAlignment(
         embed_dim=prompt_embed_dim,
-        pretrained_path="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/cma_alignment_weights.pth",
+        pretrained_path=os.path.join(_CHECKPOINT_DIR, "cma_alignment_weights.pth"),
         confidence_threshold=0.2,
     )
 

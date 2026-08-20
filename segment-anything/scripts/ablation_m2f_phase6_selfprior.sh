@@ -11,8 +11,6 @@
 #   2. W4_seed42 的 79.80 是否源自其固定 0.05 閘控初始化？P1 用零初始化閘控，
 #      若 P1 亦顯著高於 FULL，則排除閘控假說。
 #
-# 設計文件：docs/superpowers/specs/2026-08-06-selfprior-baseline-design.md
-#
 # 假設已 conda activate sam_env。背景執行：
 #   nohup bash scripts/ablation_m2f_phase6_selfprior.sh > outputs_ablation_m2f/phase6.log 2>&1 &
 #

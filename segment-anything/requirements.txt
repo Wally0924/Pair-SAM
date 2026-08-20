@@ -1,0 +1,44 @@
+# PairSAM 執行環境依賴
+#
+# 實測環境：Python 3.10.19 / Ubuntu 24.04 / CUDA 12.8 / NVIDIA RTX 4090 24GB
+# 驗證方式：conda activate sam_env && python -m pytest tests/ -q  → 197 passed
+#
+# 完整安裝流程：
+#   conda create -n sam_env python=3.10
+#   conda activate sam_env
+#   pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
+#   pip install -r requirements.txt
+#   pip install git+https://github.com/openai/CLIP.git
+#   pip install -e .
+#
+# 註：Multi-Scale Deformable Attention 為純 PyTorch 實作
+#     （segment_anything/modeling/ops/ms_deform_attn.py），不需編譯 CUDA 擴充。
+
+# --- 深度學習框架 ---
+# 請用上方 --index-url 指令安裝，不要由本檔安裝，否則會取得 CPU 版：
+#   torch==2.9.1+cu128
+#   torchvision==0.24.1+cu128
+
+# --- 數值運算與影像處理 ---
+numpy==2.2.6
+scipy==1.15.3
+pandas==2.3.3
+opencv-python==4.12.0.88
+pillow==12.1.0
+
+# --- 繪圖與報表輸出 ---
+matplotlib==3.10.8
+openpyxl==3.1.5
+
+# --- 其他 ---
+tqdm==4.67.1
+pycocotools==2.0.11
+
+# --- 測試 ---
+pytest==9.0.3
+
+# --- CLIP（必要，不可省略）---
+# 文字編碼器 segment_anything/modeling/text_encoder.py 由 build_pair_sam.py 建構，
+# 屬模型主線路徑。CLIP 不在 PyPI，需由 GitHub 安裝：
+#   pip install git+https://github.com/openai/CLIP.git
+# 其依賴 ftfy、regex 會一併安裝。

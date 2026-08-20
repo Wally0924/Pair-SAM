@@ -216,13 +216,15 @@ def print_training_config(args, device):
     print("="*60 + "\n")
 
 def main():
+    # 預設路徑以本檔位置為基準,避免綁定特定機器的絕對路徑
+    _seg_dir = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
 
     # --- 基礎設定 ---
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--model_type", type=str, default="vit_h", choices=["vit_b", "vit_h"])
     parser.add_argument("--checkpoint", type=str,
-                        default="/home/rvl1421/SAM_research-1/segment-anything/checkpoints/sam_vit_h_4b8939.pth",
+                        default=os.path.join(_seg_dir, "checkpoints", "sam_vit_h_4b8939.pth"),
                         help="Path to checkpoint.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a training checkpoint (.pth) to resume from. If set, --checkpoint is ignored.")
@@ -296,9 +298,11 @@ def main():
                              "run_m2f_cs_pretrain_e2e.sh 產出的權重使用。預設 False。")
 
     # --- 資料路徑 ---
-    parser.add_argument("--train_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_train.csv",
+    parser.add_argument("--train_csv", type=str,
+                        default=os.path.join(_seg_dir, "..", "Datasets", "acdc_adverse_ref_rgb_train.csv"),
                         help="訓練資料集 CSV 路徑")
-    parser.add_argument("--val_csv", type=str, default="/home/rvl1421/SAM_research-1/Datasets/acdc_adverse_ref_rgb_val.csv",
+    parser.add_argument("--val_csv", type=str,
+                        default=os.path.join(_seg_dir, "..", "Datasets", "acdc_adverse_ref_rgb_val.csv"),
                         help="驗證資料集 CSV 路徑")
 
     # [testv14] WarpedVGG Adapter 注入 SAM ViT-H Encoder（預設啟用，--no-use_vgg_adapter 關閉）

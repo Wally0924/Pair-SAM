@@ -1,9 +1,9 @@
 # =============================================================================
-# PairSAM / WeatherSAM — 公開 repo 的檔案分類
+# PairSAM — 公開 repo 的檔案分類
 #
 #   上傳：模型程式碼、訓練與評估腳本、測試、資料索引 CSV（路徑已可攜化）
 #   不傳但提供下載點：模型權重、訓練輸出、特徵快取、benchmark 提交包
-#   純本地：論文原稿、個人 AI 工作流設定、除錯視覺化、自採影像
+#   純本地：論文原稿、本地開發環境設定、除錯視覺化、自採影像
 #
 # 資料集本身（ACDC / MUSES / Cityscapes / Dark Zurich）受各自授權約束，
 # 一律不散布；請依 Datasets/README.md 自行取得後設定 DATASET_ROOT。
@@ -19,14 +19,6 @@ paper/
 # 研究過程文件（設計 spec、實驗報告、開發計畫），留存本地
 docs/
 
-# 個人 AI 助理設定與工作流快取（含本機 conda 路徑與 hook 絕對路徑）
-CLAUDE.md
-**/CLAUDE.md
-.claude/
-.superpowers/
-.codex
-.cursorignore
-.cursorindexingignore
 
 # -----------------------------------------------------------------------------
 # 不傳但提供下載點：模型權重
