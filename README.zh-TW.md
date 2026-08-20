@@ -13,6 +13,9 @@
 
 </div>
 
+<p align="center"><img src="assets/teaser_pair.jpg" width="88%" alt="惡劣天氣影像與其 GNSS 配對晴天參考"></p>
+<p align="center"><em>PairSAM 借助同一場景的 GNSS 配對晴天參考影像,分割惡劣天氣下的畫面。</em></p>
+
 ---
 
 ## 摘要
@@ -37,7 +40,8 @@ PairSAM 將兩者結合：幾何對齊、信心閘控的晴天參考被注入凍
 
 ## 方法總覽
 
-<p align="center"><em>[圖示佔位 — pipeline 示意圖待補]</em></p>
+<p align="center"><img src="assets/pairsam_overview.png" width="100%" alt="PairSAM 架構總覽"></p>
+<p align="center"><em><b>架構總覽。</b>凍結的 SAM ViT 編碼器經 Injector/Extractor 階段接收信心閘控後的參考特徵;由 CLIP 文字嵌入與條件嵌入組成的類別查詢,解碼為 19 類語意圖。</em></p>
 
 PairSAM 將一張惡劣天氣影像與其 GNSS 配對晴天參考,經以下階段映射為 19 類語意圖。
 
@@ -47,6 +51,12 @@ PairSAM 將一張惡劣天氣影像與其 GNSS 配對晴天參考,經以下階�
 4. **統一遮罩解碼。** `MaskDecoder` 將所有啟用的類別查詢置於同一 TwoWayTransformer 序列（跨類別自注意力）;每個類別有專屬的 hypernetwork MLP 產生其動態遮罩頭。每類一張遮罩,無 IoU 候選挑選。
 5. **Logit 精修（LRH）。** `ResidualDWConvFusion` 對組裝後的 `(1, 19, H, W)` logit 圖先做跨類別競爭（1×1 mixer、殘差）,再做深度卷積空間平滑。
 6. **損失函數。** 加權交叉熵（**median-frequency balancing, MFB**）+ **Lovász-Softmax** + **Dice**。
+
+<p align="center"><img src="assets/adapter.png" width="90%" alt="WarpedVGG Adapter 細節"></p>
+<p align="center"><em><b>WarpedVGG Adapter。</b>以多尺度交叉注意力,將對齊且信心閘控後的參考特徵注入凍結的 ViT-H 編碼器。</em></p>
+
+<p align="center"><img src="assets/decoder.png" width="80%" alt="統一查詢遮罩解碼器"></p>
+<p align="center"><em><b>統一查詢解碼。</b>所有類別查詢共用單次 TwoWayTransformer;各類別的 hypernetwork MLP 產生動態遮罩頭。</em></p>
 
 ### 可訓練 / 凍結模組
 
@@ -91,6 +101,14 @@ PairSAM 將一張惡劣天氣影像與其 GNSS 配對晴天參考,經以下階�
 | **PairSAM（本研究）** | **TBD** | **TBD** |
 
 > ACDC **test set** 的逐類 IoU 與既有 Cityscapes→ACDC 方法之比較（CMA Table-1 格式）於論文中報告;預測結果以 `scripts/eval/dump_acdc_test_preds.py` 匯出後提交官方 server。
+
+### 定性結果
+
+<p align="center"><img src="assets/qualitative_acdc.jpg" width="100%" alt="ACDC 定性比較"></p>
+<p align="center"><em><b>ACDC（val）定性比較。</b>霧、雨、雪、夜各取一例,與 SegFormer、Refign、CMA 對照。</em></p>
+
+<p align="center"><img src="assets/reference_gain.jpg" width="88%" alt="晴天參考的效果"></p>
+<p align="center"><em><b>參考影像改變了什麼。</b>完整模型 vs. 無參考變體;差異圖中綠色為參考修正的像素,紅色為被破壞的像素,灰色為兩者一致。</em></p>
 
 ---
 
@@ -179,6 +197,9 @@ export DATASET_ROOT=/path/to/your/Datasets   # 預設 ~/Datasets
 ## 訓練
 
 完整模型（**FULL**）對應 `train.py` 預設值:參考注入開啟、pre-block 注入、統一解碼、精修頭開啟,目標函數為 CE+Lovász+Dice+MFB。
+
+<p align="center"><img src="assets/training_stages.png" width="95%" alt="訓練階段"></p>
+<p align="center"><em><b>訓練流程。</b>先於 Cityscapes 晴天預訓練,再於 ACDC 進行惡劣天氣適應。</em></p>
 
 ```bash
 cd segment-anything

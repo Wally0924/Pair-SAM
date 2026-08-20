@@ -13,6 +13,9 @@ English | [繁體中文](README.zh-TW.md)
 
 </div>
 
+<p align="center"><img src="assets/teaser_pair.jpg" width="88%" alt="An adverse-weather frame and its GNSS-paired clear-weather reference"></p>
+<p align="center"><em>PairSAM segments an adverse-weather frame with the help of a GNSS-paired clear-weather reference of the same scene.</em></p>
+
 ---
 
 ## Abstract
@@ -37,7 +40,8 @@ PairSAM combines them: a geometrically aligned, confidence-gated clear-weather r
 
 ## Method Overview
 
-<p align="center"><em>[Figure placeholder — pipeline diagram TBD]</em></p>
+<p align="center"><img src="assets/pairsam_overview.png" width="100%" alt="PairSAM architecture overview"></p>
+<p align="center"><em><b>Architecture overview.</b> A frozen SAM ViT encoder receives confidence-gated reference features through injector/extractor stages; class queries built from CLIP text embeddings and a condition embedding are decoded into the 19-class semantic map.</em></p>
 
 PairSAM maps an adverse-weather image and a GNSS-paired clear-weather reference to a 19-class semantic map through the following stages.
 
@@ -47,6 +51,12 @@ PairSAM maps an adverse-weather image and a GNSS-paired clear-weather reference 
 4. **Unified mask decoding.** A `MaskDecoder` places all active class queries in a single TwoWayTransformer sequence (cross-class self-attention); each class has a dedicated hypernetwork MLP that produces its dynamic mask head. One mask per class—no IoU candidate selection.
 5. **Logit refinement (LRH).** `ResidualDWConvFusion` performs cross-class competition (1×1 mixer, residual) followed by depthwise spatial smoothing on the assembled `(1, 19, H, W)` logit map.
 6. **Loss.** Weighted cross-entropy with **median-frequency balancing (MFB)** + **Lovász-Softmax** + **Dice**.
+
+<p align="center"><img src="assets/adapter.png" width="90%" alt="WarpedVGG Adapter (injector/extractor) detail"></p>
+<p align="center"><em><b>WarpedVGG Adapter.</b> Multi-scale cross-attention injection of the aligned, confidence-gated reference into the frozen ViT-H encoder.</em></p>
+
+<p align="center"><img src="assets/decoder.png" width="80%" alt="Unified query mask decoder"></p>
+<p align="center"><em><b>Unified query decoding.</b> All class queries share one TwoWayTransformer pass; per-class hypernetwork MLPs produce dynamic mask heads.</em></p>
 
 ### Trainable / Frozen Modules
 
@@ -91,6 +101,14 @@ All numbers follow the GNSS-paired evaluation protocol of Refign and CMA: mIoU o
 | **PairSAM (ours)** | **TBD** | **TBD** |
 
 > ACDC **test-set** per-class IoU vs. prior Cityscapes→ACDC methods (CMA Table-1 format) is reported in the paper; predictions are exported with `scripts/eval/dump_acdc_test_preds.py` for server submission.
+
+### Qualitative Results
+
+<p align="center"><img src="assets/qualitative_acdc.jpg" width="100%" alt="Qualitative comparison on ACDC"></p>
+<p align="center"><em><b>Qualitative comparison on ACDC (val).</b> One example per condition — fog, rain, snow, night — against SegFormer, Refign, and CMA.</em></p>
+
+<p align="center"><img src="assets/reference_gain.jpg" width="88%" alt="Effect of the clear-weather reference"></p>
+<p align="center"><em><b>What the reference changes.</b> Full model vs. the reference-free variant; in the difference map, green marks pixels the reference corrects, red those it breaks, gray where both agree.</em></p>
 
 ---
 
@@ -179,6 +197,9 @@ export DATASET_ROOT=/path/to/your/Datasets   # defaults to ~/Datasets
 ## Training
 
 The complete model (**FULL**) corresponds to `train.py` defaults with reference injection on, pre-block injection, unified decoding, refinement head on, and the CE+Lovász+Dice+MFB objective.
+
+<p align="center"><img src="assets/training_stages.png" width="95%" alt="Training stages"></p>
+<p align="center"><em><b>Training protocol.</b> Clear-weather pre-training on Cityscapes precedes adverse-weather adaptation on ACDC.</em></p>
 
 ```bash
 cd segment-anything
