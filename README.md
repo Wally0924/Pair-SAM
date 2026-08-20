@@ -24,20 +24,6 @@ Semantic segmentation degrades sharply under adverse weather—fog, rain, snow, 
 
 ---
 
-## Introduction
-
-Driving-scene segmentation fails precisely when it is needed most. In dense fog, contrast collapses and distant traffic merges into a uniform gray; at night, unlit sidewalks and riders vanish while headlights saturate the sensor; rain and snow corrupt the local texture that separates road from terrain. Models trained on clear-weather imagery inherit these appearance cues as their primary evidence, and their accuracy drops steeply once the cues disappear. Vision foundation models such as SAM bring segmentation priors learned at billion-mask scale, yet SAM is trained for class-agnostic, prompt-driven mask generation and does not by itself produce semantic labels, let alone under degradation.
-
-Two lines of work address parts of this problem. Parameter-efficient SAM adaptations attach lightweight adapters or retrain the decoder to specialize the frozen backbone for a downstream domain; however, they treat the degraded image as the only observation and exploit no external structure when the observation itself is unreliable. Conversely, Refign and CMA demonstrated that a GNSS-paired clear-weather image of the same scene is a strong source of guidance for adverse-condition segmentation; yet both fine-tune the entire segmentation network, coupling the paired-image prior to full retraining and forgoing the frozen features of a foundation backbone. The structural prior available in a paired clear-weather frame and the efficiency of adapting a frozen foundation model have so far not been combined.
-
-PairSAM combines them: a geometrically aligned, confidence-gated clear-weather reference is injected into a frozen SAM ViT-H encoder, and the injected features are decoded into nineteen semantic classes in a single unified-query pass, all while training under 3% of the model's parameters. Our contributions are:
-
-- **Reference injection.** A frozen optical-flow network warps the GNSS-paired clear-weather frame to the adverse viewpoint; its multi-scale VGG features, gated by a per-pixel alignment-confidence mask, are injected into ViT-H blocks 7/15/23/31 through the **WarpedVGG Adapter**, a multi-scale cross-attention module with learnable per-stage gates. Unreliable correspondences are suppressed before they can mislead the decoder.
-- **Unified query decoding.** Nineteen class-specific queries are decoded jointly in one TwoWayTransformer pass, where cross-class self-attention induces mutual exclusivity and removes the IoU candidate-selection step of prior SAM-based semantic variants; a residual depthwise-convolution head (**LRH**) then performs cross-class competition and spatial refinement on the assembled logit map.
-- **Parameter efficiency.** Only 24.53M parameters (2.98% of the full model) are trained; the ViT-H image encoder, CLIP text encoder, and the VGG+flow alignment network stay frozen. Every architectural choice is additionally exposed as a single CLI flag, enabling controlled single-variable ablations.
-
----
-
 ## Method Overview
 
 <p align="center"><img src="assets/pairsam_overview.png" width="100%" alt="PairSAM architecture overview"></p>
