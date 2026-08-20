@@ -2,12 +2,14 @@
 
 <div align="center">
 
-**惡劣天氣語意分割：以晴天參考影像引導的 SAM 參數高效適應框架**
+**Parameter-efficient adaptation of SAM for adverse-weather semantic segmentation, guided by aligned clear-weather references**
 
 [![arXiv](https://img.shields.io/badge/arXiv-TBD-b31b1b.svg)](#)
 [![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-green.svg)](segment-anything/LICENSE)
+
+English | [繁體中文](README.zh-TW.md)
 
 </div>
 
@@ -16,8 +18,6 @@
 ## Abstract
 
 Semantic segmentation degrades sharply under adverse weather—fog, rain, snow, and night—where reduced contrast and texture corruption weaken the appearance cues that clear-weather models rely on. We present **PairSAM**, a parameter-efficient framework that adapts the frozen Segment Anything Model (SAM) ViT-H backbone to adverse conditions by injecting a *geometrically aligned clear-weather reference frame* as a structural prior. A GNSS-paired clear-weather image is aligned to the adverse-weather viewpoint by a frozen optical-flow alignment network, and its multi-scale VGG features—gated by an alignment-confidence mask—are injected into the ViT-H encoder through a multi-scale cross-attention adapter. Decoding follows a Mask2Former-style **unified query** formulation: nineteen class-specific query tokens interact through cross-class self-attention in a single TwoWayTransformer pass, and a lightweight residual depthwise-convolution head performs cross-class competition and spatial refinement on the assembled class-logit map. Training optimizes only about **2.98% (24.53M)** of the model's parameters while the ViT-H image encoder, CLIP text encoder, and the alignment network remain frozen. We evaluate on ACDC, Dark Zurich, and RobotCar Correspondence under the standard GNSS-paired protocol.
-
-**[中文摘要]** 本研究提出 **PairSAM**，一個針對惡劣天氣（霧、雨、雪、夜）語意分割的參數高效框架，以凍結的 SAM ViT-H 骨幹為基礎，透過注入「幾何對齊後的晴天參考影像」作為結構先驗來適應退化場景。GNSS 配對的晴天影像先由凍結的光流對齊網路扭曲至惡劣天氣視角，其多尺度 VGG 特徵再經對齊信心遮罩閘控，透過多尺度交叉注意力 Adapter 注入 ViT-H 編碼器。解碼採 Mask2Former 風格的**統一查詢**：十九個類別專屬查詢 Token 在單次 TwoWayTransformer 中經跨類別自注意力交互；最後以輕量殘差深度卷積頭對組裝後的類別 logit 圖進行跨類別競爭與空間精修。全程僅訓練約 **2.98%（24.53M）** 參數，ViT-H 影像編碼器、CLIP 文字編碼器與對齊網路皆凍結。實驗於 ACDC、Dark Zurich、RobotCar Correspondence 三個資料集、依標準 GNSS 配對協定進行。
 
 ---
 
