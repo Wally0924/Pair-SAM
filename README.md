@@ -153,7 +153,7 @@ PairSAM is evaluated under the **GNSS-paired** protocol shared with Refign and C
 | **Dark Zurich** | 2,416 | 50 | 151 | nighttime |
 | **RobotCar Correspondence** | 6,511 | 27 | 27 | cross-season / cross-time |
 
-Datasets are **not redistributed here** — obtain them from the official sources (ACDC, MUSES, Cityscapes, Foggy Cityscapes, Dark Zurich) under their respective licenses, keep each dataset's original directory layout, and place them under a common root. See [`Datasets/README.md`](Datasets/README.md) for links and the expected structure.
+Datasets are **not redistributed here** — obtain them from the official sources (ACDC, Dark Zurich, MUSES, Cityscapes) under their respective licenses and arrange them under a common root following the directory tree in [`Datasets/README.md`](Datasets/README.md). The layout is close to the official one but not identical: ACDC and Dark Zurich archives are extracted into folders named after the archive, and Cityscapes uses `Images/` and `GT/` sub-folders. That file also lists every manifest CSV, its columns, and a one-command check that your layout resolves.
 
 Manifest CSV columns (`acdc_adverse_ref_rgb_{train,val}.csv`):
 

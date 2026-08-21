@@ -1,77 +1,154 @@
-# 資料索引與前處理
+# Datasets
 
-## 資料集取得
+This directory holds the **manifest CSVs** that every training and evaluation entry point reads, plus the helper scripts that produced them. No images or labels are redistributed here; obtain each dataset from its official source and arrange it exactly as described below so that the manifests resolve without modification.
 
-本 repo 只提供資料索引 CSV，不散布資料集影像。請自行向各資料集官方申請並下載：
+## 1. Obtain the datasets
 
-| 資料集 | 用途 | 取得方式 |
-|--------|------|----------|
-| [ACDC](https://acdc.vision.ee.ethz.ch/) | 主要訓練與評估（fog / rain / snow / night） | 官網註冊後下載 |
-| [MUSES](https://muses.vision.ee.ethz.ch/) | 跨資料集泛化評估（weather × time-of-day 八種條件） | 官網註冊後下載 |
-| [Cityscapes](https://www.cityscapes-dataset.com/) | 晴天預訓練與 GT | 官網註冊後下載 |
-| [Foggy Cityscapes](https://people.ee.ethz.ch/~csakarid/SFSU_synthetic/) | 合成霧氣訓練 | 隨 Cityscapes 提供 |
-| [Dark Zurich](https://www.trace.ethz.ch/publications/2019/GCMA_UIoU/) | 夜間評估 | 官網下載 |
+| Dataset | Used for | Archives to download |
+|---|---|---|
+| [ACDC](https://acdc.vision.ee.ethz.ch/) | Main training and evaluation (fog / rain / snow / night) | `rgb_anon_trainvaltest.zip`, `gt_trainval.zip` |
+| [Dark Zurich](https://www.trace.ethz.ch/publications/2019/GCMA_UIoU/) | Night-time cross-dataset evaluation | `Dark_Zurich_val_anon.zip`, `Dark_Zurich_test_anon_withoutGt.zip` |
+| [MUSES](https://muses.vision.ee.ethz.ch/) | Cross-dataset evaluation over weather × time-of-day | `frame_camera`, `reference_frame`, `gt_semantic`, `meta.json` |
+| [Cityscapes](https://www.cityscapes-dataset.com/) | Clear-weather pre-training stage | `leftImg8bit_trainvaltest.zip`, `gtFine_trainvaltest.zip` |
+| [Foggy Cityscapes](https://people.ee.ethz.ch/~csakarid/SFSU_synthetic/) | Legacy synthetic-fog experiments (optional) | `leftImg8bit_trainvaltest_foggy.zip` |
+| [RobotCar Correspondence](https://github.com/brdav/cma) | Cross-season evaluation (optional) | fetched by `download_robotcar.sh` |
 
-下載後請維持各資料集的原始目錄結構，統一放在同一個根目錄下：
+All datasets are released under their own licenses; registration is required for ACDC, MUSES, and Cityscapes.
+
+## 2. Expected directory layout
+
+Set one root directory and place every dataset beneath it. The tree below is the layout the manifests encode; the comments name the archive that produces each branch. Two points differ from a plain "unzip in place": ACDC and Dark Zurich archives are extracted **into a folder named after the archive**, and Cityscapes is split into `Images/` and `GT/` sub-folders.
 
 ```text
 $DATASET_ROOT/
 ├── ACDC/
-├── MUSES/
-├── Cityscapes/
-├── Cityscapes_foggy/
-└── Dark_Zurich/
+│   ├── rgb_anon/                                  # rgb_anon_trainvaltest.zip
+│   │   └── {fog,rain,snow,night}/
+│   │       ├── {train,val,test}/<seq>/<seq>_frame_XXXXXX_rgb_anon.png
+│   │       └── {train,val,test}_ref/<seq>/<seq>_frame_XXXXXX_rgb_ref_anon.png
+│   └── gt_trainval/                               # gt_trainval.zip, extracted INTO this folder
+│       └── gt/{fog,rain,snow,night}/{train,val}/<seq>/
+│           ├── <seq>_frame_XXXXXX_gt_labelTrainIds.png
+│           └── <seq>_frame_XXXXXX_gt_invIds.png
+│
+├── Dark_Zurich/
+│   ├── Dark_Zurich_val_anon/                      # Dark_Zurich_val_anon.zip, extracted INTO this folder
+│   │   ├── rgb_anon/val/night/<seq>/<seq>_frame_XXXXXX_rgb_anon.png
+│   │   ├── rgb_anon/val_ref/day/<seq>_ref/<seq>_frame_XXXXXX_ref_rgb_anon.png
+│   │   └── gt/val/night/<seq>/<seq>_frame_XXXXXX_gt_{labelTrainIds,invIds}.png
+│   └── Dark_Zurich_test_anon_withoutGt/           # Dark_Zurich_test_anon_withoutGt.zip, extracted INTO this folder
+│       └── rgb_anon/{test,test_ref}/...           # same pattern as val; no GT
+│
+├── MUSES/                                         # official layout, unchanged
+│   ├── frame_camera/{train,val,test}/<weather>/<time_of_day>/RECxxxx_frame_xxxxxx_frame_camera.png
+│   ├── reference_frame/{train,val,test}/<weather>/<time_of_day>/...
+│   ├── gt_semantic/{train,val}/<weather>/<time_of_day>/RECxxxx_frame_xxxxxx_gt_labelTrainIds.png
+│   └── meta.json
+│
+├── Cityscapes/                                    # NOTE: Images/ and GT/ sub-folders
+│   ├── Images/leftImg8bit/{train,val,test}/<city>/<city>_xxxxxx_xxxxxx_leftImg8bit.png
+│   └── GT/gtFine/{train,val,test}/<city>/<city>_xxxxxx_xxxxxx_gtFine_labelTrainIds.png
+│
+├── Cityscapes_foggy/                              # optional, legacy manifests only
+│   └── leftImg8bit_foggy/{train,val,test}/<city>/<city>_..._leftImg8bit_foggy_beta_{0.005,0.01,0.02}.png
+│
+└── RobotCar/                                      # optional; created by download_robotcar.sh
+    ├── images/
+    ├── correspondence_data/
+    └── segmented_images/
 ```
 
-## 路徑設定
+Notes:
 
-CSV 中的路徑以佔位符記錄，執行前需設定環境變數：
+- **Cityscapes `*_gtFine_labelTrainIds.png`** is not in the official archive. Generate it with `createTrainIdLabelImgs.py` from [cityscapesScripts](https://github.com/mcordts/cityscapesScripts) after extracting `gtFine_trainvaltest.zip` into `Cityscapes/GT/`.
+- ACDC, Dark Zurich, and MUSES ship `labelTrainIds` (and ACDC/Dark Zurich `invIds`) directly.
+- `<seq>` stands for a GoPro sequence id such as `GOPR0475`; the file names inside are exactly as released.
+
+## 3. Path placeholders
+
+Manifests store paths with two placeholders instead of absolute locations:
+
+| Placeholder | Meaning | Default |
+|---|---|---|
+| `${DATASET_ROOT}` | root of the tree above | `~/Datasets` |
+| `${REPO_ROOT}` | this repository (used only by legacy manifests that point at feature caches under `Datasets/features_*`) | the repository root, derived from `path_resolver.py` |
 
 ```bash
-export DATASET_ROOT=/path/to/your/Datasets   # 預設 ~/Datasets
-export REPO_ROOT=/path/to/SAM_research       # 預設為本 repo 根目錄，通常不需設定
+export DATASET_ROOT=/path/to/your/Datasets
+# export REPO_ROOT=/path/to/Pair-SAM   # normally unnecessary
 ```
 
-兩個佔位符的意義：
-
-- `${DATASET_ROOT}` — 外部資料集的原始影像與標註
-- `${REPO_ROOT}` — repo 內的預計算特徵快取（`Datasets/features_*`，需自行以 `precompute_features.py` 產生）
-
-路徑展開由 `path_resolver.py` 處理，`pair_dataloader.py` 與 `precompute_features.py` 讀取 CSV 後會自動套用，一般情況下無需手動呼叫。若自行撰寫分析腳本讀取這些 CSV：
+`path_resolver.py` expands both placeholders. `utils/pair_dataloader.py`, `precompute_features.py`, and `train.py` call it when they load a manifest, so no manual substitution is needed. For your own analysis scripts:
 
 ```python
 import pandas as pd
 from path_resolver import resolve_dataframe
 
-df = resolve_dataframe(pd.read_csv('Datasets/acdc_adverse_ref_rgb_val.csv'))
+df = resolve_dataframe(pd.read_csv("Datasets/acdc_adverse_ref_rgb_val.csv"))
 ```
 
----
+## 4. Manifest CSVs
 
-## 📜 Scripts Description
+### Primary manifests (used by the released pipeline)
 
-### 1. `sperate_data.py`
+| File | Rows | Consumer | Notes |
+|---|---:|---|---|
+| `acdc_adverse_ref_rgb_train.csv` | 1,600 | `train.py` (default `--train_csv`) | ACDC train, four conditions |
+| `acdc_adverse_ref_rgb_val.csv` | 406 | `train.py` (default `--val_csv`), `scripts/eval/eval_e1_acdc_val_full.py` | ACDC val; labels public |
+| `acdc_adverse_ref_rgb_test.csv` | 2,000 | `scripts/eval/dump_acdc_test_preds.py` | ACDC test; `gt_path` and `invalid_mask` empty (server-held) |
+| `cityscapes_m2f_train.csv` / `_val.csv` | 2,975 / 500 | `pretrain_cityscapes.py` | Clear-weather pre-training; `ref_image_path` equals `image_path` |
+| `darkzurich_adverse_ref_rgb_val.csv` / `_test.csv` | 50 / 151 | Dark Zurich evaluation / submission | `condition_id` fixed to 3 (night) |
+| `muses_cond8_ref_rgb_{train,val,test}.csv` | 1,500 / 250 / 750 | `scripts/run_muses_cond8.sh`, `scripts/eval/dump_muses_preds.py` | Eight-condition MUSES split with extra `weather`, `time_of_day` columns |
+| `muses_ref_rgb_{val,test}.csv`, `muses_adverse_ref_rgb_*.csv`, `muses_all_ref_rgb_*.csv` | — | MUSES variants (`--cond-mode` / `--adverse-only` in `make_muses_csv.py`) | Four-condition or all-sample variants of the above |
 
-**功能：** 資料集分割 (Dataset Partitioning)
-- 負責將原始的資料集依照預設比例（例如 80% 訓練、10% 驗證、10% 測試）進行隨機劃分。
-- 確保訓練集、驗證集與測試集之間無資料重疊，並輸出分割後的檔案清單或移動檔案至對應目錄，建立標準化的資料結構。
+Common columns:
 
-### 2. `generate_csv.py`
+```text
+image_path, ref_image_path, gt_path, condition, condition_id, invalid_mask
+```
 
-**功能：** 資料索引生成 (Index Generation)
-- 掃描指定的資料夾結構，自動配對 原始影像 (Input Image)、真值遮罩 (Ground Truth) 與 參考遮罩 (Reference Mask)。
-- 將配對好的檔案路徑彙整並寫入 CSV 檔案。此 CSV 檔將作為 PyTorch DataLoader 的主要輸入來源，取代傳統的資料夾遍歷方式，提升讀取效率。
+- `image_path` adverse-weather frame; `ref_image_path` its GNSS-paired clear-weather reference; `gt_path` `labelTrainIds` map (empty for test splits); `invalid_mask` official invalid-region mask where provided.
+- `condition_id` for ACDC / Dark Zurich / four-condition MUSES: `0 fog, 1 rain, 2 snow, 3 night`.
+- `condition_id` for `muses_cond8_*`: `0 fog-day, 1 rain-day, 2 snow-day, 3 clear-night, 4 fog-night, 5 rain-night, 6 snow-night, 7 clear-day` (the first four keep ACDC semantics). MUSES clear-day frames have no separate reference and use themselves as `ref_image_path`.
 
-### 3. `check_data_integrity.py`
+### Legacy manifests (earlier Foggy-Cityscapes / GPS experiments; not needed for the FULL model)
 
-**功能：** 資料完整性驗證 (Integrity Validation)
-- 讀取生成的 CSV 索引檔，逐筆檢查所有記錄的檔案路徑是否真實存在。
-- 嘗試讀取影像以檢測檔案是否損毀 (Corrupted)，並驗證影像與遮罩的尺寸是否一致，預防在模型訓練過程中因 I/O 錯誤導致中斷。
+| File | Notes |
+|---|---|
+| `train_all.csv`, `val_all.csv`, `test_all.csv` | Foggy Cityscapes (three beta levels) with `ref_mask_path` = Cityscapes colour GT; columns `image_path, ref_mask_path, gt_path` |
+| `train_with_gps.csv`, `val_with_gps.csv`, `test_with_gps.csv` | Same plus Cityscapes vehicle GPS (`lat`, `lon`) and `${REPO_ROOT}/Datasets/features_*` cache paths |
+| `foggy_0.02/*.csv` | Single beta = 0.02 subset; `*_cached.csv` variants reference feature caches |
+| `acdc_train.csv`, `acdc_val.csv`, `*_with_embeddings.csv` | Early ACDC manifests using colour-label references and cached ViT-H features |
 
+Feature caches referenced through `${REPO_ROOT}` are not distributed (about 60 GB); rebuild them with `segment-anything/precompute_features.py` if you need these manifests.
 
-### 4. `add_gps_to_csv.py`
+## 5. Verify your setup
 
-**功能：** 地理資訊整合 (GPS Metadata Integration)
-- 解析 CSV 中的影像檔名（基於 Cityscapes 命名規則），自動關聯對應的 `vehicle_sequence.json` 元數據檔案。
-- 提取每張影像拍攝時的 GPS 經緯度 (Latitude, Longitude)。
-- 將地理座標作為新欄位追加至 CSV 中，使模型能利用地理位置資訊進行檢索增強 (Retrieval-Augmented) 或位置編碼訓練。
+```bash
+export DATASET_ROOT=/path/to/your/Datasets
+cd segment-anything
+python - <<'PY'
+import os, sys, pandas as pd
+sys.path.insert(0, "../Datasets")
+from path_resolver import resolve_dataframe
+df = resolve_dataframe(pd.read_csv("../Datasets/acdc_adverse_ref_rgb_val.csv"))
+missing = [p for col in ("image_path", "ref_image_path", "gt_path") for p in df[col] if isinstance(p, str) and not os.path.exists(p)]
+print(f"{len(df)} rows, {len(missing)} missing files")
+print("\n".join(missing[:5]))
+PY
+```
+
+Zero missing files means the layout matches. `check_data_integrity.py` performs a deeper check (opens every image, compares image/label sizes); pass the manifest with `--csv` and resolve placeholders first if you use it on the raw CSV.
+
+## 6. Helper scripts
+
+| Script | Purpose |
+|---|---|
+| `path_resolver.py` | Placeholder expansion used by the loaders |
+| `make_muses_csv.py` | Builds the MUSES manifests from `meta.json` (`--cond-mode map/cond8`, `--adverse-only`, `--verify-paths`) |
+| `generate_csv.py` | Builds the legacy Foggy-Cityscapes manifests |
+| `add_gps_to_csv.py` | Appends Cityscapes vehicle GPS (`lat`, `lon`) from `vehicle_sequence.json` |
+| `check_data_integrity.py` | Checks that every path in a manifest exists and is readable |
+| `download_robotcar.sh` | Downloads RobotCar Correspondence into the CMA/Refign layout |
+
+`generate_csv.py`, `add_gps_to_csv.py`, and `check_data_integrity.py` still carry the original author's absolute paths as defaults; edit them or pass explicit arguments before running. The released manifests were produced with these scripts and do not need to be regenerated.

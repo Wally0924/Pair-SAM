@@ -153,7 +153,7 @@ PairSAM 依循與 Refign、CMA 相同的 **GNSS 配對**協定評估:每張惡�
 | **Dark Zurich** | 2,416 | 50 | 151 | 夜間 |
 | **RobotCar Correspondence** | 6,511 | 27 | 27 | 跨季節 / 跨時段 |
 
-本 repo **不散布資料集** — 請依各自授權向官方來源取得（ACDC、MUSES、Cityscapes、Foggy Cityscapes、Dark Zurich）,保持原始目錄結構,放置於同一根目錄下。連結與預期結構見 [`Datasets/README.md`](Datasets/README.md)。
+本 repo **不散布資料集** — 請依各自授權向官方來源取得（ACDC、Dark Zurich、MUSES、Cityscapes）,並依照 [`Datasets/README.md`](Datasets/README.md) 的目錄樹放置於同一根目錄下。該結構與官方解壓結果相近但不完全相同:ACDC 與 Dark Zurich 的壓縮檔要解壓到以壓縮檔命名的資料夾內,Cityscapes 則分為 `Images/` 與 `GT/` 兩個子資料夾。該檔亦列出每個 manifest CSV 的用途、欄位,以及一段可直接執行的路徑驗證指令。
 
 Manifest CSV 欄位（`acdc_adverse_ref_rgb_{train,val}.csv`）:
 
