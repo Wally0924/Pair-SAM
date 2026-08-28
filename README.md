@@ -4,7 +4,6 @@
 
 **Parameter-efficient adaptation of SAM for adverse-weather semantic segmentation, guided by aligned clear-weather references**
 
-[![arXiv](https://img.shields.io/badge/arXiv-TBD-b31b1b.svg)](#)
 [![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-green.svg)](segment-anything/LICENSE)
@@ -68,7 +67,7 @@ PairSAM maps an adverse-weather image and a GNSS-paired clear-weather reference 
 
 All numbers follow the GNSS-paired evaluation protocol of Refign and CMA: mIoU over the 19 Cityscapes classes, computed at the native ground-truth resolution (1080×1920) with the confusion matrix aggregated globally over each split.
 
-> Quantitative results are released upon completion of the multi-seed training protocol. Numbers below are placeholders.
+> ACDC numbers below are final (seed 42; three-seed std. dev. 0.14). Baseline rows and the cross-dataset table are filled in only where a directly comparable published number exists.
 
 ### ACDC — overall and per-condition mIoU (validation, 406 images)
 
@@ -76,15 +75,18 @@ All numbers follow the GNSS-paired evaluation protocol of Refign and CMA: mIoU o
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | CMA | SegFormer | ✓ | — | — | — | — | — |
 | Refign-DAFormer | MiT-B5 | ✓ | — | — | — | — | — |
-| **PairSAM (ours)** | ViT-H (frozen) | ✓ | TBD | TBD | TBD | TBD | **TBD** |
+| **PairSAM (ours)** — val | ViT-H (frozen) | ✓ | 81.83 | 78.89 | 78.36 | 53.34 | **76.02** |
+| **PairSAM (ours)** — test | ViT-H (frozen) | ✓ | — | — | — | — | **72.14** |
 
 ### Cross-dataset generalization (mIoU)
 
-| Method | Dark Zurich (test) | RobotCar Corr. (test) |
-|---|:--:|:--:|
-| CMA | 53.6 | 54.3 |
-| Refign-DAFormer | 56.2 | 60.5 |
-| **PairSAM (ours)** | **TBD** | **TBD** |
+| Method | Dark Zurich (test) | RobotCar Corr. (test) | MUSES (test) |
+|---|:--:|:--:|:--:|
+| CMA | 53.6 | 54.3 | — |
+| Refign-DAFormer | 56.2 | 60.5 | — |
+| **PairSAM (ours)** | not evaluated | not evaluated | **62.49** (zero-shot) |
+
+PairSAM is evaluated zero-shot on the MUSES test server using the ACDC-trained weights; the Dark Zurich and RobotCar **test** servers were not submitted to, so those cells are left empty rather than filled with a non-comparable validation score. For reference, Dark Zurich **validation** mIoU is 51.21.
 
 > ACDC **test-set** per-class IoU vs. prior Cityscapes→ACDC methods (CMA Table-1 format) is reported in the paper; predictions are exported with `scripts/eval/dump_acdc_test_preds.py` for server submission.
 
@@ -132,14 +134,18 @@ Model weights are **not stored in this repository**. Download them and place und
 |---|---|---|---|
 | `sam_vit_h_4b8939.pth` | ~2.4 GB | all ViT-H runs | [Segment Anything (Kirillov et al., ICCV 2023)](https://github.com/facebookresearch/segment-anything) |
 | `sam_vit_b_01ec64.pth` | ~358 MB | ViT-B ablations | [Segment Anything](https://github.com/facebookresearch/segment-anything) |
-| `cma_alignment_weights.pth` | ~69 MB | CMA alignment (VGG-16 + UAWarpC) | *[release link TBD]* |
-| `cma_segformer_acdc.ckpt` | ~1.4 GB | CMA baseline comparison | *[release link TBD]* |
-| `location_encoder_weights.pth` | ~37 MB | GNSS location encoding | *[release link TBD]* |
-| `cityscapes_pretrain/sam_vit_h_cityscapes_merged.pth` | ~2.4 GB | clear-weather pre-training stage | *[release link TBD]* |
+| `cma_alignment_weights.pth` | ~69 MB | CMA alignment (VGG-16 + UAWarpC) | on request † |
+| `cma_segformer_acdc.ckpt` | ~1.4 GB | CMA baseline comparison | on request † |
+| `location_encoder_weights.pth` | ~37 MB | GNSS location encoding | on request † |
+| `cityscapes_pretrain/sam_vit_h_cityscapes_merged.pth` | ~2.4 GB | clear-weather pre-training stage | on request † |
+
+† These weights are not currently hosted publicly. They are archived on the authors' institutional storage; please contact the corresponding author to request a copy.
 
 ### Trained Models and Experiment Outputs
 
-Training runs write to `segment-anything/outputs_*/`, which is excluded from version control (checkpoints alone exceed 100 GB). Trained PairSAM weights and the corresponding experiment records — `train_log.csv`, `e1_results.json`, `ablation_config.json`, and training curves for every ablation variant — are released separately: *[release link TBD]*.
+Training runs write to `segment-anything/outputs_*/`, which is excluded from version control (checkpoints alone exceed 100 GB). Trained PairSAM weights and the corresponding experiment records — `train_log.csv`, `e1_results.json`, `ablation_config.json`, and training curves for every ablation variant — are archived on institutional storage and available on request.
+
+The single checkpoint needed to reproduce the headline ACDC number is `FULL_seed42/weather_sam_best_latest.pth` (3.3 GB).
 
 ---
 
@@ -283,10 +289,10 @@ Not tracked here: model weights (`checkpoints/`), training runs (`outputs_*/`), 
 @article{pairsam,
   title   = {PairSAM: Reference-Guided Adaptation of SAM for
              Adverse-Weather Semantic Segmentation},
-  author  = {[Author Names]},
-  journal = {[Venue]},
-  year    = {2026},
-  note    = {Paper link TBD}
+  author  = {Su, Ming-Wei},
+  school  = {[Institution]},
+  type    = {Master's thesis},
+  year    = {2026}
 }
 ```
 

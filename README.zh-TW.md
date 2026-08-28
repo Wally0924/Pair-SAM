@@ -4,7 +4,6 @@
 
 **惡劣天氣語意分割：以晴天參考影像引導的 SAM 參數高效適應框架**
 
-[![arXiv](https://img.shields.io/badge/arXiv-TBD-b31b1b.svg)](#)
 [![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-green.svg)](segment-anything/LICENSE)
@@ -68,7 +67,7 @@ PairSAM 將一張惡劣天氣影像與其 GNSS 配對晴天參考,經以下階�
 
 所有數字依循 Refign 與 CMA 的 GNSS 配對評估協定：19 個 Cityscapes 類別的 mIoU,於原生標註解析度（1080×1920）計算,混淆矩陣對整個 split 全域彙總。
 
-> 量化結果將於多 seed 訓練協定完成後釋出,下表數字為佔位。
+> ACDC 數字為定案值（seed 42;三種子標準差 0.14）。基線列與跨資料集表僅在存在可直接比較的已發表數字時填入。
 
 ### ACDC — 整體與各天候 mIoU（驗證集,406 張）
 
@@ -76,15 +75,18 @@ PairSAM 將一張惡劣天氣影像與其 GNSS 配對晴天參考,經以下階�
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | CMA | SegFormer | ✓ | — | — | — | — | — |
 | Refign-DAFormer | MiT-B5 | ✓ | — | — | — | — | — |
-| **PairSAM（本研究）** | ViT-H（凍結） | ✓ | TBD | TBD | TBD | TBD | **TBD** |
+| **PairSAM（本研究）**— val | ViT-H（凍結） | ✓ | 81.83 | 78.89 | 78.36 | 53.34 | **76.02** |
+| **PairSAM（本研究）**— test | ViT-H（凍結） | ✓ | — | — | — | — | **72.14** |
 
 ### 跨資料集泛化（mIoU）
 
-| 方法 | Dark Zurich（test） | RobotCar Corr.（test） |
-|---|:--:|:--:|
-| CMA | 53.6 | 54.3 |
-| Refign-DAFormer | 56.2 | 60.5 |
-| **PairSAM（本研究）** | **TBD** | **TBD** |
+| 方法 | Dark Zurich（test） | RobotCar Corr.（test） | MUSES（test） |
+|---|:--:|:--:|:--:|
+| CMA | 53.6 | 54.3 | — |
+| Refign-DAFormer | 56.2 | 60.5 | — |
+| **PairSAM（本研究）** | 未評估 | 未評估 | **62.49**（零樣本） |
+
+PairSAM 以 ACDC 訓練權重於 MUSES test server 進行零樣本評估;Dark Zurich 與 RobotCar 的 **test** server 未提交,故該兩格留空,不以不可比較的驗證集分數填充。參考資訊:Dark Zurich **驗證集** mIoU 為 51.21。
 
 > ACDC **test set** 的逐類 IoU 與既有 Cityscapes→ACDC 方法之比較（CMA Table-1 格式）於論文中報告;預測結果以 `scripts/eval/dump_acdc_test_preds.py` 匯出後提交官方 server。
 
@@ -283,10 +285,10 @@ Pair-SAM/
 @article{pairsam,
   title   = {PairSAM: Reference-Guided Adaptation of SAM for
              Adverse-Weather Semantic Segmentation},
-  author  = {[Author Names]},
-  journal = {[Venue]},
-  year    = {2026},
-  note    = {Paper link TBD}
+  author  = {Su, Ming-Wei},
+  school  = {[Institution]},
+  type    = {Master's thesis},
+  year    = {2026}
 }
 ```
 
